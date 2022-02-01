@@ -1,15 +1,33 @@
 input_features:
     -
-        name: timeseries_windowed
+        name: Timeseries_Windowed
         type: timeseries
         encoder: rnn
+        num_layers: 1
     -
-        name: Mean_price
+        name: Open
         type: numerical
+        
+    -
+        name: High
+        type: numerical
+    -
+        name: Low
+        type: numerical
+
+    -
+        name: Close
+        type: numerical
+
 output_features:
     -
         name: Label1
         type: numerical
+       
+
 training:
-    - 
-        learning_rate: 0,001
+  learning_rate: 0.003
+  optimizer:
+    type: sgd
+    
+    

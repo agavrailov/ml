@@ -9,7 +9,7 @@
 library(xts)
 
 #the size of the rolling window for ts in 24 hours * days
-window <- 10*24
+window <- 5*24
 
 setwd("C:\\Users\\Anton\\anaconda3\\envs\\rstudio\\src\\data") 
 inputfile <- "xagusd_hourly.csv"
