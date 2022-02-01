@@ -23,16 +23,10 @@ output_features:
     -
         name: Label1
         type: numerical
-    -
-        name: Label2
-        type: numerical
-    -
-        name: Label3
-        type: numerical
-        
+       
 
 training:
-  learning_rate: 0.001
+  learning_rate: 0.003
   optimizer:
     type: sgd
     
