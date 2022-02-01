@@ -1,0 +1,16 @@
+ludwig experiment --dataset ./ml/"training_data_1_Input.csv --config_file ./ml/config.yaml
+ludwig experiment --dataset ./ml/training_data_4_input.csv --config_file ./ml/config_4prices.yaml
+
+
+ludwig experiment --dataset C:/Users/Anton/anaconda3/envs/rstudio/src/data/training_data_4variables.csv --config_file C:/Users/Anton/anaconda3/envs/rstudio/src/ludwig/config_4prices.yaml
+
+
+
+----------------------
+ludwig visualize --visualization learning_curves --training_statistics ./ml/results/experiment_run/training_statistics.json
+
+ludwig evaluate --dataset ./ml/output.csv --model_path ./results/experiment_run_1/model/
+
+ludwig predict --dataset path/to/data.csv --model_path /path/to/model
+
+ludwig visualize --visualization compare_performance --test_statistics C:\Users\Anton\results\experiment_run_9\test_statistics.json C:\Users\Anton\results\experiment_run_12\test_statistics.json

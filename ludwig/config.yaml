@@ -1,0 +1,15 @@
+input_features:
+    -
+        name: timeseries_windowed
+        type: timeseries
+        encoder: rnn
+    -
+        name: Mean_price
+        type: numerical
+output_features:
+    -
+        name: Label1
+        type: numerical
+training:
+    - 
+        learning_rate: 0,001

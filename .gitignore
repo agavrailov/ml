@@ -1,0 +1,5 @@
+﻿.Rproj*
+training_data*
+.Rhistory
+.RData
+*.csv

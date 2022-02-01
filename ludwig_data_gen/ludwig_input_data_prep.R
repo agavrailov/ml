@@ -1,0 +1,59 @@
+#???? ?? ?????????? ?? ludwig. ?????????? ?? ??:
+#?????? ????????? ?? ??????? ???, 
+# ?????? ? ????? timeseries values
+# labels1 - ????? ?? ? ????????? ????????? ???? 10% ?? ?????????
+# labels2 - ????? ?? ? ????????? ????????? ???? 20% ?? ?????????
+# labels3 - ????? ?? ? ????????? ????????? ???? 30% ?? ?????????
+
+
+library(xts)
+
+#the size of the rolling window for ts in 24 hours * days
+window <- 10*24
+
+setwd("C:\\Users\\Anton\\anaconda3\\envs\\rstudio\\src\\data") 
+inputfile <- "xagusd_hourly.csv"
+
+#load input timeseries file
+df <- read.csv(inputfile, header = TRUE)
+
+#add and OHLC/4 values
+df["Mean_price"] <-rowMeans(df[2:5])
+
+#take rolling window of Mean values, combine them into a string
+ts_windowed <- rollapply(df[,6],width=window, 
+          function(x)
+            paste(x[1:window], collapse = " "))
+
+#remove last n elements because the rolling window creates vector with diff size
+df<- head(df,-window+1)
+
+#add results in a new column
+df["Timeseries_Windowed"]<-ts_windowed
+
+# Measure change of future price
+distance <-c(0.1,0.2,0.3)
+p1 <- max(3, ceiling (window*distance[1]))
+p2 <- max(3, ceiling (window*distance[2]))
+p3 <- max(3, ceiling (window*distance[3]))
+
+#look for value at a distance of 10% of the window ahead and add it to table as label1
+price_p1 <- tail(df$Mean_price,-p1)
+df<-head(df,-p1) 
+df["Label1"]<- price_p1
+
+#look for value at a distance of 20% of the window ahead and add it to table as label1
+price_p2 <- tail(df$Mean_price,-p2)
+df<-head(df,-p2) 
+df["Label2"]<- price_p2
+
+#look for value at a distance of 30% of the window ahead and add it to table as label1
+price_p3 <- tail(df$Mean_price,-p3)
+df<-head(df,-p3) 
+df["Label3"]<- price_p3
+
+
+#save date, mean price and timeseries to output file
+#write.csv(df[c(1,6:8)], file = "training_data_1_Input.csv", row.names = FALSE)
+write.csv(df, file = "training_data_4variables.csv", row.names = FALSE)
+
