@@ -1,5 +1,10 @@
 input_features:
     -
+        name: Time
+        type: date
+        preprocessing:
+        datetime_format: "%Y-%m-%d %H:%M:%S"
+    -
         name: Timeseries_Windowed
         type: timeseries
         encoder: rnn
