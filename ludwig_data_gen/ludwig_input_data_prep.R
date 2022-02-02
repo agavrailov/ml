@@ -17,14 +17,11 @@ inputfile <- "xagusd_hourly.csv"
 #load input timeseries file
 df <- read.csv(inputfile, header = TRUE)
 
-#TODO normalize
-df$Open = ((df$Open - mean(df$Open)) / sd(df$Open))
-df$High = ((df$High - mean(df$High)) / sd(df$High))
-df$Low = ((df$Low - mean(df$Low)) / sd(df$Low))
-df$Close = ((df$Close - mean(df$Close)) / sd(df$Close))
+# normalize OHLC values for much better training accuracy
+# Z score implementation df$Open = ((df$Open - mean(df$Open)) / sd(df$Open))
+# scale(x, center = FALSE, scale = apply(x, 2, sd, na.rm = TRUE))
+df[6:9]<- as.data.frame(scale(df[2:5]))
 
-#add and OHLC/4 values
-df["Mean_price"] <-rowMeans(df[2:5])
 
 #take rolling window of Mean values, combine them into a string
 ts_windowed <- rollapply(df[,6],width=window, 
@@ -44,17 +41,17 @@ p2 <- max(3, ceiling (window*distance[2]))
 p3 <- max(3, ceiling (window*distance[3]))
 
 #look for value at a distance of 10% of the window ahead and add it to table as label1
-price_p1 <- tail(df$Mean_price,-p1)
+price_p1 <- tail(df$Open,-p1)
 df<-head(df,-p1) 
 df["Label1"]<- price_p1
 
 #look for value at a distance of 20% of the window ahead and add it to table as label1
-price_p2 <- tail(df$Mean_price,-p2)
+price_p2 <- tail(df$Open,-p2)
 df<-head(df,-p2) 
 df["Label2"]<- price_p2
 
 #look for value at a distance of 30% of the window ahead and add it to table as label1
-price_p3 <- tail(df$Mean_price,-p3)
+price_p3 <- tail(df$Open,-p3)
 df<-head(df,-p3) 
 df["Label3"]<- price_p3
 

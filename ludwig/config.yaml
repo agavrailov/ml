@@ -13,14 +13,14 @@ input_features:
         num_layers: 1
         dropout: 0.2
     -
-        name: High
+        name: High.1
         type: numerical
     -
-        name: Low
+        name: Low.1
         type: numerical
 
     -
-        name: Close
+        name: Close.1
         type: numerical
 
 output_features:
