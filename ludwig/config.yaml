@@ -27,5 +27,6 @@ output_features:
 training:
   learning_rate: 0.001
   batch_size: 6
-  
+  increase_batch_size_on_plateau: 6
+  reduce_learning_rate_on_plateau: 10
     
