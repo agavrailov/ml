@@ -8,7 +8,10 @@ input_features:
 
     -
         name: High.1
-        type: numerical
+        type: timeseries
+        encoder: rnn
+        num_layers: 1
+        dropout: 0.2
     -
         name: Low.1
         type: numerical
