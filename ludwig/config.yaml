@@ -11,6 +11,7 @@ input_features:
         type: timeseries
         encoder: rnn
         num_layers: 1
+        dropout: 0.2
     -
         name: High
         type: numerical
@@ -33,6 +34,4 @@ training:
   learning_rate: 0.001
   batch_size: 24
   
-  optimizer:
-    type: sgd
     
