@@ -20,19 +20,20 @@ df <- read.csv(inputfile, header = TRUE)
 # normalize OHLC values for much better training accuracy
 # Z score implementation df$Open = ((df$Open - mean(df$Open)) / sd(df$Open))
 # scale(x, center = FALSE, scale = apply(x, 2, sd, na.rm = TRUE))
-df[6:9]<- as.data.frame(scale(df[2:5]))
-
+df[6:9]<- as.data.frame(round(scale(df[2:5]),3))
 
 #take rolling window of Mean values, combine them into a string
-ts_windowed <- rollapply(df[,6],width=window, 
-          function(x)
-            paste(x[1:window], collapse = " "))
+windowCreate =  function(x)
+  paste(x[1:window], collapse = " ")
 
-#remove last n elements because the rolling window creates vector with diff size
+Windowed_Open <- rollapply(df$Open.1,width=window,windowCreate)
+Windowed_High <- rollapply(df$High.1,width=window,windowCreate)
+Windowed_Low <- rollapply(df$Low.1,width=window,windowCreate)
+Windowed_Close <- rollapply(df$Close.1,width=window,windowCreate)
+
+#remove last n elements because the rolling window creates vector with diff size and combine with df
 df<- head(df,-window+1)
-
-#add results in a new column
-df["Timeseries_Windowed"]<-ts_windowed
+df<-cbind(df, Windowed_Open, Windowed_High, Windowed_Low, Windowed_Close)
 
 # Measure change of future price
 distance <-c(0.1,0.2,0.3)

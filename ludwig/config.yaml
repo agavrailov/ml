@@ -7,21 +7,24 @@ input_features:
             datetime_format: "%Y-%m-%d %H:%M:%S"
 
     -
-        name: Timeseries_Windowed
+        name: Windowed_High
         type: timeseries
         encoder: rnn
         num_layers: 1
         dropout: 0.2
     -
-        name: High.1
-        type: numerical
-    -
-        name: Low.1
-        type: numerical
+        name: Windowed_Low
+        type: timeseries
+        encoder: rnn
+        num_layers: 1
+        dropout: 0.2
 
     -
-        name: Close.1
-        type: numerical
+        name: Windowed_Close
+        type: timeseries
+        encoder: rnn
+        num_layers: 1
+        dropout: 0.2
 
 output_features:
     -
