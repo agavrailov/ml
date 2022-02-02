@@ -9,13 +9,19 @@
 library(xts)
 
 #the size of the rolling window for ts in 24 hours * days
-window <- 3*24
+window <- 5*24
 
 setwd("C:\\Users\\Anton\\anaconda3\\envs\\rstudio\\src\\data") 
 inputfile <- "xagusd_hourly.csv"
 
 #load input timeseries file
 df <- read.csv(inputfile, header = TRUE)
+
+#TODO normalize
+df$Open = ((df$Open - mean(df$Open)) / sd(df$Open))
+df$High = ((df$High - mean(df$High)) / sd(df$High))
+df$Low = ((df$Low - mean(df$Low)) / sd(df$Low))
+df$Close = ((df$Close - mean(df$Close)) / sd(df$Close))
 
 #add and OHLC/4 values
 df["Mean_price"] <-rowMeans(df[2:5])
