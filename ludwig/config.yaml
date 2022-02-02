@@ -12,10 +12,6 @@ input_features:
         encoder: rnn
         num_layers: 1
     -
-        name: Open
-        type: numerical
-        
-    -
         name: High
         type: numerical
     -
@@ -34,7 +30,7 @@ output_features:
         
 
 training:
-  learning_rate: 0.01
+  learning_rate: 0.001
   batch_size: 24
   
   optimizer:
