@@ -1,13 +1,17 @@
 input_features:
     -
+        name: Time
+        type: date
+        encoder: wave
+        preprocessing:
+            datetime_format: "%Y-%m-%d %H:%M:%S"
+
+    -
         name: Timeseries_Windowed
         type: timeseries
         encoder: rnn
         num_layers: 1
-    -
-        name: Open
-        type: numerical
-        
+        dropout: 0.2
     -
         name: High
         type: numerical
@@ -23,11 +27,11 @@ output_features:
     -
         name: Label1
         type: numerical
-       
+
+        
 
 training:
   learning_rate: 0.001
   batch_size: 24
   
-    
     
