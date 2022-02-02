@@ -7,12 +7,20 @@ input_features:
             datetime_format: "%Y-%m-%d %H:%M:%S"
 
     -
-        name: Windowed_Close
+        name: Windowed_Open
         type: timeseries
-        encoder: rnn
         num_layers: 1
         dropout: 0.2
-
+    -
+        name: Windowed_High
+        type: timeseries
+        num_layers: 1
+        dropout: 0.2    
+    -
+        name: Windowed_Low
+        type: timeseries
+        num_layers: 1
+        dropout: 0.2
 output_features:
     -
         name: Label1
@@ -22,6 +30,4 @@ output_features:
 
 training:
   learning_rate: 0.001
-  batch_size: 6
-  
-    
+  batch_size: 64
