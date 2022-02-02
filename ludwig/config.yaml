@@ -14,12 +14,16 @@ input_features:
         dropout: 0.2
     -
         name: Low.1
-        type: numerical
-
+        type: timeseries
+        encoder: rnn
+        num_layers: 1
+        dropout: 0.2
     -
         name: Close.1
-        type: numerical
-
+        type: timeseries
+        encoder: rnn
+        num_layers: 1
+        dropout: 0.2
 output_features:
     -
         name: Label1
