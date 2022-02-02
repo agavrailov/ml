@@ -2,8 +2,9 @@ input_features:
     -
         name: Time
         type: date
-        preprocessing
-        datetime_format: "%Y-%m-%d %H:%M:%S"
+        encoder: wave
+        preprocessing:
+            datetime_format: "%Y-%m-%d %H:%M:%S"
 
     -
         name: Timeseries_Windowed
@@ -29,16 +30,13 @@ output_features:
     -
         name: Label1
         type: numerical
-    -
-        name: Label2
-        type: numerical
-    -
-        name: Label3
-        type: numerical
+
         
 
 training:
-  learning_rate: 0.001
+  learning_rate: 0.01
+  batch_size: 24
+  
   optimizer:
     type: sgd
     
