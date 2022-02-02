@@ -28,6 +28,12 @@ output_features:
         name: Label1
         type: numerical
 
+        name: Label2
+        type: numerical
+
+        name: Label3
+        type: numerical
+
         
 
 training:
