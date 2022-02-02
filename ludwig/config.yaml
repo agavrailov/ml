@@ -38,6 +38,7 @@ output_features:
 
 training:
   learning_rate: 0.001
-  batch_size: 24
+  batch_size: 12
+  early_stop: 5
   
     
