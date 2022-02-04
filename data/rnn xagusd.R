@@ -12,7 +12,7 @@ epochs <- 25
 lahead <- 100
 
 #Prepare the table input table and fields
-df<-head(df,300*batch_size)
+df<-head(df,1000*batch_size)
 train_input<- array(data=df$Open.1,dim = c(nrow(df), 1))
 cat('Input shape:', dim(train_input), '\n')
 # df_t<-df[c("Open.1","High.1", "Low.1", "Label1")]
@@ -43,12 +43,12 @@ for (i in 1:epochs) {
 }
 
 cat('Predicting\n')
-predicted_output <- model %>% predict(train_input, batch_size = batch_size) %>% head(-100)
-
+predicted_output <- model %>% predict(train_input, batch_size = batch_size) %>% tail(-lahead)
+expected_output <-tail(expected_output,-lahead)
 cat('Plotting Results\n')
 op <- par(mfrow=c(2,1))
-plot(head(expected_output,-100), xlab = '', type = "o")
+plot(expected_output, xlab = '', type = "l")
 title("Expected")
-plot(predicted_output, xlab = '', type = "o" )
+plot(predicted_output, xlab = '', type = "l", col="RED" )
 title("Predicted")
 par(op)
