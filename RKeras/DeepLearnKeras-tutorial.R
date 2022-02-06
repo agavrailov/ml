@@ -1,5 +1,6 @@
 library('keras')
-setwd("C:\\Users\\Anton\\anaconda3\\envs\\rstudio\\src\\data") 
+setwd("D:\\My Documents\\R\\ml\\data") 
+
 inputfile <- "training_data_4variables.csv"
 
 #load input timeseries file
