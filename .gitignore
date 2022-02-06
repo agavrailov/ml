@@ -3,3 +3,4 @@ training_data*
 .Rhistory
 .RData
 *.csv
+.Rproj.user

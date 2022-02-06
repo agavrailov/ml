@@ -1,17 +1,22 @@
 library('keras')
+setwd("D:\\My Documents\\R\\ml\\data") 
+
+inputfile <- "training_data_4variables.csv"
+
+#load input timeseries file
+df <- read.csv(inputfile, header = TRUE)
 
 neural.train = function(model,XY)
 {
   X <- data.matrix(XY[,-ncol(XY)])
   Y <- XY[,ncol(XY)]
-  Y <- ifelse(Y > 0,1,0)
+  # Y <- ifelse(Y > 0,1,0)
   Model <- keras_model_sequential()
   Model %>%
     
-    layer_dense(units=2,activation='relu',input_shape = c(ncol(X))) %>%
-    layer_lstm(units = 2) %>%
-    layer_lstm(units = 2) %>%
+    layer_dense(units=1,activation='relu',input_shape = c(ncol(X), batch_size = 32)) %>%
     layer_dropout(rate = 0.2) %>%
+    layer_rnn()
     layer_dense(units = 1, activation = 'sigmoid')
   
   Model %>% compile(
@@ -21,7 +26,7 @@ neural.train = function(model,XY)
   
   Model %>% fit(X, Y,
                 epochs = 20, batch_size = 20,
-                validation_split = 0, shuffle = FALSE)
+                validation_split = 0.3, shuffle = FALSE)
   
   Models[[model]] <<- Model
 }
@@ -30,8 +35,11 @@ neural.predict = function(model,X)
 {
   if(is.vector(X)) X <- t(X)
   X <- as.matrix(X)
-  Y <- Models[[model]] %>% predict_proba(X)
-  return(ifelse(Y > 0.5,1,0))
+  # Y <- Models[[model]] %>% predict(X) %>% `>`(0.5) %>% k_cast("int32")
+  Y <- Models[[model]] %>% predict(X)
+  
+  return(Y)
+  
 }
 
 neural.save = function(name)
@@ -54,4 +62,11 @@ neural.init = function()
   Models <<- vector("list")
 }
 
-neural.train("А",as.matrix(seq(1:100),seq(1:1000)))
+#Prepare the table input table and fields
+df_t<-df[c("Open.1","High.1", "Low.1", "Label1")]
+df_p<-df[c("Label1")]
+
+neural.train(1, df_t)
+
+a <- neural.predict(1, df_p)
+summary (a)
