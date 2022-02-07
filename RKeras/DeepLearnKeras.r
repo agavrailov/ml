@@ -90,15 +90,22 @@ neural.test = function()
     XY <<- XY[c("Open.1", "Label1")]
   
   splits <- nrow(XY)*0.8
-  XY.tr <<- head(XY,(splits - splits %% batch_size))
-  XY.ts <<- tail(XY,-(splits - splits %% batch_size))
+  XY.tr <<- head(XY,(splits - splits %% batch_size))    #make it dividable
+  XY.ts <<- tail(XY,-(splits - splits %% batch_size))   #make it dividable
   neural.train(1,XY.tr)
   
   X <<- XY.ts[,-ncol(XY.ts)]
   Y <<- XY.ts[,ncol(XY.ts)]
-  Y.ob <<- ifelse(Y > 0,1,0)
-  Y.pr <<- neural.predict(1,X)
-  confusionMatrix(as.factor(Y.pr),as.factor(Y.ob))
+
+  op <- par(mfrow=c(2,1))
+  plot(X, xlab = '')
+  title("Expected")
+  plot(Y, xlab = '')
+  title("Predicted")
+
+  # Y.ob <<- ifelse(Y > 0,1,0)    #observed values
+  # Y.pr <<- neural.predict(1,X)  #predicted values
+  # confusionMatrix(as.factor(Y.pr),as.factor(Y.ob))
 }
 
 neural.test()
