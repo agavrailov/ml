@@ -12,6 +12,11 @@
 #install Keras from CRAN
 #load keras library and call install_keras(tensorflow = "gpu")
 
+tsteps <- 1 # since we are using stateful rnn tsteps can be set to 1
+batch_size <- 10
+epochs <- 25
+lahead <- 1 # number of elements ahead that are used to make the prediction
+
 library('keras', quietly = T)
 library('caret', quietly = T)
 
@@ -19,22 +24,29 @@ neural.train = function(model,XY)
 {
   X <- data.matrix(XY[,-ncol(XY)])
   Y <- XY[,ncol(XY)]
-  Y <- ifelse(Y > 0,1,0)
+  # Y <- ifelse(Y > 0,1,0)
   Model <- keras_model_sequential() 
-  Model %>% 
-    layer_dense(units = 30, activation = 'relu', input_shape = c(ncol(X))) %>% 
-    layer_dense(units = 30, activation = 'relu') %>% 
-    layer_dense(units = 1, activation = 'sigmoid')
-  
+  Model %>%
+    layer_lstm(units = 10, 
+               input_shape = c(tsteps,1),
+               batch_size = batch_size,
+               return_sequences = TRUE, 
+               stateful = TRUE) %>% 
+    layer_lstm(units = 50,
+               return_sequences = FALSE, 
+               stateful = TRUE) %>% 
+    layer_dense(units = 1)
   Model %>% compile(
-    loss = 'binary_crossentropy',
-    optimizer = optimizer_rmsprop(),
-    metrics = c('accuracy')
+              loss = 'mse', 
+              optimizer = 'rmsprop', 
+              metrics = c('accuracy')
   )
   
   Model %>% fit(X, Y, 
-    epochs = 20, batch_size = 20, 
-    validation_split = 0, shuffle = FALSE
+    epochs = epochs, 
+    batch_size = batch_size, 
+    validation_split = 0, 
+    shuffle = FALSE
   )
   
   Models[[model]] <<- Model
@@ -45,9 +57,9 @@ neural.predict = function(model,X)
   if(is.vector(X)) X <- t(X)
   X <- as.matrix(X)
   # Y <- Models[[model]] %>% predict(X) %>% `>`(0.5) %>% k_cast("int32")
-  Y <- Models[[model]] %>% predict(X)
-  return(ifelse(Y > 0.5,1,0))
-  #return(Y)
+  Y <- Models[[model]] %>% predict(X, batch_size = batch_size)
+  # return(ifelse(Y > 0.5,1,0))
+  return(Y)
 }
 
 neural.save = function(name)
@@ -74,10 +86,12 @@ neural.test = function()
 {
   neural.init()
   XY <<- read.csv("D:\\My Documents\\R\\ml\\data\\training_data.csv",header = TRUE)
-  XY <<- XY[c("Open.1","High.1", "Low.1", "Label1")]
+  # XY <<- XY[c("Open.1","High.1", "Low.1", "Label1")]
+    XY <<- XY[c("Open.1", "Label1")]
+  
   splits <- nrow(XY)*0.8
-  XY.tr <<- head(XY,splits)
-  XY.ts <<- tail(XY,-splits)
+  XY.tr <<- head(XY,(splits - splits %% batch_size))
+  XY.ts <<- tail(XY,-(splits - splits %% batch_size))
   neural.train(1,XY.tr)
   
   X <<- XY.ts[,-ncol(XY.ts)]

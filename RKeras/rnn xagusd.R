@@ -1,7 +1,7 @@
 library(keras)
 #load input timeseries file
 setwd("C:\\Users\\Anton\\anaconda3\\envs\\rstudio\\src\\data") 
-inputfile <- "training_data_4variables.csv"
+inputfile <- "training_data.csv"
 cat('Loading Data...\n')
 df <- read.csv(inputfile, header = TRUE)
 
