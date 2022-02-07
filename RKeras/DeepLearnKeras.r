@@ -13,7 +13,7 @@
 #load keras library and call install_keras(tensorflow = "gpu")
 
 tsteps <- 1 # since we are using stateful rnn tsteps can be set to 1
-batch_size <- 10
+batch_size <- 20
 epochs <- 25
 lahead <- 1 # number of elements ahead that are used to make the prediction
 
@@ -27,12 +27,13 @@ neural.train = function(model,XY)
   # Y <- ifelse(Y > 0,1,0)
   Model <- keras_model_sequential() 
   Model %>%
-    layer_lstm(units = 10, 
+    layer_lstm(units = 5, 
                input_shape = c(tsteps,1),
                batch_size = batch_size,
                return_sequences = TRUE, 
                stateful = TRUE) %>% 
-    layer_lstm(units = 50,
+    layer_dropout(rate = 0.2) %>%
+    layer_lstm(units = 10,
                return_sequences = FALSE, 
                stateful = TRUE) %>% 
     layer_dense(units = 1)
@@ -66,7 +67,7 @@ neural.save = function(name)
 {
   for(i in c(1:length(Models)))
     Models[[i]] <<- serialize_model(Models[[i]])
-  save(Models,file=name)  
+  save(Models,file=)  
 }
 
 neural.load <- function(name)
@@ -87,21 +88,25 @@ neural.test = function()
   neural.init()
   XY <<- read.csv("D:\\My Documents\\R\\ml\\data\\training_data.csv",header = TRUE)
   # XY <<- XY[c("Open.1","High.1", "Low.1", "Label1")]
-    XY <<- XY[c("Open.1", "Label1")]
+    XY <<- XY[c("Open", "Label1")]
   
   splits <- nrow(XY)*0.8
-  XY.tr <<- head(XY,(splits - splits %% batch_size))    #make it dividable
-  XY.ts <<- tail(XY,-(splits - splits %% batch_size))   #make it dividable
+  XY.tr <<- head(XY,(splits - splits %% batch_size))    #make training set dividable
+  XY.ts <<- tail(XY,-(splits - splits %% batch_size))   #make test set dividable
   neural.train(1,XY.tr)
   
   X <<- XY.ts[,-ncol(XY.ts)]
   Y <<- XY.ts[,ncol(XY.ts)]
+  Y.ob <<- Y                    #observed values
+  Y.pr <<- neural.predict(1,X)  #predicted values
 
-  op <- par(mfrow=c(2,1))
-  plot(X, xlab = '')
-  title("Expected")
-  plot(Y, xlab = '')
-  title("Predicted")
+  op <- par(mfrow=c(3,1))
+  plot(Y.ob, xlab = 'Expected')
+  plot(Y.pr, xlab = 'Predicted')
+  plot(Y.ob-Y.pr, xlab = 'Diff')
+  sd(Y.ob-Y.pr)
+
+
 
   # Y.ob <<- ifelse(Y > 0,1,0)    #observed values
   # Y.pr <<- neural.predict(1,X)  #predicted values
