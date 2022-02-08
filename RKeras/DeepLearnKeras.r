@@ -1,17 +1,3 @@
-#for CPU based deep learning:
-#install Anaconda3 (www.anaconda.org)
-#install Keras from CRAN
-#load keras library and call install_keras()
-
-#for GPU based deep learning:
-#install Anaconda3 from www.anaconda.org
-#make sure you have a GeForce GPU
-#install CUDA 9.0 from developer.nvidia.com
-#install CUDNN 7.1 from developer.nvidia.com
-#make sure to have Cuda\bin and Cudnn\bin in the %PATH%
-#install Keras from CRAN
-#load keras library and call install_keras(tensorflow = "gpu")
-
 tsteps <- 1 # since we are using stateful rnn tsteps can be set to 1
 batch_size <- 20
 epochs <- 25
@@ -40,20 +26,19 @@ neural.train = function(model,XY)
   Model %>% compile(
               loss = 'mse', 
               optimizer = 'rmsprop', 
-              metrics = c('accuracy')
-  )
+              metrics = c('accuracy'))
   
   Model %>% fit(X, Y, 
     epochs = epochs, 
     batch_size = batch_size, 
     validation_split = 0, 
-    shuffle = FALSE
-  )
+    shuffle = FALSE)
   
+  Model %>% reset_states()
   Models[[model]] <<- Model
 }
 
-neural.predict = function(model,X) 
+neural.predict = function(model,X)
 {
   if(is.vector(X)) X <- t(X)
   X <- as.matrix(X)
@@ -89,14 +74,18 @@ neural.test = function()
   XY <<- read.csv("D:\\My Documents\\R\\ml\\data\\training_data.csv",header = TRUE)
   # XY <<- XY[c("Open.1","High.1", "Low.1", "Label1")]
     XY <<- XY[c("Open", "Label1")]
+    XY <<- head(XY, nrow(XY)-nrow(XY) %% batch_size)   #make the whole set divisible by batch size
   
   splits <- nrow(XY)*0.8
-  XY.tr <<- head(XY,(splits - splits %% batch_size))    #make training set dividable
-  XY.ts <<- tail(XY,-(splits - splits %% batch_size))   #make test set dividable
+
+  XY.tr <<- head(XY,splits)
+  XY.ts <<- tail(XY,-splits)
   neural.train(1,XY.tr)
   
   X <<- XY.ts[,-ncol(XY.ts)]
+  X <- array(data = X, dim = c(length(X), 1)) #array needed for input of fit(). TODO May be there is a better structure
   Y <<- XY.ts[,ncol(XY.ts)]
+
   Y.ob <<- Y                    #observed values
   Y.pr <<- neural.predict(1,X)  #predicted values
 
@@ -105,8 +94,6 @@ neural.test = function()
   plot(Y.pr, xlab = 'Predicted')
   plot(Y.ob-Y.pr, xlab = 'Diff')
   sd(Y.ob-Y.pr)
-
-
 
   # Y.ob <<- ifelse(Y > 0,1,0)    #observed values
   # Y.pr <<- neural.predict(1,X)  #predicted values
