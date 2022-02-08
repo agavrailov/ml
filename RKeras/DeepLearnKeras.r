@@ -1,10 +1,11 @@
 tsteps <- 1 # since we are using stateful rnn tsteps can be set to 1
 batch_size <- 20
-epochs <- 25
+epochs <- 50
 lahead <- 1 # number of elements ahead that are used to make the prediction
 
 library('keras', quietly = T)
-library('caret', quietly = T)
+# library('caret', quietly = T)
+library(data.table)
 
 neural.train = function(model,XY) 
 {
@@ -13,13 +14,13 @@ neural.train = function(model,XY)
   # Y <- ifelse(Y > 0,1,0)
   Model <- keras_model_sequential() 
   Model %>%
-    layer_lstm(units = 5, 
+    layer_lstm(units = 50, 
                input_shape = c(tsteps,1),
                batch_size = batch_size,
                return_sequences = TRUE, 
                stateful = TRUE) %>% 
     layer_dropout(rate = 0.2) %>%
-    layer_lstm(units = 10,
+    layer_lstm(units = 50,
                return_sequences = FALSE, 
                stateful = TRUE) %>% 
     layer_dense(units = 1)
@@ -31,10 +32,9 @@ neural.train = function(model,XY)
   Model %>% fit(X, Y, 
     epochs = epochs, 
     batch_size = batch_size, 
-    validation_split = 0, 
-    shuffle = FALSE)
-  
-  Model %>% reset_states()
+    shuffle = FALSE,
+    validation_split = 0.2)
+
   Models[[model]] <<- Model
 }
 
@@ -73,17 +73,20 @@ neural.test = function()
   neural.init()
   XY <<- read.csv("D:\\My Documents\\R\\ml\\data\\training_data.csv",header = TRUE)
   # XY <<- XY[c("Open.1","High.1", "Low.1", "Label1")]
-    XY <<- XY[c("Open", "Label1")]
-    XY <<- head(XY, nrow(XY)-nrow(XY) %% batch_size)   #make the whole set divisible by batch size
-  
-  splits <- nrow(XY)*0.8
+  XY <<- XY[c("Open", "Label1")]
+  #XY <<- head(XY, nrow(XY)-nrow(XY) %% (batch_size*0.8*0.2*100))   #make the whole set divisible by batch size
+  XY <<- head(XY, 1000*batch_size)
+
+  splits <- nrow(XY)*0.5
 
   XY.tr <<- head(XY,splits)
+  nrow(XY.tr)
   XY.ts <<- tail(XY,-splits)
+  nrow(XY.ts)
   neural.train(1,XY.tr)
   
   X <<- XY.ts[,-ncol(XY.ts)]
-  X <- array(data = X, dim = c(length(X), 1)) #array needed for input of fit(). TODO May be there is a better structure
+  X <<- as.matrix(X) #array or Matrix needed for input of fit(). 
   Y <<- XY.ts[,ncol(XY.ts)]
 
   Y.ob <<- Y                    #observed values
@@ -94,6 +97,11 @@ neural.test = function()
   plot(Y.pr, xlab = 'Predicted')
   plot(Y.ob-Y.pr, xlab = 'Diff')
   sd(Y.ob-Y.pr)
+  
+  ggplot(data.table(
+    'test' = c(Y.ob),
+    'pred' = c(Y.pr)),
+    aes(x=test, y=pred)) + geom_point() + xlim(0,5000) + ylim(0,5000) +geom_smooth(method='lm')
 
   # Y.ob <<- ifelse(Y > 0,1,0)    #observed values
   # Y.pr <<- neural.predict(1,X)  #predicted values
@@ -102,3 +110,7 @@ neural.test = function()
 
 neural.test()
 
+#TODO train on window of data, not single data.
+#TODO train binary inputs and outputs
+#TODO 
+#TODO 
