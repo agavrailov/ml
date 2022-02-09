@@ -44,4 +44,3 @@ Model %>% fit(generator,
 # yhat = model.predict(x_input, verbose=0)
 # print(yhat)
 # https://machinelearningmastery.com/how-to-use-the-timeseriesgenerator-for-time-series-forecasting-in-keras/
-# https://machinelearningmastery.com/how-to-use-the-timeseriesgenerator-for-time-series-forecasting-in-keras/
