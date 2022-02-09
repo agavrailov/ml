@@ -5,16 +5,10 @@ batch_size = 20
 epochs = 20
 
 XY <- read.csv("D:\\My Documents\\R\\ml\\data\\training_1c.csv",header = TRUE)
-# write.csv(XY[2], file = "D:\\My Documents\\R\\ml\\data\\training_1c.csv")
-
-# XY <- XY[c("Time","Open.1","High.1", "Label1")]
 # XY <- head(XY,
            # trunc( nrow(XY)/batch_size) *  batch_size)
 X <- as.matrix(XY["Open.1"])
 Y <-rbind(matrix(rep(mean(X),lag)),head(X,-lag))   #lagged version of training data
-
-# X <- XY[,-ncol(XY)]
-# Y <- as.matrix(XY[,ncol(XY)])
 
 generator = timeseries_generator(X,Y, 
                                  length = tsteps, 
@@ -24,11 +18,6 @@ generator = timeseries_generator(X,Y,
                                  sampling_rate = 1,
                                  stride = 3,
                                  shuffle = FALSE)
-# length(generator)
-# for(i in seq(1:length(generator))){
-#   x = y = generator[i]
-#   print(x)
-# }
 
 Model <- keras_model_sequential() 
 Model %>%
@@ -52,7 +41,8 @@ Model %>% fit(generator,
               epochs = epochs,
               ) 
 
-# TODO make a one step prediction out of sample
+# TODO fix batchsize. works only with  20
+# make a one step prediction out of sample
 # x_input = array([9, 10]).reshape((1, n_input, n_features))
 # yhat = model.predict(x_input, verbose=0)
 # print(yhat)
