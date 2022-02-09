@@ -20,10 +20,23 @@ neural.train = function(model,XY)
                return_sequences = TRUE, 
                stateful = TRUE) %>% 
     layer_dropout(rate = 0.2) %>%
-    layer_lstm(units = 50,
-               return_sequences = FALSE, 
-               stateful = TRUE) %>% 
-    layer_dense(units = 1)
+    layer_rnn() %>%
+    layer_dense(units = 1, activation = 'sigmoid')
+  
+  
+  
+  
+    # Model %>%
+    # layer_lstm(units = 50, 
+    #            input_shape = c(1,2),
+    #            batch_size = batch_size,
+    #            return_sequences = TRUE, 
+    #            stateful = TRUE) %>% 
+    # layer_dropout(rate = 0.2) %>%
+    # layer_lstm(units = 50,
+    #            return_sequences = FALSE, 
+    #            stateful = TRUE) %>% 
+    # layer_dense(units = 1)
   Model %>% compile(
               loss = 'mse', 
               optimizer = 'rmsprop', 
