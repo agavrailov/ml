@@ -1,13 +1,22 @@
 # library(Keras)
-tsteps = 5  #window size
+tsteps = 3  #window size
 lag = 10  #Labels number of rows ahead
 batch_size = 20
 epochs = 20
 
 XY <- read.csv("D:\\My Documents\\R\\ml\\data\\training_1c.csv",header = TRUE)
+
+# Split training validation and test sets
+XY.tr <- head(XY,nrow(XY)*0.8)
+XY.val <- tail(XY.tr, -0.8*nrow(XY.tr))
+XY.tr <- head(XY.tr, 0.8*nrow(XY.tr))
+XY.ts <- tail(XY,-nrow(XY)*0.8)
+data.frame(nrow(XY.tr), nrow(XY.val), nrow(XY.ts))
+
+
 # XY <- head(XY,
            # trunc( nrow(XY)/batch_size) *  batch_size)
-X <- as.matrix(XY["Open.1"])
+X <- as.matrix(XY.tr["Open.1"])
 Y <-rbind(matrix(rep(mean(X),lag)),head(X,-lag))   #lagged version of training data
 
 generator = timeseries_generator(X,Y, 
