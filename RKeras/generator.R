@@ -1,34 +1,50 @@
-# library(Keras)
-tsteps = 3  #window size
-lag = 10  #Labels number of rows ahead
-batch_size = 20
-epochs = 20
+library(keras)
+tsteps = 6  #window size
+rows_ahead = 1  #prediction Labels are n rows ahead of the current
+batch_size = 30
+epochs = 5
+split = 0.8   #part of data used for traning 
 
-XY <- read.csv("D:\\My Documents\\R\\ml\\data\\training_1c.csv",header = TRUE)
+XY <- read.csv("D:\\My Documents\\R\\ml\\data\\training_data.csv",header = TRUE)
+extra_rows <- nrow(XY) %% (batch_size/split)  #LSTM cells need input to be divisible by batch_size AFTER split
+XY<-head(XY,-extra_rows)
+nrow(XY)
 
 # Split training validation and test sets
 XY.tr <- head(XY,nrow(XY)*0.8)
 XY.val <- tail(XY.tr, -0.8*nrow(XY.tr))
 XY.tr <- head(XY.tr, 0.8*nrow(XY.tr))
 XY.ts <- tail(XY,-nrow(XY)*0.8)
-data.frame(nrow(XY.tr), nrow(XY.val), nrow(XY.ts))
+data.frame(nrow(XY), nrow(XY.tr), nrow(XY.val), nrow(XY.ts))
 
+#Create lagged version of training data
+X <- as.matrix(XY.tr[ncol(XY.tr)])
+Y <-rbind(matrix(rep(mean(X)),rows_ahead),head(X,-rows_ahead))  
+rownames(Y) <- NULL
 
-# XY <- head(XY,
-           # trunc( nrow(XY)/batch_size) *  batch_size)
-X <- as.matrix(XY.tr["Open.1"])
-Y <-rbind(matrix(rep(mean(X),lag)),head(X,-lag))   #lagged version of training data
+#LSTM needs exact number of generator iterations. #Extra rows need to be cut 
+extra_rows_generator_windows <- nrow(X) %% (tsteps+1)   
+X<-head(X,-extra_rows_generator_windows)    
 
-generator = timeseries_generator(X,Y, 
+#the generator
+generator = timeseries_generator(X,X, 
                                  length = tsteps, 
                                  batch_size = batch_size, 
                                  start_index = 1, 
-                                 end_index = nrow(XY)-batch_size,
+                                 end_index = nrow(X)-1,
                                  sampling_rate = 1,
-                                 stride = 3,
+                                 stride = 1,
                                  shuffle = FALSE)
 
+for(i in seq(1:length(generator))){
+  x = y = generator[i]
+  print(x)
+  print (i)
+}
+
+
 Model <- keras_model_sequential() 
+
 Model %>%
   layer_lstm(units = 5, 
              input_shape = c(tsteps, ncol(X)),
@@ -40,6 +56,7 @@ Model %>%
              return_sequences = FALSE, 
              stateful = TRUE) %>% 
   layer_dense(units = 1)
+
 Model %>% compile(
   loss = 'mse', 
   optimizer = 'rmsprop', 
@@ -47,7 +64,7 @@ Model %>% compile(
 
 Model %>% fit(generator, 
               batch_size = batch_size,
-              epochs = epochs,
+              epochs = epochs
               ) 
 
 # TODO fix batchsize. works only with  20
