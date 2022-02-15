@@ -1,7 +1,7 @@
 library(keras)
 tsteps = 3  #window size
 rows_ahead = 5  #prediction Labels are n rows ahead of the current
-batch_size = 200
+batch_size = 400
 epochs = 40
 split = 0.7   #part of data used for training 
 LSTM_units = 50
