@@ -1,5 +1,5 @@
 library(keras)
-tsteps = 3  #window size
+tsteps = 6  #window size
 rows_ahead = 5  #prediction Labels are n rows ahead of the current
 batch_size = 64
 epochs = 40
