@@ -1,9 +1,11 @@
 library(keras)
-tsteps = 4  #window size
-rows_ahead = 1  #prediction Labels are n rows ahead of the current
-batch_size = 32
-epochs = 20
+tsteps = 3  #window size
+rows_ahead = 5  #prediction Labels are n rows ahead of the current
+batch_size = 24
+epochs = 40
 split = 0.7   #part of data used for training 
+LSTM_units = 3
+
 
 XY <- read.csv("D:\\My Documents\\R\\ml\\data\\training_data.csv",header = TRUE)
 # XY<-as.data.frame(1:200)
@@ -56,13 +58,13 @@ generator.val = timeseries_generator(X.val,
 Model <- keras_model_sequential() 
 
 Model %>%
-  layer_lstm(units = 5, 
-             input_shape = c(tsteps, ncol(X)),
+  layer_lstm(units = LSTM_units, 
+             input_shape = c(tsteps,ncol(X)),
              batch_size = batch_size,
              return_sequences = TRUE, 
              stateful = TRUE) %>% 
   layer_dropout(rate = 0.0) %>%
-  layer_lstm(units = 5,
+  layer_lstm(units = LSTM_units,
              return_sequences = FALSE, 
              stateful = TRUE) %>% 
   layer_dense(units = 1)
@@ -70,7 +72,8 @@ Model %>%
 Model %>% compile(
   loss = 'mse', 
   optimizer = 'rmsprop', 
-  metrics = c('accuracy'))
+  metrics = c('accuracy'),
+  )
 
 Model %>% fit(generator, 
               batch_size = batch_size,
