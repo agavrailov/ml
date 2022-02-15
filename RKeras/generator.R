@@ -1,10 +1,10 @@
 library(keras)
-tsteps = 6  #window size
+tsteps = 10  #window size
 rows_ahead = 5  #prediction Labels are n rows ahead of the current
-batch_size = 64
-epochs = 40
+batch_size = 40
+epochs = 20
 split = 0.7   #part of data used for training 
-LSTM_units = 50
+LSTM_units = 30
 
 
 XY <- read.csv("D:\\My Documents\\R\\ml\\data\\training_data.csv",header = TRUE)
@@ -62,16 +62,17 @@ Model %>%
              input_shape = c(tsteps,ncol(X)),
              batch_size = batch_size,
              return_sequences = TRUE, 
-             stateful = TRUE) %>% 
-  layer_dropout(rate = 0.2) %>%
+             stateful = TRUE,
+             activation = 'swish') %>% 
   layer_lstm(units = LSTM_units,
              return_sequences = FALSE, 
-             stateful = TRUE) %>% 
+             stateful = TRUE,
+             activation = 'tanh') %>% 
   layer_dense(units = 1)
 
 Model %>% compile(
   loss = 'mse', 
-  optimizer = 'rmsprop', 
+  optimizer = 'Adam', 
   metrics = c('accuracy'),
   )
 
