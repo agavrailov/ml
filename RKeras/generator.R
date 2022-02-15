@@ -1,7 +1,7 @@
 library(keras)
 tsteps = 3  #window size
 rows_ahead = 5  #prediction Labels are n rows ahead of the current
-batch_size = 24
+batch_size = 32
 epochs = 40
 split = 0.7   #part of data used for training 
 LSTM_units = 50
@@ -63,7 +63,7 @@ Model %>%
              batch_size = batch_size,
              return_sequences = TRUE, 
              stateful = TRUE) %>% 
-  layer_dropout(rate = 0.0) %>%
+  layer_dropout(rate = 0.2) %>%
   layer_lstm(units = LSTM_units,
              return_sequences = FALSE, 
              stateful = TRUE) %>% 
