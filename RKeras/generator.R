@@ -1,31 +1,31 @@
 library(keras)
-tsteps = 10  #window size
+tsteps = 4  #window size
 rows_ahead = 1  #prediction Labels are n rows ahead of the current
 batch_size = 32
-epochs = 5
-split = 0.8   #part of data used for training 
+epochs = 20
+split = 0.7   #part of data used for training 
 
 XY <- read.csv("D:\\My Documents\\R\\ml\\data\\training_data.csv",header = TRUE)
-extra_rows <- (nrow(XY)-tsteps-1) %% (batch_size)  #LSTM cells need input to be divisible by batch_size AFTER split
-extra_rows
-if (extra_rows) 
-  XY<-head(XY,-extra_rows)
+# XY<-as.data.frame(1:200)
 
-# Split training validation and test sets
+## Split training validation and test sets
+# XY.tr
 XY.tr <- head(XY,nrow(XY)*split)
-XY.val <- tail(XY.tr, -split*nrow(XY.tr))
-XY.tr <- head(XY.tr, split*nrow(XY.tr))
-XY.ts <- tail(XY,-split*nrow(XY))
-data.frame(nrow(XY), nrow(XY.tr), nrow(XY.val), nrow(XY.ts))
+extra_rows <- (nrow(XY.tr)-tsteps-1) %% (batch_size)  #LSTM cells need input to be divisible by batch_size AFTER split
+extra_rows
+if (extra_rows) XY.tr<-head(XY.tr,-extra_rows)
+
+# XY.val
+XY.val <-tail(XY, -split*nrow(XY))
+data.frame(nrow(XY), nrow(XY.tr), nrow(XY.val))
+X <- as.matrix(XY.tr[ncol(XY.tr)])
 
 #Create lagged version of training data
-# X <- as.matrix(XY.tr[ncol(XY.tr)])
-X <- as.matrix(XY[ncol(XY)])
-# Y <-rbind(matrix(rep(mean(X)),rows_ahead),head(X,-rows_ahead))  
+Y <-rbind(matrix(rep(mean(X)),rows_ahead),head(X,-rows_ahead))  
 # rownames(Y) <- NULL
 
 #the generator
-generator = timeseries_generator(X,X, 
+generator = timeseries_generator(X,Y, 
                                  length = tsteps, 
                                  batch_size = batch_size, 
                                  start_index = 1, 
@@ -60,7 +60,8 @@ Model %>% compile(
 
 Model %>% fit(generator, 
               batch_size = batch_size,
-              epochs = epochs
+              epochs = epochs,
+
               ) 
 
 # TODO fix batchsize. works only with  20
