@@ -4,7 +4,7 @@ rows_ahead = 5  #prediction Labels are n rows ahead of the current
 batch_size = 24
 epochs = 40
 split = 0.7   #part of data used for training 
-LSTM_units = 10
+LSTM_units = 20
 
 
 XY <- read.csv("D:\\My Documents\\R\\ml\\data\\training_data.csv",header = TRUE)
