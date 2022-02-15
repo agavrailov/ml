@@ -1,30 +1,28 @@
 library(keras)
-tsteps = 6  #window size
+tsteps = 10  #window size
 rows_ahead = 1  #prediction Labels are n rows ahead of the current
-batch_size = 30
+batch_size = 32
 epochs = 5
-split = 0.8   #part of data used for traning 
+split = 0.8   #part of data used for training 
 
 XY <- read.csv("D:\\My Documents\\R\\ml\\data\\training_data.csv",header = TRUE)
-extra_rows <- nrow(XY) %% (batch_size/split)  #LSTM cells need input to be divisible by batch_size AFTER split
-XY<-head(XY,-extra_rows)
-nrow(XY)
+extra_rows <- (nrow(XY)-tsteps-1) %% (batch_size)  #LSTM cells need input to be divisible by batch_size AFTER split
+extra_rows
+if (extra_rows) 
+  XY<-head(XY,-extra_rows)
 
 # Split training validation and test sets
-XY.tr <- head(XY,nrow(XY)*0.8)
-XY.val <- tail(XY.tr, -0.8*nrow(XY.tr))
-XY.tr <- head(XY.tr, 0.8*nrow(XY.tr))
-XY.ts <- tail(XY,-nrow(XY)*0.8)
+XY.tr <- head(XY,nrow(XY)*split)
+XY.val <- tail(XY.tr, -split*nrow(XY.tr))
+XY.tr <- head(XY.tr, split*nrow(XY.tr))
+XY.ts <- tail(XY,-split*nrow(XY))
 data.frame(nrow(XY), nrow(XY.tr), nrow(XY.val), nrow(XY.ts))
 
 #Create lagged version of training data
-X <- as.matrix(XY.tr[ncol(XY.tr)])
-Y <-rbind(matrix(rep(mean(X)),rows_ahead),head(X,-rows_ahead))  
-rownames(Y) <- NULL
-
-#LSTM needs exact number of generator iterations. #Extra rows need to be cut 
-extra_rows_generator_windows <- nrow(X) %% (tsteps+1)   
-X<-head(X,-extra_rows_generator_windows)    
+# X <- as.matrix(XY.tr[ncol(XY.tr)])
+X <- as.matrix(XY[ncol(XY)])
+# Y <-rbind(matrix(rep(mean(X)),rows_ahead),head(X,-rows_ahead))  
+# rownames(Y) <- NULL
 
 #the generator
 generator = timeseries_generator(X,X, 
@@ -36,12 +34,10 @@ generator = timeseries_generator(X,X,
                                  stride = 1,
                                  shuffle = FALSE)
 
-for(i in seq(1:length(generator))){
-  x = y = generator[i]
-  print(x)
-  print (i)
-}
-
+# for(i in seq(1:length(generator))){
+#   x = y = generator[i]
+#   print(x)
+# }
 
 Model <- keras_model_sequential() 
 
