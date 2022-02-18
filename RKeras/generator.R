@@ -71,7 +71,7 @@ Model %>%
 Model %>% compile(
   loss = 'mse', 
   optimizer = optimizer_adam(
-    learning_rate = 0.003), 
+    learning_rate = 0.001), 
   metrics = c('accuracy'),
   )
 
