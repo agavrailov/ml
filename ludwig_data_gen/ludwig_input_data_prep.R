@@ -11,7 +11,7 @@ library(xts)
 #the size of the rolling window for ts in 24 hours * days
 window <- 5*24
 
-setwd("C:\\Users\\Anton\\anaconda3\\envs\\rstudio\\src\\data") 
+setwd("D:\\My Documents\\R\\ml\\data\\") 
 inputfile <- "xagusd_hourly.csv"
 
 #load input timeseries file
@@ -24,15 +24,15 @@ df[6:9]<- as.data.frame(scale(df[2:5]))
 
 
 #take rolling window of Mean values, combine them into a string
-ts_windowed <- rollapply(df[,6],width=window, 
-          function(x)
-            paste(x[1:window], collapse = " "))
+# ts_windowed <- rollapply(df[,6],width=window, 
+#           function(x)
+#             paste(x[1:window], collapse = " "))
 
 #remove last n elements because the rolling window creates vector with diff size
 df<- head(df,-window+1)
 
 #add results in a new column
-df["Timeseries_Windowed"]<-ts_windowed
+# df["Timeseries_Windowed"]<-ts_windowed
 
 # Measure change of future price
 distance <-c(0.1,0.2,0.3)
@@ -41,6 +41,7 @@ p2 <- max(3, ceiling (window*distance[2]))
 p3 <- max(3, ceiling (window*distance[3]))
 
 #look for value at a distance of 10% of the window ahead and add it to table as label1
+p1<-5
 price_p1 <- tail(df$Open,-p1)
 df<-head(df,-p1) 
 df["Label1"]<- price_p1
@@ -58,5 +59,5 @@ df["Label3"]<- price_p3
 
 #save date, mean price and timeseries to output file
 #write.csv(df[c(1,6:8)], file = "training_data_1_Input.csv", row.names = FALSE)
-write.csv(df, file = "training_data_4variables.csv", row.names = FALSE)
+write.csv(df, file = "training_data.csv", row.names = FALSE)
 
