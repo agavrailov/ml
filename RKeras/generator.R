@@ -1,13 +1,13 @@
 library(keras)
-tsteps = 5  #window size
+tsteps = 10  #window size
 rows_ahead = 5  #prediction Labels are n rows ahead of the current
-batch_size = 100
+batch_size = 64
 epochs = 40
 split = 0.7   #part of data used for training 
-LSTM_units = 50
+LSTM_units = 30
 
 XY <- read.csv("D:\\My Documents\\R\\ml\\data\\training_data.csv",header = TRUE)
-XY <- XY[c("Open.1","High.1","Label1")]  #add as many columns as we need
+XY <- XY[c("Open.1","High.1","Low.1","Close.1","Label1")]  #add as many columns as we need
 
 # XY.tr training set
 XY.tr <- head(XY,nrow(XY)*split)
@@ -61,6 +61,7 @@ Model %>%
              return_sequences = TRUE, 
              stateful = TRUE,
              activation = 'tanh') %>% 
+  layer_dropout(rate = 0.1) %>%
   
   layer_lstm(units = LSTM_units,
              return_sequences = FALSE, 
@@ -70,7 +71,7 @@ Model %>%
 
 Model %>% compile(
   loss = 'mse', 
-  optimizer = optimizer_adam(
+  optimizer = optimizer_rmsprop(
     learning_rate = 0.001), 
   metrics = c('accuracy'),
   )
