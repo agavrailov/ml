@@ -1,33 +1,28 @@
 library(keras)
-tsteps = 10  #window size
+tsteps = 5  #window size
 rows_ahead = 5  #prediction Labels are n rows ahead of the current
-batch_size = 40
-epochs = 20
+batch_size = 100
+epochs = 40
 split = 0.7   #part of data used for training 
-LSTM_units = 30
-
+LSTM_units = 50
 
 XY <- read.csv("D:\\My Documents\\R\\ml\\data\\training_data.csv",header = TRUE)
-# XY<-as.data.frame(1:200)
+XY <- XY[c("Open.1","Label1")]  #add as many columns as we need
 
 # XY.tr training set
 XY.tr <- head(XY,nrow(XY)*split)
 extra_rows <- (nrow(XY.tr)-tsteps-1) %% (batch_size)  #LSTM cells need input to be divisible by batch_size AFTER split
-extra_rows
 if (extra_rows) XY.tr<-head(XY.tr,-extra_rows)
 
 # XY.val validation set
 XY.val <-tail(XY, -split*nrow(XY))
 extra_rows <- (nrow(XY.val)-tsteps-1) %% (batch_size)  #LSTM cells need input to be divisible by batch_size AFTER split
-extra_rows
 if (extra_rows) XY.val<-head(XY.val,-extra_rows)
 
-data.frame(nrow(XY), nrow(XY.tr), nrow(XY.val))
-
 #the generator
-# X <- as.matrix(XY.tr[ncol(XY.tr)])
-X <- as.matrix(XY.tr["Open.1"])
-Y <-rbind(matrix(rep(mean(X)),rows_ahead),head(X,-rows_ahead))  #Create lagged version of training data
+X <- as.matrix(XY.tr[,-ncol(XY.tr)])  #all, but last column
+# Y <- as.matrix(XY.tr[, ncol(XY.tr)])  #last column
+Y <-rbind(matrix(rep(mean(X[1:rows_ahead])),rows_ahead),head(X,-rows_ahead))  #Create lagged version of training data
 generator = timeseries_generator(X,Y, 
                                  length = tsteps, 
                                  batch_size = batch_size, 
@@ -38,8 +33,8 @@ generator = timeseries_generator(X,Y,
                                  shuffle = FALSE)
 
 #the generator for validation
-X.val <- as.matrix(XY.val[ncol(XY.val)])
-X.val <- as.matrix(XY.val["Open.1"])
+X.val <- as.matrix(XY.val[,-ncol(XY.val)])  #all, but last column
+# Y.val <- as.matrix(XY.val[, ncol(XY.val)])  #last column
 Y.val <-rbind(matrix(rep(mean(X.val)),rows_ahead),head(X.val,-rows_ahead))  #Create lagged version of training data
 generator.val = timeseries_generator(X.val,
                                  Y.val,
@@ -63,7 +58,7 @@ Model %>%
              batch_size = batch_size,
              return_sequences = TRUE, 
              stateful = TRUE,
-             activation = 'swish') %>% 
+             activation = 'tanh') %>% 
   layer_lstm(units = LSTM_units,
              return_sequences = FALSE, 
              stateful = TRUE,
@@ -72,7 +67,9 @@ Model %>%
 
 Model %>% compile(
   loss = 'mse', 
-  optimizer = 'Adam', 
+  optimizer = optimizer_adam(
+    learning_rate = 0.001, 
+    decay = 0.0001), 
   metrics = c('accuracy'),
   )
 
