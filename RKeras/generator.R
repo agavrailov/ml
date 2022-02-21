@@ -1,24 +1,4 @@
-library(keras)
-tsteps = 5  #window size
-rows_ahead = 5  #prediction Labels are n rows ahead of the current
-batch_size = 600
-epochs = 40
-split = 0.7   #part of data used for training 
-LSTM_units = 500
-
-XY <- read.csv("D:\\My Documents\\R\\ml\\data\\training_data.csv",header = TRUE)
-XY <- XY[c("Open.1","High.1","Low.1","Close.1","Label1")]  #add as many columns as we need
-
-# XY.tr training set
-XY.tr <- head(XY,nrow(XY)*split)
-extra_rows <- (nrow(XY.tr)-tsteps-1) %% (batch_size)  #LSTM cells need input to be divisible by batch_size AFTER split
-if (extra_rows) XY.tr<-head(XY.tr,-extra_rows)
-
-# XY.val validation set
-XY.val <-tail(XY, -split*nrow(XY))
-extra_rows <- (nrow(XY.val)-tsteps-1) %% (batch_size)  #LSTM cells need input to be divisible by batch_size AFTER split
-if (extra_rows) XY.val<-head(XY.val,-extra_rows)
-
+neural.generate = function(){
 #the generator
 X <- as.matrix(XY.tr[,-ncol(XY.tr)])  #all, but last column
 Y <- as.matrix(XY.tr[, ncol(XY.tr)])  #last column
@@ -32,47 +12,88 @@ generator = timeseries_generator(X,Y,
                                  stride = 1,
                                  shuffle = FALSE)
 
-#the generator for validation
-X.val <- as.matrix(XY.val[,-ncol(XY.val)])  #all, but last column
-Y.val <- as.matrix(XY.val[, ncol(XY.val)])  #last column
-Y.val <- rbind(tail(Y.val,-rows_ahead),as.matrix(rep(mean(tail(Y.val,-rows_ahead)),rows_ahead))) #Create lagged version of last column
+# #the generator for validation
+# X.val <- as.matrix(XY.val[,-ncol(XY.val)])  #all, but last column
+# Y.val <- as.matrix(XY.val[, ncol(XY.val)])  #last column
+# Y.val <- rbind(tail(Y.val,-rows_ahead),as.matrix(rep(mean(tail(Y.val,-rows_ahead)),rows_ahead))) #Create lagged version of last column
+# 
+# generator.val = timeseries_generator(X.val,
+#                                  Y.val,
+#                                  length = tsteps, 
+#                                  batch_size = batch_size, 
+#                                  start_index = 1, 
+#                                  end_index = nrow(X.val)-1,
+#                                  sampling_rate = 1,
+#                                  stride = 1,
+#                                  shuffle = FALSE)
+# 
+}
 
-generator.val = timeseries_generator(X.val,
-                                 Y.val,
-                                 length = tsteps, 
-                                 batch_size = batch_size, 
-                                 start_index = 1, 
-                                 end_index = nrow(X.val)-1,
-                                 sampling_rate = 1,
-                                 stride = 1,
-                                 shuffle = FALSE)
-
-Model <- keras_model_sequential() 
-
-Model %>%
-  layer_lstm(units = LSTM_units, 
-             input_shape = c(tsteps,ncol(X)),
-             batch_size = batch_size,
-             return_sequences = TRUE, 
-             stateful = TRUE,
-             activation = 'tanh',
-             ) %>% 
-  
-  layer_dense(units = 1)
-
-  
-Model %>% compile(
-  loss = 'mse', 
-  optimizer = optimizer_rmsprop(
-    learning_rate = 0.001), 
-  metrics = c('accuracy'),
-  )
-
-Model %>% fit(generator, 
+nеural.train = function() {
+  Model <- keras_model_sequential() 
+  Model %>%
+    layer_lstm(units = LSTM_units, 
+               input_shape = c(tsteps,ncol(X)),
+               batch_size = batch_size,
+               return_sequences = TRUE, 
+               stateful = TRUE,
+               activation = 'tanh',
+               ) %>% 
+    layer_dense(units = 1)
+  Model %>% compile(
+                    loss = 'mse', 
+                    optimizer = optimizer_rmsprop(
+                                                  learning_rate = 0.001,
+                                                  ),
+                    metrics = c('accuracy'))
+  Model %>% fit(generator, 
               batch_size = batch_size,
               epochs = epochs,
-              validation_data = generator.val
-              ) 
+              validation_data = generator.val) 
+}
+
+neural.save = function(name)
+{
+  for(i in c(1:length(Models)))
+    Models[[i]] <<- serialize_model(Models[[i]])
+  save(Models,file=name) 
+}
+
+neural.load <- function(name)
+{
+  load(name,.GlobalEnv)
+  for(i in c(1:length(Models)))
+    Models[[i]] <<- unserialize_model(Models[[i]])
+}
+
+neural.init = function() {
+  library(keras)
+  tsteps = 4  #window size
+  rows_ahead = 5  #prediction Labels are n rows ahead of the current
+  batch_size = 500
+  epochs = 80
+  split = 0.7   #part of data used for training 
+  LSTM_units = 500
+  
+  XY <- read.csv("D:\\My Documents\\R\\ml\\data\\training_data.csv",header = TRUE)
+  XY <- XY[c("Open.1","High.1","Low.1","Close.1","Label1")]  #add as many columns as we need
+  
+  # XY.tr training set
+  XY.tr <- head(XY,nrow(XY)*split)
+  extra_rows <- (nrow(XY.tr)-tsteps-1) %% (batch_size)  #LSTM cells need input to be divisible by batch_size AFTER split
+  if (extra_rows) XY.tr<-head(XY.tr,-extra_rows)
+  
+  # XY.val validation set
+  XY.val <-tail(XY, -split*nrow(XY))
+  extra_rows <- (nrow(XY.val)-tsteps-1) %% (batch_size)  #LSTM cells need input to be divisible by batch_size AFTER split
+  if (extra_rows) XY.val<-head(XY.val,-extra_rows)
+  
+  neural.generate()
+  nеural.train()
+ 
+}
+
+neural.init()
 
 # TODO 
 # reshape input to be [samples, time steps, features]
