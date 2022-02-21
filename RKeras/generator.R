@@ -1,7 +1,6 @@
 library(keras)
-neural.generate = function(XY)
-{
-X <<- as.matrix(XY[,-ncol(XY)])  #all, but last column
+neural.generate = function(XY) {
+X <- as.matrix(XY[,-ncol(XY)])  #all, but last column
 Y <- as.matrix(XY[, ncol(XY)])  #last column
 Y <- rbind(tail(Y,-rows_ahead),as.matrix(rep(mean(tail(Y,-rows_ahead)),rows_ahead))) #Create lagged version of last column
 generator = timeseries_generator(X,Y, 
@@ -14,8 +13,7 @@ generator = timeseries_generator(X,Y,
                                  shuffle = FALSE)
 return(generator)
 }
-neural.train = function(model, generator,generator.val) 
-{
+neural.train = function(model, generator,generator.val) {
   Model <- keras_model_sequential() 
   Model %>%
     layer_lstm(units = LSTM_units, 
@@ -39,30 +37,26 @@ neural.train = function(model, generator,generator.val)
   
   Models[[model]] <<- Model
 }
-neural.predict = function(model,X)
-{
+neural.predict = function(model,X) {
   if(is.vector(X)) X <- t(X)
   X <- as.matrix(X)
-  Y <- Models[[model]] %>% predict(X)
+  X <- array_reshape(X,c(tsteps,ncol(X))) #The LSTM expects data input to have the shape [samples, timesteps, features]
+  Y <- Model %>% predict(X, batch_size = batch_size)
   return(Y)
-  
 }
-neural.save = function(name)
-{
+neural.save = function(name) {
   for(i in c(1:length(Models)))
     Models[[i]] <<- serialize_model(Models[[i]])
   save(Models,file=name) 
 }
 
-neural.load <- function(name)
-{
+neural.load <- function(name) {
   load(name,.GlobalEnv)
   for(i in c(1:length(Models)))
     Models[[i]] <<- unserialize_model(Models[[i]])
 }
 
-neural.init = function()
-{
+neural.init = function() {
   set.seed(365)
   input_cols <- c("Open.1","High.1","Low.1","Close.1","Label1") #add as many columns as we need
   XY <- read.csv("D:\\My Documents\\R\\ml\\data\\training_data.csv",header = TRUE)[input_cols]
@@ -81,17 +75,19 @@ neural.init = function()
   generator.val <- neural.generate(XY.val)
   
   neural.train(1,generator, generator.val)
+  neural.predict(1,XY.val)
  
 }
 Models <<- vector("list")
-tsteps <- 4  #window size
+tsteps <- 4  #window size a.k.a. time steps
 rows_ahead <- 5  #prediction Labels are n rows ahead of the current
 batch_size <- 500
-epochs <- 80
+epochs <- 5
 tr_split <- 0.7   #part of data used for training 
-LSTM_units <- 500
+LSTM_units <- 5
 
 neural.init()
+
 
 # TODO 
 # reshape input to be [samples, time steps, features]
