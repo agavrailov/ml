@@ -1,7 +1,8 @@
-neural.generate = function(){
-#the generator
-X <- as.matrix(XY.tr[,-ncol(XY.tr)])  #all, but last column
-Y <- as.matrix(XY.tr[, ncol(XY.tr)])  #last column
+library(keras)
+neural.generate = function(XY)
+{
+X <<- as.matrix(XY[,-ncol(XY)])  #all, but last column
+Y <- as.matrix(XY[, ncol(XY)])  #last column
 Y <- rbind(tail(Y,-rows_ahead),as.matrix(rep(mean(tail(Y,-rows_ahead)),rows_ahead))) #Create lagged version of last column
 generator = timeseries_generator(X,Y, 
                                  length = tsteps, 
@@ -11,25 +12,10 @@ generator = timeseries_generator(X,Y,
                                  sampling_rate = 1,
                                  stride = 1,
                                  shuffle = FALSE)
-
-# #the generator for validation
-# X.val <- as.matrix(XY.val[,-ncol(XY.val)])  #all, but last column
-# Y.val <- as.matrix(XY.val[, ncol(XY.val)])  #last column
-# Y.val <- rbind(tail(Y.val,-rows_ahead),as.matrix(rep(mean(tail(Y.val,-rows_ahead)),rows_ahead))) #Create lagged version of last column
-# 
-# generator.val = timeseries_generator(X.val,
-#                                  Y.val,
-#                                  length = tsteps, 
-#                                  batch_size = batch_size, 
-#                                  start_index = 1, 
-#                                  end_index = nrow(X.val)-1,
-#                                  sampling_rate = 1,
-#                                  stride = 1,
-#                                  shuffle = FALSE)
-# 
+return(generator)
 }
-
-nеural.train = function() {
+neural.train = function(model, generator,generator.val) 
+{
   Model <- keras_model_sequential() 
   Model %>%
     layer_lstm(units = LSTM_units, 
@@ -50,8 +36,17 @@ nеural.train = function() {
               batch_size = batch_size,
               epochs = epochs,
               validation_data = generator.val) 
+  
+  Models[[model]] <<- Model
 }
-
+neural.predict = function(model,X)
+{
+  if(is.vector(X)) X <- t(X)
+  X <- as.matrix(X)
+  Y <- Models[[model]] %>% predict(X)
+  return(Y)
+  
+}
 neural.save = function(name)
 {
   for(i in c(1:length(Models)))
@@ -66,32 +61,35 @@ neural.load <- function(name)
     Models[[i]] <<- unserialize_model(Models[[i]])
 }
 
-neural.init = function() {
-  library(keras)
-  tsteps = 4  #window size
-  rows_ahead = 5  #prediction Labels are n rows ahead of the current
-  batch_size = 500
-  epochs = 80
-  split = 0.7   #part of data used for training 
-  LSTM_units = 500
-  
-  XY <- read.csv("D:\\My Documents\\R\\ml\\data\\training_data.csv",header = TRUE)
-  XY <- XY[c("Open.1","High.1","Low.1","Close.1","Label1")]  #add as many columns as we need
+neural.init = function()
+{
+  set.seed(365)
+  input_cols <- c("Open.1","High.1","Low.1","Close.1","Label1") #add as many columns as we need
+  XY <- read.csv("D:\\My Documents\\R\\ml\\data\\training_data.csv",header = TRUE)[input_cols]
   
   # XY.tr training set
-  XY.tr <- head(XY,nrow(XY)*split)
+  XY.tr <- head(XY,nrow(XY)*tr_split)
   extra_rows <- (nrow(XY.tr)-tsteps-1) %% (batch_size)  #LSTM cells need input to be divisible by batch_size AFTER split
   if (extra_rows) XY.tr<-head(XY.tr,-extra_rows)
   
   # XY.val validation set
-  XY.val <-tail(XY, -split*nrow(XY))
+  XY.val <-tail(XY, -tr_split*nrow(XY))
   extra_rows <- (nrow(XY.val)-tsteps-1) %% (batch_size)  #LSTM cells need input to be divisible by batch_size AFTER split
   if (extra_rows) XY.val<-head(XY.val,-extra_rows)
   
-  neural.generate()
-  nеural.train()
+  generator <- neural.generate(XY.tr)
+  generator.val <- neural.generate(XY.val)
+  
+  neural.train(1,generator, generator.val)
  
 }
+Models <<- vector("list")
+tsteps <- 4  #window size
+rows_ahead <- 5  #prediction Labels are n rows ahead of the current
+batch_size <- 500
+epochs <- 80
+tr_split <- 0.7   #part of data used for training 
+LSTM_units <- 500
 
 neural.init()
 
