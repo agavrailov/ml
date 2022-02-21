@@ -55,9 +55,8 @@ Model %>%
              batch_size = batch_size,
              return_sequences = TRUE, 
              stateful = TRUE,
-             activation = 'tanh') %>% 
-  layer_dropout(rate = 0.1) %>%
-  
+             activation = 'sigmoid',
+             regularizer_l1_l2(l1 = 0.01, l2 = 0.01)) %>% 
   layer_lstm(units = LSTM_units,
              return_sequences = FALSE, 
              stateful = TRUE,
