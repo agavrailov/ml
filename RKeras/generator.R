@@ -69,7 +69,7 @@ epochs <- 20
 tr_split <- 0.7   #part of data used for training 
 LSTM_units <- 500
 XY <- read.csv("D:\\My Documents\\R\\ml\\data\\training_data.csv",header = TRUE)
-XY <- XY[c("Open.1","Label1")]  #add as many columns as we need c("Open.1","High.1","Low.1","Close.1","Label1")
+XY <- XY[c("Open.1","High.1","Low.1","Close.1","Label1")]  #add as many columns as we need c("Open.1","High.1","Low.1","Close.1","Label1")
 set.seed(365)
 
 XY.tr <- neural.datasets(XY, tr_split)
@@ -81,9 +81,9 @@ generator.val <- neural.generate(XY.val)
 neural.train(1,generator, generator.val, ncol(XY))
 Y_pred <-neural.predict(1,generator.val)
 
-neural.save("\\Models\\Models")
+neural.save("Models\\Models")
 
-# TODO 
+  # TODO 
 # x_input = array([9, 10]).reshape((1, n_input, n_features))
 # yhat = model.predict(x_input, verbose=0)
 # https://machinelearningmastery.com/how-to-use-the-timeseriesgenerator-for-time-series-forecasting-in-keras/
