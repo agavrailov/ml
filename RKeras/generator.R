@@ -1,8 +1,8 @@
 library(keras)
 neural.generate = function(XY) {
 X <- as.matrix(XY[,-ncol(XY)])  #all, but last column
-Y <- as.matrix(XY[, ncol(XY)])  #last column
-Y <- rbind(tail(Y,-rows_ahead),as.matrix(rep(mean(tail(Y,-rows_ahead)),rows_ahead))) #Create lagged version of last column
+Y <- as.matrix(XY[, 1])  #first  column is used for labels
+Y <- rbind(tail(Y,-rows_ahead),as.matrix(rep(mean(tail(Y,-rows_ahead)),rows_ahead))) #Create lagged version of first column
 generator = timeseries_generator(X,Y, 
                                  length = tsteps, 
                                  batch_size = batch_size, 
@@ -40,7 +40,7 @@ neural.predict = function(model,X) {
   # if(is.vector(X)) X <- t(X)
   # X <- as.matrix(X)
   # X <- array_reshape(X,c(1,tsteps,ncol(X))) #The LSTM expects data input to have the shape [samples, timesteps, features]
-  Y <- Model %>% predict(X)
+  Y <- Models[[model]] %>% predict(X)
   return(Y)
 }
 neural.save = function(name) {
@@ -63,13 +63,17 @@ neural.datasets = function(XY,data_split) {
 ### Init ----------------------------------
 Models <<- vector("list")
 tsteps <- 3  #window size a.k.a. time steps
-rows_ahead <- 5  #prediction Labels are n rows ahead of the current
+rows_ahead <- 50*60  #prediction Labels are n rows ahead of the current
 batch_size <- 500
 epochs <- 20
 tr_split <- 0.7   #part of data used for training 
-LSTM_units <- 500
-XY <- read.csv("D:\\My Documents\\R\\ml\\data\\training_data.csv",header = TRUE)
-XY <- XY[c("Open.1","High.1","Low.1","Close.1","Label1")]  #add as many columns as we need c("Open.1","High.1","Low.1","Close.1","Label1")
+LSTM_units <- 5
+
+setwd("D:\\My Documents\\R\\ml\\") 
+outputfile <-"data\\training_data_minute"
+load(outputfile)
+# XY <- read.csv(file = paste(outputfile,".csv", sep = ), header = TRUE)
+XY <- XY[c("Open.1","High.1","Low.1","Close.1")]  #add as many columns as we need c("Open.1","High.1","Low.1","Close.1","Label1")
 set.seed(365)
 
 XY.tr <- neural.datasets(XY, tr_split)
