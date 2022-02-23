@@ -1,5 +1,5 @@
 library(keras)
-neural.generate = function(XY) {
+neural.generate <- function(XY) {
   # X <- as.matrix(XY[,-ncol(XY)])  #remove last column (in cases when last column in data is Labels)
   X <- as.matrix(XY)
   Y <- as.matrix(XY[, 1])  #first  column is used for labels
@@ -41,9 +41,7 @@ neural.train    <- function(model, generator,generator.val,n_col) {
   Models[[model]] <<- Model
 }
 neural.predict  <- function(model,X) {
-  # if(is.vector(X)) X <- t(X)
-  # X <- as.matrix(X)
-  # X <- array_reshape(X,c(1,tsteps,ncol(X))) #The LSTM expects data input to have the shape [samples, timesteps, features]
+  # if (round(sd(X))!=1) Y <- scale(X)    #if not scaled, scale to predict scaled, not real number
   Y <- Models[[model]] %>% predict(X)
   return(Y)
 }
@@ -71,10 +69,10 @@ rows_ahead <- 5*60  #prediction Labels are n rows ahead of the current
 batch_size <- 500
 epochs <- 20
 tr_split <- 0.7   #part of data used for training 
-LSTM_units <- 5
+LSTM_units <- 50
 
 setwd("D:\\My Documents\\R\\ml\\") 
-outputfile <-"data\\training_data_minute"
+outputfile <-"data\\training_data"
 load(outputfile)  # XY <- read.csv(file = paste(outputfile,".csv", sep = ), header = TRUE)
 XY <- XY[c("Open.1","High.1","Low.1","Close.1")]  #add as many columns as we need c("Open.1","High.1","Low.1","Close.1","Label1")
 set.seed(365)
@@ -86,8 +84,22 @@ generator <- neural.generate(XY.tr)
 generator.val <- neural.generate(XY.val)
 
 neural.train(1,generator, generator.val, ncol(XY))
-Y_pred <-neural.predict(1,generator.val)
+Y_pred <-neural.predict(1,neural.generate(XY.tr))
 
+###Plotting results ------------
+cat('Plotting Results\n')
+op <- par(mfrow=c(3,1))
+plot(XY.tr[,1], xlab = '')
+title("Expected")
+plot(Y_pred[,1,1], xlab = '')
+title("Predicted")
+plot(XY.tr[,1]- Y_pred[,1,1], xlab = '')
+title("Difference")
+
+par(op)
+
+
+#TODO ----
 # neural.save("Models\\Models")
 
 # TODO 
