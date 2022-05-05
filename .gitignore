@@ -1,6 +1,6 @@
-﻿.Rproj*
+﻿*.csv
 training_data_minute
+.Rproj*
 .Rhistory
 .RData
-*.csv
 .Rproj.user
