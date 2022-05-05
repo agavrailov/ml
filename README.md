@@ -1,5 +1,4 @@
-# ml
-Machine learning with Tensorflow/Keras/R
+# Machine learning with Tensorflow/Keras/R
 
 This project uses Deep learning technics of Tensorflow/Keras libraries for timeseries prediction.
 Prediction of Silver SPOT price against USD (XAGUSD)
