@@ -6,15 +6,15 @@ neural.generate <- function(XY) {
   Y <- rbind(as.matrix(ins_value_for_rows_ahead),tail(Y,-rows_ahead))  #Create lagged version of first column
   rownames(Y)<-NULL
   
-  generator = timeseries_generator(X,Y, 
-                                 length = tsteps, 
+  dataset = timeseries_dataset_from_array(X,Y, 
+                                sequence_length = tsteps, 
                                  batch_size = batch_size, 
                                  start_index = 1, 
                                  end_index = nrow(X)-1,
                                  sampling_rate = 1,
-                                 stride = 1,
+                                 sequence_stride = 1,
                                  shuffle = FALSE)
-return(generator)
+return(dataset)
 }
 neural.train    <- function(model, generator,generator.val,n_col) {
   Model <- keras_model_sequential() 
@@ -33,7 +33,6 @@ neural.train    <- function(model, generator,generator.val,n_col) {
                                 learning_rate = 0.001),
                     metrics = c('accuracy'))
   Model %>% fit(generator, 
-              batch_size = batch_size,
               epochs = epochs,
               validation_data = generator.val)
               # samples_per_epoch = floor(length(XY)/batch_size) 
