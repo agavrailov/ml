@@ -30,7 +30,7 @@ neural.train    <- function(model, generator,generator.val,n_col) {
   Model %>% compile(
                     loss = 'mse', 
                     optimizer = optimizer_rmsprop(
-                                learning_rate = 0.001),
+                                learning_rate = learning_rate),
                     metrics = c('accuracy'))
   Model %>% fit(generator, 
               epochs = epochs,
@@ -65,24 +65,25 @@ neural.datasets <- function(XY,data_split) {
 ### Constants  ----------------------------------
 Models <<- vector("list")
 tsteps <- 3  #window size a.k.a. time steps
-rows_ahead <- 5*60  #prediction Labels are n rows ahead of the current
-batch_size <- 500
-epochs <- 20
+rows_ahead <- 60  #prediction Labels are n rows ahead of the current
 tr_split <- 0.7   #part of data used for training 
-LSTM_units <- 50  #number of neurons in a LSTM layer
 nfeatures <- 1    #how many columns we will use
 set.seed(365)
 setwd("D:\\My Documents\\R\\ml\\") 
 inputfile <-"data\\training_data"
 
-### Init ----------------------------------
+batch_size <- 500
+epochs <- 20
+learning_rate <-0.001
+LSTM_units <- 50  #number of neurons in a LSTM layer
+
+
+### Data pre-processing  ----------------------------------
 load(inputfile)  # XY <- read.csv(file = paste(outputfile,".csv", sep = ), header = TRUE)
 XY <- XY[c("Open","High","Low","Close")]  #add as many columns as we need c("Open.1","High.1","Low.1","Close.1","Label1")
 XY<-XY[1:nfeatures]   #use only 1-4 columns. It is a data frame
 
-XY_norm <- scale(XY)    #it is a matrix already
-attr(XY_norm,'scaled:scale')
-attr(XY_norm, 'scaled:center')
+XY.norm <- scale(XY)    #it is a matrix already
 
 XY.tr <- neural.datasets(XY, tr_split)
 XY.tr.norm <- neural.datasets(XY_norm, tr_split)
@@ -92,8 +93,9 @@ XY.val.norm<- neural.datasets(XY_norm, (1-tr_split))
 generator <- neural.generate(XY.tr.norm)
 generator.val <- neural.generate(XY.val.norm)
 
+### Training and predicting  ----------------------------------
 neural.train(1,generator, generator.val, ncol(XY.tr.norm))
-Y_pred <-neural.predict(1,neural.generate(XY.tr.norm))
+Y.pred <-neural.predict(1,neural.generate(XY.tr.norm))
 
 ###Plotting results ------------
 cat('Plotting Results\n')
@@ -101,21 +103,20 @@ op <- par(mfrow=c(3,1))
 plot(XY.tr[,1], xlab = '')
 title("Expected")
 
-plot(Y_pred[,1], xlab = '')   #dim(Y_pred) {20500,5}, използваме само първия елемент. TODO да се помисли за apply(Y_pread(1:5),1, mean)
+plot(Y.pred[,1], xlab = '')   #dim(Y_pred) {20500,5}, използваме само първия елемент. TODO да се помисли за apply(Y_pread(1:5),1, mean)
 title("Predicted")
 
-plot(XY.tr[,1]- Y_pred[,1], xlab = '')
+XY.tr<-head(XY.tr, nrow(Y.pred))  #XY.tr is 4 rows longer than the result
+delta <- XY.tr[,1]- Y.pred[,1]
+plot(delta, xlab = '')
 title("Difference")
 
 par(op)
+print(paste("Standard deviation",sd(delta)))
 
+### Saving models
+neural.save("models\\MyModels")
 
-#TODO ----
-# neural.save("Models\\Models")
 
 # TODO 
-# x_input = array([9, 10]).reshape((1, n_input, n_features))
-# yhat = model.predict(x_input, verbose=0)
 # https://machinelearningmastery.com/how-to-use-the-timeseriesgenerator-for-time-series-forecasting-in-keras/
-
-# x.orig = t(apply(xs, 1, function(r)r*attr(xs,'scaled:scale') + attr(xs, 'scaled:center')))
