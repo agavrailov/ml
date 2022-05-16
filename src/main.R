@@ -40,7 +40,6 @@ neural.train    <- function(model, generator,generator.val,n_col) {
   Models[[model]] <<- Model
 }
 neural.predict  <- function(model,X) {
-  # if (round(sd(X))!=1) Y <- scale(X)    #if not scaled, scale to predict scaled, not real number
   Y <- Models[[model]] %>% predict(X)
   Y.denorm = t(apply(Y, 1, function(r)r*attr(XY_norm,'scaled:scale') + attr(XY_norm, 'scaled:center')))
   return(Y.denorm)
@@ -60,6 +59,21 @@ neural.datasets <- function(XY,data_split) {
   extra_rows <- (nrow(my_set)-tsteps-1) %% (batch_size)  #LSTM cells need input to be divisible by batch_size AFTER split
   if (extra_rows) my_set<-head(my_set,-extra_rows)
   return(my_set)
+}
+neural.plot     <- function(){
+  ###Plotting results ------------
+  cat('Plotting Results\n')
+  op <- par(mfrow=c(3,1))
+  plot(XY.tr[,1], xlab = '')
+  title("Expected")
+  
+  plot(Y.pred[,1], xlab = '')   #dim(Y_pred) {20500,5}, използваме само първия елемент. TODO да се помисли за apply(Y_pread(1:5),1, mean)
+  title("Predicted")
+  
+  XY.tr<-head(XY.tr, nrow(Y.pred))  #XY.tr is 4 rows longer than the result
+  delta <- XY.tr[,1]- Y.pred[,1]
+  plot(delta, xlab = '')
+  title("Difference")
 }
 
 ### Constants  ----------------------------------
@@ -96,20 +110,8 @@ generator.val <- neural.generate(XY.val.norm)
 ### Training and predicting  ----------------------------------
 neural.train(1,generator, generator.val, ncol(XY.tr.norm))
 Y.pred <-neural.predict(1,neural.generate(XY.tr.norm))
-
-###Plotting results ------------
-cat('Plotting Results\n')
-op <- par(mfrow=c(3,1))
-plot(XY.tr[,1], xlab = '')
-title("Expected")
-
-plot(Y.pred[,1], xlab = '')   #dim(Y_pred) {20500,5}, използваме само първия елемент. TODO да се помисли за apply(Y_pread(1:5),1, mean)
-title("Predicted")
-
-XY.tr<-head(XY.tr, nrow(Y.pred))  #XY.tr is 4 rows longer than the result
-delta <- XY.tr[,1]- Y.pred[,1]
-plot(delta, xlab = '')
-title("Difference")
+neural.predict(1, as.data.frame(c(1,1,1,1)))
+neural.plot()
 
 par(op)
 print(paste("Standard deviation",sd(delta)))
