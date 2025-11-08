@@ -2,7 +2,7 @@ import pytest
 import asyncio
 from unittest.mock import AsyncMock, patch
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from src.data_ingestion import fetch_historical_data
 from src.config import NVDA_CONTRACT_DETAILS, TWS_HOST, TWS_PORT, TWS_CLIENT_ID, RAW_DATA_CSV
@@ -52,24 +52,33 @@ async def test_fetch_historical_data_nvda(mock_ib):
         with patch('os.makedirs') as mock_makedirs, \
              patch('pandas.DataFrame.to_csv') as mock_to_csv:
 
-            await fetch_historical_data(contract_details=NVDA_CONTRACT_DETAILS, durationStr='1 D')
+            # Define a date range for the test
+            test_end_date = datetime(2023, 1, 1, 9, 31)
+            test_start_date = test_end_date - timedelta(days=1)
+
+            await fetch_historical_data(
+                contract_details=NVDA_CONTRACT_DETAILS,
+                start_date=test_start_date,
+                end_date=test_end_date
+            )
 
             # Assertions
             mock_ib.connectAsync.assert_called_once_with(TWS_HOST, TWS_PORT, TWS_CLIENT_ID)
             mock_ib.qualifyContractsAsync.assert_called_once() # Argument is a Contract object, harder to assert directly
-            mock_ib.reqHistoricalDataAsync.assert_called_once_with(
-                mock_ib.qualifyContractsAsync.call_args[0][0], # Get the contract object passed to qualifyContractsAsync
-                endDateTime='',
-                durationStr='1 D',
-                barSizeSetting='1 min',
-                whatToShow='TRADES',
-                useRTH=False,
-                formatDate=1
-            )
+            mock_ib.reqHistoricalDataAsync.assert_called()
+            
+            # Verify arguments for each call
+            for call_args in mock_ib.reqHistoricalDataAsync.call_args_list:
+                args, kwargs = call_args
+                assert kwargs['durationStr'] == '1 D'
+                assert kwargs['barSizeSetting'] == '1 min'
+                assert kwargs['whatToShow'] == 'TRADES'
+                assert kwargs['useRTH'] == False
+                assert kwargs['formatDate'] == 1
+                assert 'endDateTime' in kwargs and kwargs['endDateTime'] != ''
             mock_ib.disconnect.assert_called_once()
             mock_makedirs.assert_called_once()
-            mock_to_csv.assert_called_once_with(RAW_DATA_CSV, index=False)
-
+            mock_to_csv.assert_called_once_with(RAW_DATA_CSV, mode='a', header=False, index=False)
             # Verify the contract type passed to qualifyContractsAsync
             contract_arg = mock_ib.qualifyContractsAsync.call_args[0][0]
             assert contract_arg.symbol == NVDA_CONTRACT_DETAILS['symbol']

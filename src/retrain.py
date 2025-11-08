@@ -10,10 +10,11 @@ import json
 
 from src.model import build_lstm_model # Although we load, we might need this for reference
 from src.train import create_sequences_for_stateful_lstm # Reusing data preparation logic
+from datetime import datetime # Added import
 from src.config import (
     TSTEPS, ROWS_AHEAD, TR_SPLIT, N_FEATURES, BATCH_SIZE,
     EPOCHS, LEARNING_RATE, LSTM_UNITS,
-    PROCESSED_DATA_DIR, TRAINING_DATA_CSV, SCALER_PARAMS_JSON, MODEL_SAVE_PATH
+    PROCESSED_DATA_DIR, TRAINING_DATA_CSV, SCALER_PARAMS_JSON, MODEL_SAVE_PATH, MODEL_REGISTRY_DIR
 )
 
 def retrain_model():
@@ -79,7 +80,10 @@ def retrain_model():
     print("Starting model retraining...")
     # Reset states before retraining if the model is stateful and we are training on new data
     # or a full pass.
-    model.reset_states()
+    # Reset states of stateful LSTM layers before retraining
+    for layer in model.layers:
+        if isinstance(layer, keras.layers.RNN) and layer.stateful:
+            layer.reset_states()
     
     model.fit(X_retrain, Y_retrain,
               epochs=EPOCHS,
@@ -92,11 +96,12 @@ def retrain_model():
     # and decide whether to save it based on performance metrics.
     print("Placeholder: Model evaluation would happen here.")
 
-    # 6. Save the retrained model (Placeholder for Task 3.4 - Versioning)
-    # For now, overwrite the existing model. Versioning will be added later.
-    os.makedirs(os.path.dirname(MODEL_SAVE_PATH), exist_ok=True)
-    model.save(MODEL_SAVE_PATH)
-    print(f"Retrained model saved to {MODEL_SAVE_PATH}")
+    # 6. Save the retrained model to a versioned path
+    os.makedirs(MODEL_REGISTRY_DIR, exist_ok=True) # Ensure registry directory exists
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    versioned_model_path = os.path.join(MODEL_REGISTRY_DIR, f"my_lstm_model_{timestamp}.keras")
+    model.save(versioned_model_path)
+    print(f"Retrained model saved to {versioned_model_path}")
 
 if __name__ == "__main__":
     print("Running model retraining...")

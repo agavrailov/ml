@@ -11,10 +11,11 @@ import os
 
 from src.model import build_lstm_model
 from src.data_processing import convert_minute_to_hourly, prepare_keras_input_data
+from datetime import datetime # Added import
 from src.config import (
     TSTEPS, ROWS_AHEAD, TR_SPLIT, N_FEATURES, BATCH_SIZE,
     EPOCHS, LEARNING_RATE, LSTM_UNITS,
-    PROCESSED_DATA_DIR, TRAINING_DATA_CSV, SCALER_PARAMS_JSON, MODEL_SAVE_PATH
+    PROCESSED_DATA_DIR, TRAINING_DATA_CSV, SCALER_PARAMS_JSON, MODEL_SAVE_PATH, MODEL_REGISTRY_DIR
 )
 
 def get_effective_data_length(data, sequence_length, rows_ahead):
@@ -164,10 +165,12 @@ def train_model(current_batch_size=BATCH_SIZE): # Added current_batch_size param
                   shuffle=False) # Stateful LSTMs typically require shuffle=False
     print("Model training finished.")
 
-    # Save the trained model
-    os.makedirs(os.path.dirname(MODEL_SAVE_PATH), exist_ok=True) # Ensure directory exists
-    model.save(MODEL_SAVE_PATH)
-    print(f"Trained model saved to {MODEL_SAVE_PATH}")
+    # Save the trained model to a versioned path
+    os.makedirs(MODEL_REGISTRY_DIR, exist_ok=True) # Ensure registry directory exists
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    versioned_model_path = os.path.join(MODEL_REGISTRY_DIR, f"my_lstm_model_{timestamp}.keras")
+    model.save(versioned_model_path)
+    print(f"Trained model saved to {versioned_model_path}")
 
 if __name__ == "__main__":
     # Ensure data/processed exists and contains necessary files for testing

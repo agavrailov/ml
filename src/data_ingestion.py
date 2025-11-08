@@ -12,22 +12,26 @@ from src.config import RAW_DATA_CSV, TWS_HOST, TWS_PORT, TWS_CLIENT_ID, NVDA_CON
 
 async def fetch_historical_data(
     contract_details: dict,
-    durationStr='1 D', barSizeSetting='1 min',
-    endDateTime='',
+    start_date: datetime,
+    end_date: datetime,
+    barSizeSetting='1 min',
     file_path=RAW_DATA_CSV
 ):
     """
-    Connects to IB TWS/Gateway, fetches historical minute-level data for the specified contract,
-    and saves it to a CSV file.
+    Connects to IB TWS/Gateway, fetches historical minute-level data for the specified contract
+    between start_date and end_date, and saves it to a CSV file. Data is fetched in daily chunks.
 
     Args:
         contract_details (dict): A dictionary containing contract details (e.g., symbol, secType, exchange, currency).
-        durationStr (str): Duration of data to fetch (e.g., '1 Y', '1 M', '1 W', '1 D').
+        start_date (datetime): The start date for data fetching.
+        end_date (datetime): The end date for data fetching.
         barSizeSetting (str): Bar size (e.g., '1 min', '5 mins', '1 hour').
-        endDateTime (str): End date and time for the data fetch. If empty, current time is used.
         file_path (str): Path to save the fetched data as a CSV.
     """
     ib = IB()
+    all_bars = []
+    current_end_date = end_date
+
     try:
         await ib.connectAsync(TWS_HOST, TWS_PORT, TWS_CLIENT_ID)
         print(f"Connected to IB TWS/Gateway on {TWS_HOST}:{TWS_PORT} with Client ID {TWS_CLIENT_ID}")
@@ -64,24 +68,48 @@ async def fetch_historical_data(
         print(f"Qualifying contract: {contract.symbol}...")
         await ib.qualifyContractsAsync(contract)
 
-        print(f"Fetching historical data for {contract.symbol}/{contract.currency}...")
-        bars = await ib.reqHistoricalDataAsync(
-            contract,
-            endDateTime=endDateTime,
-            durationStr=durationStr,
-            barSizeSetting=barSizeSetting,
-            whatToShow='TRADES', # Changed from 'MIDPOINT' to 'TRADES'
-            useRTH=False, # Use regular trading hours
-            formatDate=1 # 1 for datetime objects, 2 for strings
-        )
+        print(f"Fetching historical data for {contract.symbol}/{contract.currency} from {start_date.strftime('%Y%m%d %H:%M:%S')} to {end_date.strftime('%Y%m%d %H:%M:%S')}...")
 
-        if not bars:
-            print("No historical data received.")
+        while current_end_date > start_date:
+            # Request data for one day at a time
+            duration_str = '1 D'
+            
+            # TWS API endDateTime is exclusive, so we fetch up to the current_end_date
+            # and then move current_end_date back by one day.
+            end_date_str = current_end_date.strftime('%Y%m%d %H:%M:%S')
+            
+            print(f"Requesting data ending {end_date_str} for duration {duration_str}...")
+            bars = await ib.reqHistoricalDataAsync(
+                contract,
+                endDateTime=end_date_str,
+                durationStr=duration_str,
+                barSizeSetting=barSizeSetting,
+                whatToShow='TRADES',
+                useRTH=False,
+                formatDate=1
+            )
+
+            if bars:
+                all_bars.extend(bars)
+                print(f"Fetched {len(bars)} bars ending {end_date_str}.")
+            else:
+                print(f"No bars received for period ending {end_date_str}.")
+            
+            # Move to the previous day
+            current_end_date -= timedelta(days=1)
+            # Add a small delay to avoid hitting API rate limits
+            await asyncio.sleep(1) 
+
+        if not all_bars:
+            print("No historical data received for the entire period.")
             return
 
         # Convert to DataFrame
-        df = util.df(bars)
+        df = util.df(all_bars)
         
+        # Sort by date to ensure chronological order
+        df.sort_values('date', inplace=True)
+
         # Rename columns to match expected format (DateTime, Open, High, Low, Close)
         df = df[['date', 'open', 'high', 'low', 'close']]
         df.columns = ['DateTime', 'Open', 'High', 'Low', 'Close']
@@ -91,16 +119,34 @@ async def fetch_historical_data(
 
         # Save to CSV
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        df.to_csv(file_path, index=False)
-        print(f"Successfully fetched {len(df)} bars and saved to {file_path}")
+        # If file exists, append without header, otherwise write with header
+        if os.path.exists(file_path):
+            df.to_csv(file_path, mode='a', header=False, index=False)
+        else:
+            df.to_csv(file_path, index=False)
+        print(f"Successfully fetched a total of {len(df)} bars and saved to {file_path}")
 
     except Exception as e:
         print(f"An error occurred: {e}")
     finally:
-        if ib.isConnected():
-            await ib.disconnect()
-            print("Disconnected from IB TWS/Gateway.")
+        if ib and hasattr(ib, 'disconnect') and callable(ib.disconnect):
+            try:
+                await ib.disconnect()
+                print("Disconnected from IB TWS/Gateway.")
+            except TypeError:
+                print("Warning: TypeError encountered during IB TWS/Gateway disconnection. Connection might already be closed.")
+        else:
+            print("Could not disconnect from IB TWS/Gateway (ib object or disconnect method not available).")
 
 if __name__ == "__main__":
     print("Running TWS data ingestion for NVDA...")
-    asyncio.run(fetch_historical_data(contract_details=NVDA_CONTRACT_DETAILS, durationStr='1 D'))
+    
+    # Define the date range for data fetching (e.g., last 3 months)
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=90) # Approximately 3 months
+
+    asyncio.run(fetch_historical_data(
+        contract_details=NVDA_CONTRACT_DETAILS,
+        start_date=start_date,
+        end_date=end_date
+    ))
