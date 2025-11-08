@@ -4,3 +4,5 @@ training_data_minute
 .Rhistory
 .RData
 .Rproj.user
+venv/
+__pycache__/

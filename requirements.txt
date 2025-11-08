@@ -1,3 +1,11 @@
-pandas
-pytest
 tensorflow
+pandas
+numpy
+scikit-learn
+fastapi
+uvicorn
+pydantic
+streamlit
+altair
+pytest
+ib_insync

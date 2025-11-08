@@ -1,0 +1,103 @@
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+import pandas as pd
+import numpy as np
+import tensorflow as tf
+from tensorflow import keras
+import json
+
+from src.model import build_lstm_model # Although we load, we might need this for reference
+from src.train import create_sequences_for_stateful_lstm # Reusing data preparation logic
+from src.config import (
+    TSTEPS, ROWS_AHEAD, TR_SPLIT, N_FEATURES, BATCH_SIZE,
+    EPOCHS, LEARNING_RATE, LSTM_UNITS,
+    PROCESSED_DATA_DIR, TRAINING_DATA_CSV, SCALER_PARAMS_JSON, MODEL_SAVE_PATH
+)
+
+def retrain_model():
+    """
+    Loads the existing trained model, loads the latest processed data,
+    and retrains the model with the new data.
+    """
+    # 1. Load the existing trained model
+    if not os.path.exists(MODEL_SAVE_PATH):
+        print(f"Error: No existing model found at {MODEL_SAVE_PATH}. Please train a model first.")
+        return
+
+    # When loading a stateful model, it's crucial to use the same batch_size
+    # that the model was originally trained with.
+    # For now, we assume BATCH_SIZE from config is the one used for initial training.
+    # In a more robust system, batch_size would be saved with the model or its metadata.
+    try:
+        # Rebuild the model with the correct batch_size for loading weights
+        # This is a common pattern for stateful models when loading
+        # and then continuing training.
+        # The loaded model will have the weights, but we need to ensure
+        # the graph structure (especially batch_input_shape) is compatible.
+        # However, Keras's load_model often handles this if the original
+        # model was saved correctly. Let's try direct load first.
+        model = keras.models.load_model(MODEL_SAVE_PATH)
+        print(f"Existing model loaded from {MODEL_SAVE_PATH}")
+    except Exception as e:
+        print(f"Error loading model from {MODEL_SAVE_PATH}: {e}")
+        print("Attempting to build a new model and load weights (if compatible).")
+        # Fallback: build model and load weights if direct load fails
+        model = build_lstm_model(
+            input_shape=(TSTEPS, N_FEATURES),
+            lstm_units=LSTM_UNITS,
+            batch_size=BATCH_SIZE,
+            learning_rate=LEARNING_RATE
+        )
+        model.load_weights(MODEL_SAVE_PATH)
+        print("Model built and weights loaded.")
+
+
+    # 2. Load the latest processed data
+    if not os.path.exists(TRAINING_DATA_CSV) or not os.path.exists(SCALER_PARAMS_JSON):
+        print(f"Error: Processed data not found. Please run data processing first.")
+        return
+
+    df_processed = pd.read_csv(TRAINING_DATA_CSV)
+    
+    # Load scaler parameters (not directly used for retraining, but good practice)
+    with open(SCALER_PARAMS_JSON, 'r') as f:
+        scaler_params = json.load(f)
+
+    # 3. Prepare data for retraining
+    # For retraining, we typically use the entire available processed dataset
+    # or a new batch of data. For simplicity, we'll use the whole dataset here.
+    # In a real-world scenario, you might only retrain on new data or a sliding window.
+    X_retrain, Y_retrain = create_sequences_for_stateful_lstm(df_processed, TSTEPS, BATCH_SIZE, ROWS_AHEAD)
+
+    if len(X_retrain) == 0:
+        print("No data available for retraining after sequence creation. Exiting.")
+        return
+
+    # 4. Retrain the model
+    print("Starting model retraining...")
+    # Reset states before retraining if the model is stateful and we are training on new data
+    # or a full pass.
+    model.reset_states()
+    
+    model.fit(X_retrain, Y_retrain,
+              epochs=EPOCHS,
+              batch_size=BATCH_SIZE,
+              shuffle=False) # Stateful LSTMs typically require shuffle=False
+    print("Model retraining finished.")
+
+    # 5. Evaluate performance (Placeholder for Task 3.3/3.4)
+    # In a real scenario, you would evaluate the model on a separate test set
+    # and decide whether to save it based on performance metrics.
+    print("Placeholder: Model evaluation would happen here.")
+
+    # 6. Save the retrained model (Placeholder for Task 3.4 - Versioning)
+    # For now, overwrite the existing model. Versioning will be added later.
+    os.makedirs(os.path.dirname(MODEL_SAVE_PATH), exist_ok=True)
+    model.save(MODEL_SAVE_PATH)
+    print(f"Retrained model saved to {MODEL_SAVE_PATH}")
+
+if __name__ == "__main__":
+    print("Running model retraining...")
+    retrain_model()

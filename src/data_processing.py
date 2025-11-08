@@ -1,6 +1,15 @@
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import pandas as pd
 import json
 import os
+import numpy as np # Added numpy import
+
+from src.config import (
+    PROCESSED_DATA_DIR, HOURLY_DATA_CSV, TRAINING_DATA_CSV, SCALER_PARAMS_JSON, RAW_DATA_CSV
+)
 
 def convert_minute_to_hourly(input_csv_path, output_csv_path):
     """
@@ -17,7 +26,7 @@ def convert_minute_to_hourly(input_csv_path, output_csv_path):
 
     # Convert to hourly OHLC data
     # 'first' for Open, 'max' for High, 'min' for Low, 'last' for Close
-    df_hourly = df.resample('H').agg({
+    df_hourly = df.resample('h').agg({
         'Open': 'first',
         'High': 'max',
         'Low': 'min',
@@ -29,6 +38,9 @@ def convert_minute_to_hourly(input_csv_path, output_csv_path):
 
     # Reset index to make 'DateTime' a column again and rename it to 'Time'
     df_hourly = df_hourly.reset_index().rename(columns={'DateTime': 'Time'})
+    
+    # Ensure DateTime is in the correct format
+    df_hourly['Time'] = df_hourly['Time'].dt.strftime('%Y-%m-%dT%H:%M')
 
     # Save the hourly data to a new CSV file
     df_hourly.to_csv(output_csv_path, index=False)
@@ -75,26 +87,11 @@ def prepare_keras_input_data(input_hourly_csv_path, output_training_csv_path, ou
 
 
 if __name__ == "__main__":
-    # --- Test convert_minute_to_hourly function ---
-    dummy_data = {
-        'DateTime': pd.to_datetime(['2023-01-01T00:00', '2023-01-01T00:01', '2023-01-01T00:02', '2023-01-01T00:03',
-                                    '2023-01-01T00:59', '2023-01-01T01:00', '2023-01-01T01:01', '2023-01-01T01:02',
-                                    '2023-01-01T01:59', '2023-01-01T02:00']),
-        'Open': np.random.rand(10) * 100 + 100,
-        'High': np.random.rand(10) * 100 + 101,
-        'Low': np.random.rand(10) * 100 + 99,
-        'Close': np.random.rand(10) * 100 + 100
-    }
-    dummy_df = pd.DataFrame(dummy_data)
-    dummy_input_minute_path = "data/raw/xagusd_minute.csv"
-    os.makedirs("data/raw", exist_ok=True)
-    dummy_df.to_csv(dummy_input_minute_path, index=False)
-    print(f"Created dummy minute data at {dummy_input_minute_path}")
+    # Ensure data/processed exists
+    os.makedirs(PROCESSED_DATA_DIR, exist_ok=True)
 
-    hourly_output_path = "data/processed/xagusd_hourly.csv"
-    convert_minute_to_hourly(dummy_input_minute_path, hourly_output_path)
-
-    # --- Test prepare_keras_input_data function ---
-    training_output_path = "data/processed/training_data.csv"
-    scaler_params_path = "data/processed/scaler_params.json"
-    prepare_keras_input_data(hourly_output_path, training_output_path, scaler_params_path)
+    # Process the actual raw data
+    print(f"Processing raw minute data from {RAW_DATA_CSV}...")
+    convert_minute_to_hourly(RAW_DATA_CSV, HOURLY_DATA_CSV)
+    prepare_keras_input_data(HOURLY_DATA_CSV, TRAINING_DATA_CSV, SCALER_PARAMS_JSON)
+    print("Data processing complete.")

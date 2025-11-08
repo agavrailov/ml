@@ -1,3 +1,7 @@
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import pandas as pd
 import numpy as np
 import tensorflow as tf
@@ -187,11 +191,11 @@ if __name__ == "__main__":
             'Close': np.random.rand(num_minutes) * 100 + 100
         }
         dummy_df_minute = pd.DataFrame(dummy_minute_data)
-        dummy_input_minute_path = "data/raw/xagusd_minute.csv"
+        dummy_input_minute_path = "data/raw/nvda_minute.csv"
         os.makedirs("data/raw", exist_ok=True)
         dummy_df_minute.to_csv(dummy_input_minute_path, index=False)
 
-        hourly_output_path = os.path.join(PROCESSED_DATA_DIR, "xagusd_hourly.csv")
+        hourly_output_path = os.path.join(PROCESSED_DATA_DIR, "nvda_hourly.csv")
         convert_minute_to_hourly(dummy_input_minute_path, hourly_output_path)
 
         training_output_path = TRAINING_DATA_CSV
