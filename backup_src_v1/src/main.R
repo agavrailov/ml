@@ -110,7 +110,12 @@ generator.val <- neural.generate(XY.val.norm)
 ### Training and predicting  ----------------------------------
 neural.train(1,generator, generator.val, ncol(XY.tr.norm))
 Y.pred <-neural.predict(1,neural.generate(XY.tr.norm))
-neural.predict(1, as.data.frame(c(1,1,1,1)))
+
+Z<-data.frame(rep(1,batch_size),rep(1,batch_size),rep(1,batch_size),rep(1,batch_size))
+Z<-rbind(Z,c(-1,-1,-1,-1))
+Y.zorro <- neural.predict(1, neural.generate(Z))
+length(Z)
+
 neural.plot()
 
 par(op)
