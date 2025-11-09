@@ -20,15 +20,24 @@ def build_lstm_model(input_shape, lstm_units, batch_size, learning_rate):
     # Define the input layer with batch_shape for stateful=True
     inputs = keras.Input(batch_shape=(batch_size, input_shape[0], input_shape[1]), dtype=tf.float32)
 
-    # Add the LSTM layer
-    lstm_layer = layers.LSTM(units=lstm_units,
-                             return_sequences=True,
-                             stateful=True,
-                             activation='tanh',
-                             dtype=tf.float32)(inputs) # Explicit dtype
+    # Add the first LSTM layer
+    lstm_layer_1 = layers.LSTM(units=lstm_units,
+                               return_sequences=True, # Must be True to feed into the next LSTM layer
+                               stateful=True,
+                               activation='tanh',
+                               dtype=tf.float32)(inputs)
+    dropout_1 = layers.Dropout(0.2)(lstm_layer_1)
+
+    # Add the second LSTM layer
+    lstm_layer_2 = layers.LSTM(units=lstm_units,
+                               return_sequences=True, # Kept True as the Dense layer expects a sequence
+                               stateful=True,
+                               activation='tanh',
+                               dtype=tf.float32)(dropout_1)
+    dropout_2 = layers.Dropout(0.2)(lstm_layer_2)
 
     # Add the Dense output layer
-    outputs = layers.Dense(units=1, dtype=tf.float32)(lstm_layer) # Explicit dtype
+    outputs = layers.Dense(units=1, dtype=tf.float32)(dropout_2) # Connect to the last dropout layer
 
     # Create the model
     model = Model(inputs=inputs, outputs=outputs)
