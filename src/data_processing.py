@@ -46,44 +46,71 @@ def convert_minute_to_hourly(input_csv_path, output_csv_path):
     df_hourly.to_csv(output_csv_path, index=False)
     print(f"Successfully converted minute data to hourly and saved to {output_csv_path}")
 
+def add_features(df):
+    """
+    Adds technical indicators and time-based features to the DataFrame.
+    """
+    # Ensure 'Time' is a datetime object
+    df['Time'] = pd.to_datetime(df['Time'])
+
+    # --- Technical Indicators ---
+    # Simple Moving Averages (SMA)
+    df['SMA_7'] = df['Close'].rolling(window=7).mean()
+    df['SMA_21'] = df['Close'].rolling(window=21).mean()
+
+    # Relative Strength Index (RSI)
+    delta = df['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    rs = gain / loss
+    df['RSI'] = 100 - (100 / (1 + rs))
+
+    # --- Time-Based Features ---
+    df['Hour'] = df['Time'].dt.hour
+    df['DayOfWeek'] = df['Time'].dt.dayofweek
+
+    # Drop rows with NaN values created by rolling indicators
+    df.dropna(inplace=True)
+    
+    return df
+
 def prepare_keras_input_data(input_hourly_csv_path, output_training_csv_path, output_scaler_params_path):
     """
-    Prepares data for Keras input by normalizing OHLC values.
-
-    Args:
-        input_hourly_csv_path (str): Path to the input hourly-level CSV file.
-        output_training_csv_path (str): Path to save the normalized training data CSV.
-        output_scaler_params_path (str): Path to save the scaler parameters (mean, std).
+    Prepares data for Keras input by adding features and normalizing all feature columns.
     """
     df = pd.read_csv(input_hourly_csv_path)
 
-    # Select OHLC columns for normalization
-    ohlc_cols = ['Open', 'High', 'Low', 'Close']
-    df_ohlc = df[ohlc_cols]
+    # Add features
+    df_featured = add_features(df)
+
+    # Select all feature columns for normalization
+    # Exclude the 'Time' column as it's not a feature for the model
+    feature_cols = [col for col in df_featured.columns if col != 'Time']
+    df_features = df_featured[feature_cols]
 
     # Calculate mean and standard deviation for normalization
-    mean_vals = df_ohlc.mean()
-    std_vals = df_ohlc.std()
+    mean_vals = df_features.mean()
+    std_vals = df_features.std()
 
-    # Normalize OHLC values (Z-score normalization)
-    df_normalized = (df_ohlc - mean_vals) / std_vals
+    # Normalize all feature columns (Z-score normalization)
+    df_normalized = (df_features - mean_vals) / std_vals
 
-    # Combine normalized OHLC with other columns (e.g., 'Time')
-    df_processed = df.copy()
-    df_processed[ohlc_cols] = df_normalized
+    # Combine normalized features with the 'Time' column
+    df_processed = df_featured[['Time']].copy()
+    df_processed[feature_cols] = df_normalized
 
     # Save normalized data
     df_processed.to_csv(output_training_csv_path, index=False)
-    print(f"Successfully normalized data and saved to {output_training_csv_path}")
+    print(f"Successfully added features, normalized data, and saved to {output_training_csv_path}")
 
-    # Save scaler parameters for denormalization during prediction
+    # Save scaler parameters for all features
     scaler_params = {
         'mean': mean_vals.to_dict(),
         'std': std_vals.to_dict()
     }
     with open(output_scaler_params_path, 'w') as f:
         json.dump(scaler_params, f, indent=4)
-    print(f"Scaler parameters saved to {output_scaler_params_path}")
+    print(f"Scaler parameters for all features saved to {output_scaler_params_path}")
 
 
 if __name__ == "__main__":

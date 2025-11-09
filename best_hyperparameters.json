@@ -1,0 +1,10 @@
+{
+    "lstm_units": 96,
+    "learning_rate": 0.01,
+    "batch_size": 256,
+    "tuner/epochs": 20,
+    "tuner/initial_epoch": 7,
+    "tuner/bracket": 1,
+    "tuner/round": 1,
+    "tuner/trial_id": "0015"
+}

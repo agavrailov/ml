@@ -10,16 +10,37 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.config import RAW_DATA_CSV, TWS_HOST, TWS_PORT, TWS_CLIENT_ID, NVDA_CONTRACT_DETAILS
 
+async def _fetch_single_day_data(ib, contract, end_date_str, barSizeSetting, semaphore):
+    """Helper function to fetch data for a single day with rate limiting."""
+    async with semaphore:
+        print(f"Requesting data ending {end_date_str} for duration '1 D'...")
+        bars = await ib.reqHistoricalDataAsync(
+            contract,
+            endDateTime=end_date_str,
+            durationStr='1 D',
+            barSizeSetting=barSizeSetting,
+            whatToShow='TRADES',
+            useRTH=False,
+            formatDate=1
+        )
+        if bars:
+            print(f"Fetched {len(bars)} bars ending {end_date_str}.")
+        else:
+            print(f"No bars received for period ending {end_date_str}.")
+        await asyncio.sleep(1) # Small delay to respect API limits
+        return bars
+
 async def fetch_historical_data(
     contract_details: dict,
     start_date: datetime,
     end_date: datetime,
     barSizeSetting='1 min',
-    file_path=RAW_DATA_CSV
+    file_path=RAW_DATA_CSV,
+    max_concurrent_requests=5 # Limit concurrent requests
 ):
     """
     Connects to IB TWS/Gateway, fetches historical minute-level data for the specified contract
-    between start_date and end_date, and saves it to a CSV file. Data is fetched in daily chunks.
+    between start_date and end_date, and saves it to a CSV file. Data is fetched concurrently.
 
     Args:
         contract_details (dict): A dictionary containing contract details (e.g., symbol, secType, exchange, currency).
@@ -27,11 +48,11 @@ async def fetch_historical_data(
         end_date (datetime): The end date for data fetching.
         barSizeSetting (str): Bar size (e.g., '1 min', '5 mins', '1 hour').
         file_path (str): Path to save the fetched data as a CSV.
+        max_concurrent_requests (int): Maximum number of concurrent API requests.
     """
     ib = IB()
     all_bars = []
-    current_end_date = end_date
-
+    
     try:
         await ib.connectAsync(TWS_HOST, TWS_PORT, TWS_CLIENT_ID)
         print(f"Connected to IB TWS/Gateway on {TWS_HOST}:{TWS_PORT} with Client ID {TWS_CLIENT_ID}")
@@ -70,35 +91,28 @@ async def fetch_historical_data(
 
         print(f"Fetching historical data for {contract.symbol}/{contract.currency} from {start_date.strftime('%Y%m%d %H:%M:%S')} to {end_date.strftime('%Y%m%d %H:%M:%S')}...")
 
-        while current_end_date > start_date:
-            # Request data for one day at a time
-            duration_str = '1 D'
-            
-            # TWS API endDateTime is exclusive, so we fetch up to the current_end_date
-            # and then move current_end_date back by one day.
-            end_date_str = current_end_date.strftime('%Y%m%d %H:%M:%S')
-            
-            print(f"Requesting data ending {end_date_str} for duration {duration_str}...")
-            bars = await ib.reqHistoricalDataAsync(
-                contract,
-                endDateTime=end_date_str,
-                durationStr=duration_str,
-                barSizeSetting=barSizeSetting,
-                whatToShow='TRADES',
-                useRTH=False,
-                formatDate=1
-            )
+        # Generate all daily end dates for requests
+        request_dates = []
+        current_date = end_date
+        while current_date > start_date:
+            request_dates.append(current_date)
+            current_date -= timedelta(days=1)
+        
+        # Create a semaphore to limit concurrent requests
+        semaphore = asyncio.Semaphore(max_concurrent_requests)
+        
+        # Create a list of tasks for concurrent fetching
+        tasks = []
+        for req_date in request_dates:
+            end_date_str = req_date.strftime('%Y%m%d %H:%M:%S')
+            tasks.append(_fetch_single_day_data(ib, contract, end_date_str, barSizeSetting, semaphore))
+        
+        # Run tasks concurrently
+        results = await asyncio.gather(*tasks)
 
+        for bars in results:
             if bars:
                 all_bars.extend(bars)
-                print(f"Fetched {len(bars)} bars ending {end_date_str}.")
-            else:
-                print(f"No bars received for period ending {end_date_str}.")
-            
-            # Move to the previous day
-            current_end_date -= timedelta(days=1)
-            # Add a small delay to avoid hitting API rate limits
-            await asyncio.sleep(1) 
 
         if not all_bars:
             print("No historical data received for the entire period.")
@@ -141,9 +155,9 @@ async def fetch_historical_data(
 if __name__ == "__main__":
     print("Running TWS data ingestion for NVDA...")
     
-    # Define the date range for data fetching (e.g., last 3 months)
+    # Define the date range for data fetching (January 1, 2025, until now)
     end_date = datetime.now()
-    start_date = end_date - timedelta(days=90) # Approximately 3 months
+    start_date = datetime(2025, 1, 1) # Start of 2025
 
     asyncio.run(fetch_historical_data(
         contract_details=NVDA_CONTRACT_DETAILS,

@@ -7,11 +7,11 @@ import json # Added import
 TSTEPS = 3  # window size a.k.a. time steps
 ROWS_AHEAD = 60  # prediction Labels are n rows ahead of the current
 TR_SPLIT = 0.7   # part of data used for training
-N_FEATURES = 4    # Number of features (OHLC)
-BATCH_SIZE = 500 # Number of samples per gradient update. Reduced for smaller datasets.
+N_FEATURES = 9    # Number of features (OHLC + technical indicators + time features)
+BATCH_SIZE = 256 # Number of samples per gradient update. Found by KerasTuner.
 EPOCHS = 20
-LEARNING_RATE = 0.005
-LSTM_UNITS = 100  # number of neurons in a LSTM layer
+LEARNING_RATE = 0.01
+LSTM_UNITS = 96  # number of neurons in a LSTM layer. Found by KerasTuner.
 
 # --- Paths ---
 PROCESSED_DATA_DIR = "data/processed"

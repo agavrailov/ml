@@ -10,7 +10,7 @@ import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.predict import predict_future_prices
-from src.config import TSTEPS, N_FEATURES, get_latest_model_path # Import get_latest_model_path
+from src.config import TSTEPS, N_FEATURES, get_active_model_path # Import get_active_model_path
 
 app = FastAPI(
     title="ML LSTM Price Prediction API",
@@ -59,11 +59,16 @@ async def predict(request: PredictionRequest):
     try:
         predicted_price = predict_future_prices(input_df)
         
-        # Get the latest model path and extract the timestamp for versioning
-        latest_model_path = get_latest_model_path()
-        model_version = os.path.basename(latest_model_path).replace('my_lstm_model_', '').replace('.keras', '')
+        # Get the active model path and extract the timestamp for versioning
+        active_model_path = get_active_model_path()
+        if active_model_path is None:
+            raise HTTPException(status_code=500, detail="No active model found. Please train and promote a model first.")
+        
+        model_version = os.path.basename(active_model_path).replace('my_lstm_model_', '').replace('.keras', '')
         
         return {"predicted_price": predicted_price, "model_version": model_version}
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
 

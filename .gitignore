@@ -7,3 +7,6 @@ training_data_minute
 venv/
 __pycache__/
 models/registry/
+hyperparameter_tuning/
+evaluation_plot.png
+models/active_model.txt

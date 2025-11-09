@@ -9,7 +9,7 @@ from src.model import build_lstm_model
 from src.config import (
     TSTEPS, N_FEATURES, BATCH_SIZE,
     PROCESSED_DATA_DIR, SCALER_PARAMS_JSON, MODEL_SAVE_PATH,
-    LSTM_UNITS, LEARNING_RATE, get_latest_model_path # Added get_latest_model_path
+    LSTM_UNITS, LEARNING_RATE, get_latest_model_path, get_active_model_path # Added get_active_model_path
 )
 
 def predict_future_prices(input_data_df, scaler_params_path=SCALER_PARAMS_JSON):
@@ -26,12 +26,12 @@ def predict_future_prices(input_data_df, scaler_params_path=SCALER_PARAMS_JSON):
     Returns:
         np.array: Denormalized predicted prices.
     """
-    latest_model_path = get_latest_model_path()
-    if not latest_model_path:
-        raise FileNotFoundError("No trained models found in the registry. Please train a model first.")
+    active_model_path = get_active_model_path()
+    if not active_model_path:
+        raise FileNotFoundError("No active model found. Please train and promote a model first.")
 
     # Load the trained model (which was trained with BATCH_SIZE)
-    trained_model = keras.models.load_model(latest_model_path)
+    trained_model = keras.models.load_model(active_model_path)
 
     # Build a prediction model with batch_size=1, but same architecture
     # This is crucial for stateful LSTMs when predicting single samples
@@ -81,10 +81,10 @@ if __name__ == "__main__":
     # Example usage for prediction
     print("Running prediction example...")
 
-    # Ensure a trained model and scaler params exist
-    latest_model_path = get_latest_model_path()
-    if not latest_model_path or not os.path.exists(SCALER_PARAMS_JSON):
-        print("Error: Trained model or scaler parameters not found. Please train a model first.")
+    # Ensure an active model and scaler params exist
+    active_model_path = get_active_model_path()
+    if not active_model_path or not os.path.exists(SCALER_PARAMS_JSON):
+        print("Error: Active model or scaler parameters not found. Please train and promote a model first.")
     else:
         # Create dummy input data for prediction
         # This should be the last TSTEPS of your actual data, normalized.

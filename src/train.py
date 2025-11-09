@@ -40,7 +40,7 @@ def create_sequences_for_stateful_lstm(data, sequence_length, batch_size, rows_a
     Manually creates X and Y sequences for a stateful LSTM.
 
     Args:
-        data (pd.DataFrame): The input DataFrame (normalized OHLC).
+        data (pd.DataFrame): The input DataFrame with all normalized features.
         sequence_length (int): The length of the input sequences (tsteps).
         batch_size (int): The batch size.
         rows_ahead (int): How many rows ahead the label should be.
@@ -48,7 +48,9 @@ def create_sequences_for_stateful_lstm(data, sequence_length, batch_size, rows_a
     Returns:
         tuple: (X_sequences, Y_labels) as numpy arrays.
     """
-    features_array = data[['Open', 'High', 'Low', 'Close']].values
+    # Use all columns except 'Time' as features
+    feature_cols = [col for col in data.columns if col != 'Time']
+    features_array = data[feature_cols].values
     labels_array = data['Open'].values
 
     shifted_labels = np.full_like(labels_array, np.nan, dtype=float)
