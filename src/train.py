@@ -89,7 +89,7 @@ def create_sequences_for_stateful_lstm(data, sequence_length, batch_size, rows_a
     return X, Y
 
 
-def train_model(current_batch_size=BATCH_SIZE): # Added current_batch_size parameter
+def train_model(lstm_units=LSTM_UNITS, learning_rate=LEARNING_RATE, epochs=EPOCHS, current_batch_size=BATCH_SIZE):
     """
     Loads processed data, builds and trains the LSTM model, and saves the trained model.
     """
@@ -145,22 +145,23 @@ def train_model(current_batch_size=BATCH_SIZE): # Added current_batch_size param
     # Build the model
     model = build_lstm_model(
         input_shape=(TSTEPS, N_FEATURES),
-        lstm_units=LSTM_UNITS,
+        lstm_units=lstm_units, # Use passed parameter
         batch_size=current_batch_size, # Use current_batch_size for model building
-        learning_rate=LEARNING_RATE
+        learning_rate=learning_rate # Use passed parameter
     )
 
     # Train the model
     print("Starting model training...")
+    history = None
     if len(X_val) > 0:
-        model.fit(X_train, Y_train,
-                  epochs=EPOCHS,
+        history = model.fit(X_train, Y_train,
+                  epochs=epochs, # Use passed parameter
                   batch_size=current_batch_size,
                   validation_data=(X_val, Y_val),
                   shuffle=False) # Stateful LSTMs typically require shuffle=False
     else:
-        model.fit(X_train, Y_train,
-                  epochs=EPOCHS,
+        history = model.fit(X_train, Y_train,
+                  epochs=epochs, # Use passed parameter
                   batch_size=current_batch_size,
                   shuffle=False) # Stateful LSTMs typically require shuffle=False
     print("Model training finished.")
@@ -172,7 +173,24 @@ def train_model(current_batch_size=BATCH_SIZE): # Added current_batch_size param
     model.save(versioned_model_path)
     print(f"Trained model saved to {versioned_model_path}")
 
+    # Return the final training loss
+    if history and history.history:
+        return history.history['loss'][-1]
+    return None
+
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Train the LSTM model with specified hyperparameters.")
+    parser.add_argument('--lstm_units', type=int, default=LSTM_UNITS,
+                        help=f"Number of LSTM units in the layer (default: {LSTM_UNITS})")
+    parser.add_argument('--learning_rate', type=float, default=LEARNING_RATE,
+                        help=f"Learning rate for the optimizer (default: {LEARNING_RATE})")
+    parser.add_argument('--epochs', type=int, default=EPOCHS,
+                        help=f"Number of training epochs (default: {EPOCHS})")
+    
+    args = parser.parse_args()
+
     # Ensure data/processed exists and contains necessary files for testing
     if not os.path.exists(PROCESSED_DATA_DIR):
         os.makedirs(PROCESSED_DATA_DIR)
@@ -206,5 +224,11 @@ if __name__ == "__main__":
         prepare_keras_input_data(hourly_output_path, training_output_path, scaler_params_path)
         print("Dummy processed data created.")
 
-    # Call train_model without current_batch_size to use global BATCH_SIZE (500)
-    train_model()
+    # Call train_model with parsed arguments
+    final_loss = train_model(
+        lstm_units=args.lstm_units,
+        learning_rate=args.learning_rate,
+        epochs=args.epochs
+    )
+    if final_loss is not None:
+        print(f"Final Training Loss: {final_loss:.4f}")

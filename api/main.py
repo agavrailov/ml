@@ -10,7 +10,7 @@ import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.predict import predict_future_prices
-from src.config import TSTEPS, N_FEATURES
+from src.config import TSTEPS, N_FEATURES, get_latest_model_path # Import get_latest_model_path
 
 app = FastAPI(
     title="ML LSTM Price Prediction API",
@@ -29,7 +29,7 @@ class OHLCDataPoint(BaseModel):
 class PredictionRequest(BaseModel):
     data: List[OHLCDataPoint]
 
-@app.post("/predict", summary="Predict future price", response_description="The predicted future price")
+@app.post("/predict", summary="Predict future price", response_description="The predicted future price and model version")
 async def predict(request: PredictionRequest):
     """
     Accepts a list of historical OHLC data points and returns a future price prediction.
@@ -58,7 +58,12 @@ async def predict(request: PredictionRequest):
 
     try:
         predicted_price = predict_future_prices(input_df)
-        return {"predicted_price": predicted_price}
+        
+        # Get the latest model path and extract the timestamp for versioning
+        latest_model_path = get_latest_model_path()
+        model_version = os.path.basename(latest_model_path).replace('my_lstm_model_', '').replace('.keras', '')
+        
+        return {"predicted_price": predicted_price, "model_version": model_version}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
 

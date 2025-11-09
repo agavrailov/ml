@@ -9,8 +9,8 @@ TR_SPLIT = 0.7   # part of data used for training
 N_FEATURES = 4    # Number of features (OHLC)
 BATCH_SIZE = 500 # Number of samples per gradient update. Reduced for smaller datasets.
 EPOCHS = 20
-LEARNING_RATE = 0.001
-LSTM_UNITS = 50  # number of neurons in a LSTM layer
+LEARNING_RATE = 0.005
+LSTM_UNITS = 100  # number of neurons in a LSTM layer
 
 # --- Paths ---
 PROCESSED_DATA_DIR = "data/processed"

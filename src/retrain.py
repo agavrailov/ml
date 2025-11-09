@@ -14,7 +14,7 @@ from datetime import datetime # Added import
 from src.config import (
     TSTEPS, ROWS_AHEAD, TR_SPLIT, N_FEATURES, BATCH_SIZE,
     EPOCHS, LEARNING_RATE, LSTM_UNITS,
-    PROCESSED_DATA_DIR, TRAINING_DATA_CSV, SCALER_PARAMS_JSON, MODEL_SAVE_PATH, MODEL_REGISTRY_DIR
+    PROCESSED_DATA_DIR, TRAINING_DATA_CSV, SCALER_PARAMS_JSON, MODEL_SAVE_PATH, MODEL_REGISTRY_DIR, get_latest_model_path
 )
 
 def retrain_model():
@@ -23,26 +23,16 @@ def retrain_model():
     and retrains the model with the new data.
     """
     # 1. Load the existing trained model
-    if not os.path.exists(MODEL_SAVE_PATH):
-        print(f"Error: No existing model found at {MODEL_SAVE_PATH}. Please train a model first.")
+    latest_model_path = get_latest_model_path()
+    if latest_model_path is None:
+        print(f"Error: No trained models found in the registry at {MODEL_REGISTRY_DIR}. Please train a model first.")
         return
 
-    # When loading a stateful model, it's crucial to use the same batch_size
-    # that the model was originally trained with.
-    # For now, we assume BATCH_SIZE from config is the one used for initial training.
-    # In a more robust system, batch_size would be saved with the model or its metadata.
     try:
-        # Rebuild the model with the correct batch_size for loading weights
-        # This is a common pattern for stateful models when loading
-        # and then continuing training.
-        # The loaded model will have the weights, but we need to ensure
-        # the graph structure (especially batch_input_shape) is compatible.
-        # However, Keras's load_model often handles this if the original
-        # model was saved correctly. Let's try direct load first.
-        model = keras.models.load_model(MODEL_SAVE_PATH)
-        print(f"Existing model loaded from {MODEL_SAVE_PATH}")
+        model = keras.models.load_model(latest_model_path)
+        print(f"Existing model loaded from {latest_model_path}")
     except Exception as e:
-        print(f"Error loading model from {MODEL_SAVE_PATH}: {e}")
+        print(f"Error loading model from {latest_model_path}: {e}")
         print("Attempting to build a new model and load weights (if compatible).")
         # Fallback: build model and load weights if direct load fails
         model = build_lstm_model(
@@ -51,7 +41,7 @@ def retrain_model():
             batch_size=BATCH_SIZE,
             learning_rate=LEARNING_RATE
         )
-        model.load_weights(MODEL_SAVE_PATH)
+        model.load_weights(latest_model_path)
         print("Model built and weights loaded.")
 
 
