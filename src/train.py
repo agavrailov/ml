@@ -19,30 +19,13 @@ from src.config import (
     PROCESSED_DATA_DIR, TRAINING_DATA_CSV, SCALER_PARAMS_JSON, MODEL_SAVE_PATH, MODEL_REGISTRY_DIR
 )
 
-def get_effective_data_length(data, sequence_length, rows_ahead):
-    labels_array = data['Open'].values
-
-    shifted_labels = np.full_like(labels_array, np.nan, dtype=float)
-    if rows_ahead < len(labels_array):
-        shifted_labels[:-rows_ahead] = labels_array[rows_ahead:]
-    
-    valid_indices = ~np.isnan(shifted_labels)
-    effective_data_len = np.sum(valid_indices)
-
-    # Number of sequences that can be formed from this effective data length
-    if effective_data_len < sequence_length:
-        return 0
-    return effective_data_len - sequence_length + 1
-
-
-def create_sequences_for_stateful_lstm(data, sequence_length, batch_size, rows_ahead):
+def create_sequences(data, sequence_length, rows_ahead):
     """
-    Manually creates X and Y sequences for a stateful LSTM.
+    Manually creates X and Y sequences for a stateless LSTM.
 
     Args:
         data (pd.DataFrame): The input DataFrame with all normalized features.
         sequence_length (int): The length of the input sequences (tsteps).
-        batch_size (int): The batch size.
         rows_ahead (int): How many rows ahead the label should be.
 
     Returns:
@@ -74,17 +57,6 @@ def create_sequences_for_stateful_lstm(data, sequence_length, batch_size, rows_a
     X = np.array(X)
     Y = np.array(Y)
 
-    # Ensure X and Y are divisible by batch_size
-    num_samples = len(X)
-    remainder = num_samples % batch_size
-    if remainder > 0:
-        X = X[:-remainder]
-        Y = Y[:-remainder]
-    
-    if len(X) == 0:
-        print(f"Warning: After batching, no samples left. Returning empty arrays.")
-        return np.array([]), np.array([])
-
     # Reshape Y to be (num_samples, 1) if it's not already
     if Y.ndim == 1:
         Y = Y.reshape(-1, 1)
@@ -99,58 +71,21 @@ def train_model(lstm_units=LSTM_UNITS, learning_rate=LEARNING_RATE, epochs=EPOCH
     # Load processed data
     df_processed = pd.read_csv(TRAINING_DATA_CSV)
     
-    # Load scaler parameters for denormalization (needed for prediction)
-    with open(SCALER_PARAMS_JSON, 'r') as f:
-        scaler_params = json.load(f)
-
     # Split data into training and validation sets
     train_size = int(len(df_processed) * TR_SPLIT)
     df_train = df_processed.iloc[:train_size].copy()
     df_val = df_processed.iloc[train_size:].copy()
 
-    # --- Truncation logic to ensure number of sequences is divisible by current_batch_size ---
-    
-    # For training data
-    max_sequences_train = get_effective_data_length(df_train, TSTEPS, ROWS_AHEAD)
-    if max_sequences_train < current_batch_size:
-        print(f"Warning: Training data ({max_sequences_train} sequences) too short for batch_size={current_batch_size}. Skipping training.")
-        return
-    
-    remainder_sequences_train = max_sequences_train % current_batch_size
-    if remainder_sequences_train > 0:
-        df_train = df_train.iloc[:-remainder_sequences_train]
-        max_sequences_train = get_effective_data_length(df_train, TSTEPS, ROWS_AHEAD)
-        if max_sequences_train < current_batch_size: # Check again if it became too short
-            print(f"Warning: Training data became too short after truncation. Skipping training.")
-            return
-
-    # For validation data
-    max_sequences_val = get_effective_data_length(df_val, TSTEPS, ROWS_AHEAD)
-    X_val, Y_val = np.array([]), np.array([])
-    if max_sequences_val >= current_batch_size:
-        remainder_sequences_val = max_sequences_val % current_batch_size
-        if remainder_sequences_val > 0:
-            df_val = df_val.iloc[:-remainder_sequences_val]
-            max_sequences_val = get_effective_data_length(df_val, TSTEPS, ROWS_AHEAD)
-            if max_sequences_val < current_batch_size: # Check again if it became too short
-                print(f"Warning: Validation data became too short after truncation. Skipping validation.")
-            else:
-                X_val, Y_val = create_sequences_for_stateful_lstm(df_val, TSTEPS, current_batch_size, ROWS_AHEAD)
-        else:
-            X_val, Y_val = create_sequences_for_stateful_lstm(df_val, TSTEPS, current_batch_size, ROWS_AHEAD)
-    else:
-        print(f"Warning: Not enough validation sequences ({max_sequences_val}) for batch_size={current_batch_size}. Skipping validation.")
-            
-
-    # Create X and Y arrays for training
-    X_train, Y_train = create_sequences_for_stateful_lstm(df_train, TSTEPS, current_batch_size, ROWS_AHEAD)
+    # Create X and Y arrays for training and validation
+    X_train, Y_train = create_sequences(df_train, TSTEPS, ROWS_AHEAD)
+    X_val, Y_val = create_sequences(df_val, TSTEPS, ROWS_AHEAD)
     
     # Build the model
     model = build_lstm_model(
         input_shape=(TSTEPS, N_FEATURES),
-        lstm_units=lstm_units, # Use passed parameter
-        batch_size=current_batch_size, # Use current_batch_size for model building
-        learning_rate=learning_rate # Use passed parameter
+        lstm_units=lstm_units,
+        batch_size=current_batch_size,
+        learning_rate=learning_rate
     )
 
     # Define Early Stopping callback
@@ -158,24 +93,16 @@ def train_model(lstm_units=LSTM_UNITS, learning_rate=LEARNING_RATE, epochs=EPOCH
 
     # Train the model
     print("Starting model training...")
-    history = None
-    if len(X_val) > 0:
-        history = model.fit(X_train, Y_train,
-                  epochs=epochs, # Use passed parameter
-                  batch_size=current_batch_size,
-                  validation_data=(X_val, Y_val),
-                  callbacks=[early_stopping], # Add early stopping
-                  shuffle=False) # Stateful LSTMs typically require shuffle=False
-    else:
-        history = model.fit(X_train, Y_train,
-                  epochs=epochs, # Use passed parameter
-                  batch_size=current_batch_size,
-                  callbacks=[early_stopping], # Add early stopping
-                  shuffle=False) # Stateful LSTMs typically require shuffle=False
+    history = model.fit(X_train, Y_train,
+              epochs=epochs,
+              batch_size=current_batch_size,
+              validation_data=(X_val, Y_val),
+              callbacks=[early_stopping],
+              shuffle=True) # Shuffle is True for stateless models
     print("Model training finished.")
 
     # Save the trained model to a versioned path
-    os.makedirs(MODEL_REGISTRY_DIR, exist_ok=True) # Ensure registry directory exists
+    os.makedirs(MODEL_REGISTRY_DIR, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     versioned_model_path = os.path.join(MODEL_REGISTRY_DIR, f"my_lstm_model_{timestamp}.keras")
     model.save(versioned_model_path)

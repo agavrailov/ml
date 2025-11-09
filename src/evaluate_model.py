@@ -92,12 +92,11 @@ def evaluate_model_performance():
         # Get the input sequence
         input_sequence = df_eval_normalized.iloc[i : i + TSTEPS].values
         
-        # Reshape for the model (add batch dimension)
-        padded_input = np.zeros((BATCH_SIZE, TSTEPS, N_FEATURES))
-        padded_input[0] = input_sequence
+        # Reshape for the model (add batch dimension for a single sample)
+        input_sequence = input_sequence.reshape(1, TSTEPS, N_FEATURES)
         
         # Make prediction
-        predicted_normalized = model.predict(padded_input, batch_size=BATCH_SIZE, verbose=0)[0][-1][0]
+        predicted_normalized = model.predict(input_sequence, verbose=0)[0][-1][0]
         
         # Denormalize the prediction
         predicted_price = (predicted_normalized * std_open) + mean_open
