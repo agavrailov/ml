@@ -1,6 +1,7 @@
 # src/config.py
 
 import os
+import json # Added import
 
 # --- Model Hyperparameters ---
 TSTEPS = 3  # window size a.k.a. time steps
@@ -18,6 +19,7 @@ TRAINING_DATA_CSV = os.path.join(PROCESSED_DATA_DIR, "training_data.csv")
 SCALER_PARAMS_JSON = os.path.join(PROCESSED_DATA_DIR, "scaler_params.json")
 MODEL_SAVE_PATH = "models/my_lstm_model.keras" # Keras native format
 MODEL_REGISTRY_DIR = "models/registry" # Directory to store versioned models
+ACTIVE_MODEL_PATH_FILE = os.path.join("models", "active_model.txt") # Added active model pointer file
 
 def get_latest_model_path():
     """Returns the path to the latest saved model in the registry."""
@@ -31,6 +33,21 @@ def get_latest_model_path():
     # Assuming models are named with a timestamp, e.g., my_lstm_model_YYYYMMDD_HHMMSS.keras
     latest_model_file = sorted(model_files, reverse=True)[0]
     return os.path.join(MODEL_REGISTRY_DIR, latest_model_file)
+
+def get_active_model_path():
+    """
+    Returns the path to the currently active model based on active_model.txt.
+    Returns None if no active model is designated or file is missing/corrupted.
+    """
+    if not os.path.exists(ACTIVE_MODEL_PATH_FILE):
+        return None
+    try:
+        with open(ACTIVE_MODEL_PATH_FILE, 'r') as f:
+            active_model_info = json.load(f)
+            return active_model_info.get("path")
+    except json.JSONDecodeError:
+        print(f"Warning: {ACTIVE_MODEL_PATH_FILE} is corrupted. No active model found.")
+        return None
 
 # --- TWS API Connection Parameters ---
 TWS_HOST = os.getenv('TWS_HOST', '127.0.0.1')

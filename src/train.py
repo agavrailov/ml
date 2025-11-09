@@ -8,6 +8,7 @@ import tensorflow as tf
 from tensorflow import keras
 import json
 import os
+from tensorflow.keras.callbacks import EarlyStopping # Added import
 
 from src.model import build_lstm_model
 from src.data_processing import convert_minute_to_hourly, prepare_keras_input_data
@@ -150,6 +151,9 @@ def train_model(lstm_units=LSTM_UNITS, learning_rate=LEARNING_RATE, epochs=EPOCH
         learning_rate=learning_rate # Use passed parameter
     )
 
+    # Define Early Stopping callback
+    early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
+
     # Train the model
     print("Starting model training...")
     history = None
@@ -158,11 +162,13 @@ def train_model(lstm_units=LSTM_UNITS, learning_rate=LEARNING_RATE, epochs=EPOCH
                   epochs=epochs, # Use passed parameter
                   batch_size=current_batch_size,
                   validation_data=(X_val, Y_val),
+                  callbacks=[early_stopping], # Add early stopping
                   shuffle=False) # Stateful LSTMs typically require shuffle=False
     else:
         history = model.fit(X_train, Y_train,
                   epochs=epochs, # Use passed parameter
                   batch_size=current_batch_size,
+                  callbacks=[early_stopping], # Add early stopping
                   shuffle=False) # Stateful LSTMs typically require shuffle=False
     print("Model training finished.")
 
@@ -201,7 +207,7 @@ if __name__ == "__main__":
         
         # Generate a continuous range of minute-level datetimes
         start_time = pd.to_datetime('2023-01-01T00:00')
-        num_minutes = 60000 # For 1000 hours of data
+        num_minutes = 120000 # Increased for more data
         dummy_datetimes = pd.date_range(start=start_time, periods=num_minutes, freq='min')
 
         dummy_minute_data = {

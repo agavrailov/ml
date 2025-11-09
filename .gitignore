@@ -6,3 +6,4 @@ training_data_minute
 .Rproj.user
 venv/
 __pycache__/
+models/registry/
