@@ -236,13 +236,25 @@ def train_model(lstm_units=LSTM_UNITS, learning_rate=LEARNING_RATE, epochs=EPOCH
 if __name__ == "__main__":
     import argparse
 
+    # Load best hyperparameters if available
+    best_hps = {}
+    best_hps_path = 'best_hyperparameters.json'
+    if os.path.exists(best_hps_path):
+        with open(best_hps_path, 'r') as f:
+            best_hps = json.load(f)
+        print(f"Loaded best hyperparameters from {best_hps_path}")
+    else:
+        print("No 'best_hyperparameters.json' found. Using default hyperparameters from config.py.")
+
     parser = argparse.ArgumentParser(description="Train the LSTM model with specified hyperparameters.")
-    parser.add_argument('--lstm_units', type=int, default=LSTM_UNITS,
-                        help=f"Number of LSTM units in the layer (default: {LSTM_UNITS})")
-    parser.add_argument('--learning_rate', type=float, default=LEARNING_RATE,
-                        help=f"Learning rate for the optimizer (default: {LEARNING_RATE})")
+    parser.add_argument('--lstm_units', type=int, default=best_hps.get('lstm_units', LSTM_UNITS),
+                        help=f"Number of LSTM units in the layer (default: {best_hps.get('lstm_units', LSTM_UNITS)})")
+    parser.add_argument('--learning_rate', type=float, default=best_hps.get('learning_rate', LEARNING_RATE),
+                        help=f"Learning rate for the optimizer (default: {best_hps.get('learning_rate', LEARNING_RATE)})")
     parser.add_argument('--epochs', type=int, default=EPOCHS,
                         help=f"Number of training epochs (default: {EPOCHS})")
+    parser.add_argument('--batch_size', type=int, default=best_hps.get('batch_size', BATCH_SIZE),
+                        help=f"Batch size for training (default: {best_hps.get('batch_size', BATCH_SIZE)})")
     
     args = parser.parse_args()
 
@@ -279,7 +291,8 @@ if __name__ == "__main__":
     final_loss = train_model(
         lstm_units=args.lstm_units,
         learning_rate=args.learning_rate,
-        epochs=args.epochs
+        epochs=args.epochs,
+        current_batch_size=args.batch_size # Pass batch_size from args
     )
     if final_loss is not None:
         print(f"Final Training Loss: {final_loss:.4f}")

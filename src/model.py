@@ -19,7 +19,7 @@ def build_lstm_model(input_shape, lstm_units, batch_size, learning_rate):
         keras.Model: A compiled Keras LSTM model.
     """
     # Define the input layer for a stateful model
-    inputs = keras.Input(batch_input_shape=(batch_size, input_shape[0], input_shape[1]), dtype=tf.float32)
+    inputs = keras.Input(batch_shape=(batch_size, input_shape[0], input_shape[1]), dtype=tf.float32)
 
     # Add the LSTM layer
     lstm_layer = layers.LSTM(units=lstm_units,
