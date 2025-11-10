@@ -30,7 +30,7 @@ def build_tuned_model(hp):
     inputs = keras.Input(batch_shape=(batch_size, TSTEPS, N_FEATURES), dtype=tf.float32)
     lstm_layer = keras.layers.LSTM(
         units=hp_units,
-        return_sequences=True,
+        return_sequences=False, # Changed to False for single output
         stateful=True,
         activation='tanh'
     )(inputs)
@@ -40,7 +40,7 @@ def build_tuned_model(hp):
 
     # --- Compilation ---
     optimizer = keras.optimizers.RMSprop(learning_rate=hp_learning_rate)
-    model.compile(loss='mse', optimizer=optimizer, metrics=['accuracy'])
+    model.compile(loss='mae', optimizer=optimizer, metrics=['mae'])
     
     return model
 

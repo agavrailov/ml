@@ -7,35 +7,29 @@ from tensorflow.keras.layers import Bidirectional
 
 def build_lstm_model(input_shape, lstm_units, batch_size, learning_rate):
     """
-    Builds and compiles a Keras Bidirectional LSTM model.
-    This version is stateless.
+    Builds and compiles a Keras Stateful LSTM model.
 
     Args:
         input_shape (tuple): The shape of the input data (timesteps, features).
         lstm_units (int): Number of neurons in the LSTM layer.
-        batch_size (int): The batch size for training (used in stateless context).
+        batch_size (int): The batch size for training (required for stateful model).
         learning_rate (float): The learning rate for the RMSprop optimizer.
 
     Returns:
         keras.Model: A compiled Keras LSTM model.
     """
-    # Define the input layer for a stateless model
-    inputs = keras.Input(shape=(input_shape[0], input_shape[1]), dtype=tf.float32)
+    # Define the input layer for a stateful model
+    inputs = keras.Input(batch_input_shape=(batch_size, input_shape[0], input_shape[1]), dtype=tf.float32)
 
-    # Add the first Bidirectional LSTM layer
-    lstm_layer_1 = Bidirectional(layers.LSTM(units=lstm_units,
-                                             return_sequences=True,
-                                             activation='tanh'))(inputs)
-    dropout_1 = layers.Dropout(0.2)(lstm_layer_1)
-
-    # Add the second Bidirectional LSTM layer
-    lstm_layer_2 = Bidirectional(layers.LSTM(units=lstm_units,
-                                             return_sequences=False, # Changed to False
-                                             activation='tanh'))(dropout_1)
-    dropout_2 = layers.Dropout(0.2)(lstm_layer_2)
+    # Add the LSTM layer
+    lstm_layer = layers.LSTM(units=lstm_units,
+                             return_sequences=False, # False for single output
+                             stateful=True,
+                             activation='tanh')(inputs)
+    dropout = layers.Dropout(0.2)(lstm_layer)
 
     # Add the Dense output layer
-    outputs = layers.Dense(units=1, dtype=tf.float32)(dropout_2) # Connect to the last dropout layer
+    outputs = layers.Dense(units=1, dtype=tf.float32)(dropout)
 
     # Create the model
     model = Model(inputs=inputs, outputs=outputs)

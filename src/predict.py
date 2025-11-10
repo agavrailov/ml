@@ -66,8 +66,11 @@ def predict_future_prices(input_data_df, scaler_params_path=SCALER_PARAMS_JSON):
     input_normalized_features = (df_featured_input[feature_cols] - mean_vals[feature_cols]) / std_vals[feature_cols]
 
     # Reshape input for LSTM: (batch_size, TSTEPS, N_FEATURES)
-    # Add batch dimension (batch_size=1 for single prediction)
+    # For prediction, batch_size is 1.
     input_reshaped = input_normalized_features.values[np.newaxis, :, :]
+
+    # Reset model states before prediction for independent sequences
+    trained_model.reset_states()
 
     # Make prediction using the trained model
     predictions_normalized = trained_model.predict(input_reshaped)

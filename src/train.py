@@ -16,10 +16,35 @@ from datetime import datetime # Added import
 from src.config import (
     TSTEPS, ROWS_AHEAD, TR_SPLIT, N_FEATURES, BATCH_SIZE,
     EPOCHS, LEARNING_RATE, LSTM_UNITS,
-    PROCESSED_DATA_DIR, TRAINING_DATA_CSV, SCALER_PARAMS_JSON, MODEL_SAVE_PATH, MODEL_REGISTRY_DIR
+    PROCESSED_DATA_DIR, HOURLY_DATA_CSV, TRAINING_DATA_CSV, SCALER_PARAMS_JSON, MODEL_SAVE_PATH, MODEL_REGISTRY_DIR
 )
 
-def create_sequences(data, sequence_length, rows_ahead):
+def get_effective_data_length(data, sequence_length, rows_ahead):
+    """
+    Calculates the effective number of data points available for sequence creation
+    after considering sequence_length and rows_ahead.
+    """
+    # Use all columns except 'Time' as features
+    feature_cols = [col for col in data.columns if col != 'Time']
+    features_array = data[feature_cols].values
+    labels_array = data['Open'].values
+
+    shifted_labels = np.full_like(labels_array, np.nan, dtype=float)
+    if rows_ahead < len(labels_array):
+        shifted_labels[:-rows_ahead] = labels_array[rows_ahead:]
+    
+    valid_indices = ~np.isnan(shifted_labels)
+    
+    # The number of valid feature rows after considering shifted labels
+    num_valid_feature_rows = np.sum(valid_indices)
+
+    # The number of sequences that can be formed
+    if num_valid_feature_rows < sequence_length:
+        return 0
+    return num_valid_feature_rows - sequence_length + 1
+
+
+def create_sequences_for_stateless_lstm(data, sequence_length, rows_ahead):
     """
     Manually creates X and Y sequences for a stateless LSTM.
 
@@ -64,27 +89,122 @@ def create_sequences(data, sequence_length, rows_ahead):
     return X, Y
 
 
+def create_sequences_for_stateful_lstm(data, sequence_length, batch_size, rows_ahead):
+    """
+    Creates X and Y sequences for a stateful LSTM, ensuring that the number of samples
+    is divisible by the batch_size and maintaining temporal order.
+
+    Args:
+        data (pd.DataFrame): The input DataFrame with all normalized features.
+        sequence_length (int): The length of the input sequences (tsteps).
+        batch_size (int): The batch size for the stateful LSTM.
+        rows_ahead (int): How many rows ahead the label should be.
+
+    Returns:
+        tuple: (X_sequences, Y_labels) as numpy arrays.
+    """
+    feature_cols = [col for col in data.columns if col != 'Time']
+    features_array = data[feature_cols].values
+    labels_array = data['Open'].values
+
+    shifted_labels = np.full_like(labels_array, np.nan, dtype=float)
+    if rows_ahead < len(labels_array):
+        shifted_labels[:-rows_ahead] = labels_array[rows_ahead:]
+    
+    valid_indices = ~np.isnan(shifted_labels)
+    features_array = features_array[valid_indices]
+    shifted_labels = shifted_labels[valid_indices]
+
+    # Calculate the number of sequences that can be formed
+    num_sequences = len(features_array) - sequence_length + 1
+
+    if num_sequences <= 0:
+        print(f"Warning: Not enough data ({len(features_array)} rows) to create sequences of length {sequence_length}. Returning empty arrays.")
+        return np.array([]), np.array([])
+
+    # Truncate data to be divisible by batch_size
+    num_batches = num_sequences // batch_size
+    effective_num_sequences = num_batches * batch_size
+
+    if effective_num_sequences == 0:
+        print(f"Warning: Not enough effective sequences ({num_sequences}) for batch_size {batch_size}. Returning empty arrays.")
+        return np.array([]), np.array([])
+
+    X, Y = [], []
+    for i in range(effective_num_sequences):
+        X.append(features_array[i : i + sequence_length])
+        Y.append(shifted_labels[i + sequence_length - 1])
+
+    X = np.array(X)
+    Y = np.array(Y)
+
+    if Y.ndim == 1:
+        Y = Y.reshape(-1, 1)
+
+    return X, Y
+
+
 def train_model(lstm_units=LSTM_UNITS, learning_rate=LEARNING_RATE, epochs=EPOCHS, current_batch_size=BATCH_SIZE):
     """
     Loads processed data, builds and trains the LSTM model, and saves the trained model.
     """
-    # Load processed data
-    df_processed = pd.read_csv(TRAINING_DATA_CSV)
-    
-    # Split data into training and validation sets
-    train_size = int(len(df_processed) * TR_SPLIT)
-    df_train = df_processed.iloc[:train_size].copy()
-    df_val = df_processed.iloc[train_size:].copy()
+    # Set random seeds for reproducibility
+    np.random.seed(42)
+    tf.random.set_seed(42)
 
-    # Create X and Y arrays for training and validation
-    X_train, Y_train = create_sequences(df_train, TSTEPS, ROWS_AHEAD)
-    X_val, Y_val = create_sequences(df_val, TSTEPS, ROWS_AHEAD)
+    # --- Data Preparation ---
+    # Get featured data (without normalization)
+    df_featured, feature_cols = prepare_keras_input_data(HOURLY_DATA_CSV)
     
+    # Split data into raw training and validation sets
+    train_size = int(len(df_featured) * TR_SPLIT)
+    df_train_raw = df_featured.iloc[:train_size].copy()
+    df_val_raw = df_featured.iloc[train_size:].copy()
+
+    # Calculate mean and standard deviation for normalization ONLY on training data
+    mean_vals = df_train_raw[feature_cols].mean()
+    std_vals = df_train_raw[feature_cols].std()
+
+    # Handle cases where std_vals might be zero to avoid division by zero
+    std_vals = std_vals.replace(0, 1) # Replace 0 with 1 to prevent division by zero
+
+    # Normalize both training and validation sets using the scaler fitted on training data
+    df_train_normalized = df_train_raw.copy()
+    df_val_normalized = df_val_raw.copy()
+
+    df_train_normalized[feature_cols] = (df_train_raw[feature_cols] - mean_vals) / std_vals
+    df_val_normalized[feature_cols] = (df_val_raw[feature_cols] - mean_vals) / std_vals
+
+    # Save scaler parameters
+    scaler_params = {
+        'mean': mean_vals.to_dict(),
+        'std': std_vals.to_dict()
+    }
+    with open(SCALER_PARAMS_JSON, 'w') as f:
+        json.dump(scaler_params, f, indent=4)
+    print(f"Scaler parameters saved to {SCALER_PARAMS_JSON}")
+
+    # Create X and Y arrays for training and validation using normalized data
+    # Truncate data to be divisible by the current_batch_size for stateful LSTM
+    max_sequences_train = get_effective_data_length(df_train_normalized, TSTEPS, ROWS_AHEAD)
+    remainder_train = max_sequences_train % current_batch_size
+    if remainder_train > 0:
+        df_train_normalized = df_train_normalized.iloc[:-remainder_train]
+
+    max_sequences_val = get_effective_data_length(df_val_normalized, TSTEPS, ROWS_AHEAD)
+    remainder_val = max_sequences_val % current_batch_size
+    if remainder_val > 0:
+        df_val_normalized = df_val_normalized.iloc[:-remainder_val]
+
+    X_train, Y_train = create_sequences_for_stateful_lstm(df_train_normalized, TSTEPS, current_batch_size, ROWS_AHEAD)
+    X_val, Y_val = create_sequences_for_stateful_lstm(df_val_normalized, TSTEPS, current_batch_size, ROWS_AHEAD)
+    
+    # --- Model Building and Training ---
     # Build the model
     model = build_lstm_model(
         input_shape=(TSTEPS, N_FEATURES),
         lstm_units=lstm_units,
-        batch_size=current_batch_size,
+        batch_size=current_batch_size, # Pass batch_size for stateful model
         learning_rate=learning_rate
     )
 
@@ -98,7 +218,7 @@ def train_model(lstm_units=LSTM_UNITS, learning_rate=LEARNING_RATE, epochs=EPOCH
               batch_size=current_batch_size,
               validation_data=(X_val, Y_val),
               callbacks=[early_stopping],
-              shuffle=True) # Shuffle is True for stateless models
+              shuffle=False) # Shuffle is False for time series data to preserve temporal order
     print("Model training finished.")
 
     # Save the trained model to a versioned path
@@ -131,7 +251,7 @@ if __name__ == "__main__":
         os.makedirs(PROCESSED_DATA_DIR)
     
     # Create dummy data if not present (for standalone testing)
-    if not os.path.exists(TRAINING_DATA_CSV) or not os.path.exists(SCALER_PARAMS_JSON):
+    if not os.path.exists(HOURLY_DATA_CSV):
         print("Creating dummy processed data for standalone train.py test...")
         
         # Generate a continuous range of minute-level datetimes
@@ -153,11 +273,7 @@ if __name__ == "__main__":
 
         hourly_output_path = os.path.join(PROCESSED_DATA_DIR, "nvda_hourly.csv")
         convert_minute_to_hourly(dummy_input_minute_path, hourly_output_path)
-
-        training_output_path = TRAINING_DATA_CSV
-        scaler_params_path = SCALER_PARAMS_JSON
-        prepare_keras_input_data(hourly_output_path, training_output_path, scaler_params_path)
-        print("Dummy processed data created.")
+        print("Dummy hourly data created.")
 
     # Call train_model with parsed arguments
     final_loss = train_model(
