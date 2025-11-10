@@ -74,9 +74,18 @@ def add_features(df):
     
     return df
 
-def prepare_keras_input_data(input_hourly_csv_path, output_training_csv_path, output_scaler_params_path):
+def prepare_keras_input_data(input_hourly_csv_path):
     """
-    Prepares data for Keras input by adding features and normalizing all feature columns.
+    Prepares data for Keras input by adding features.
+    Normalization is handled separately in the training script to prevent data leakage.
+
+    Args:
+        input_hourly_csv_path (str): Path to the input hourly-level CSV file.
+
+    Returns:
+        tuple: A tuple containing:
+            - pd.DataFrame: DataFrame with added features.
+            - list: List of feature column names.
     """
     df = pd.read_csv(input_hourly_csv_path)
 
@@ -86,31 +95,8 @@ def prepare_keras_input_data(input_hourly_csv_path, output_training_csv_path, ou
     # Select all feature columns for normalization
     # Exclude the 'Time' column as it's not a feature for the model
     feature_cols = [col for col in df_featured.columns if col != 'Time']
-    df_features = df_featured[feature_cols]
-
-    # Calculate mean and standard deviation for normalization
-    mean_vals = df_features.mean()
-    std_vals = df_features.std()
-
-    # Normalize all feature columns (Z-score normalization)
-    df_normalized = (df_features - mean_vals) / std_vals
-
-    # Combine normalized features with the 'Time' column
-    df_processed = df_featured[['Time']].copy()
-    df_processed[feature_cols] = df_normalized
-
-    # Save normalized data
-    df_processed.to_csv(output_training_csv_path, index=False)
-    print(f"Successfully added features, normalized data, and saved to {output_training_csv_path}")
-
-    # Save scaler parameters for all features
-    scaler_params = {
-        'mean': mean_vals.to_dict(),
-        'std': std_vals.to_dict()
-    }
-    with open(output_scaler_params_path, 'w') as f:
-        json.dump(scaler_params, f, indent=4)
-    print(f"Scaler parameters for all features saved to {output_scaler_params_path}")
+    
+    return df_featured, feature_cols
 
 
 if __name__ == "__main__":
@@ -120,5 +106,11 @@ if __name__ == "__main__":
     # Process the actual raw data
     print(f"Processing raw minute data from {RAW_DATA_CSV}...")
     convert_minute_to_hourly(RAW_DATA_CSV, HOURLY_DATA_CSV)
-    prepare_keras_input_data(HOURLY_DATA_CSV, TRAINING_DATA_CSV, SCALER_PARAMS_JSON)
+    
+    # Prepare features, normalization will be handled in training script
+    df_featured, feature_cols = prepare_keras_input_data(HOURLY_DATA_CSV)
+    print("Features added to hourly data. Normalization will be performed during model training.")
+    
+    # Optionally save the featured data before normalization for inspection if needed
+    # df_featured.to_csv(os.path.join(PROCESSED_DATA_DIR, "featured_hourly_data.csv"), index=False)
     print("Data processing complete.")

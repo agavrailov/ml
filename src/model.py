@@ -30,7 +30,7 @@ def build_lstm_model(input_shape, lstm_units, batch_size, learning_rate):
 
     # Add the second Bidirectional LSTM layer
     lstm_layer_2 = Bidirectional(layers.LSTM(units=lstm_units,
-                                             return_sequences=True,
+                                             return_sequences=False, # Changed to False
                                              activation='tanh'))(dropout_1)
     dropout_2 = layers.Dropout(0.2)(lstm_layer_2)
 
@@ -42,7 +42,7 @@ def build_lstm_model(input_shape, lstm_units, batch_size, learning_rate):
 
     # Compile the model
     optimizer = keras.optimizers.RMSprop(learning_rate=learning_rate)
-    model.compile(loss='mse', optimizer=optimizer, metrics=['accuracy'])
+    model.compile(loss='mae', optimizer=optimizer, metrics=['mae'])
 
     return model
 

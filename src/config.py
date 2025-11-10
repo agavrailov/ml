@@ -5,7 +5,7 @@ import json # Added import
 
 # --- Model Hyperparameters ---
 TSTEPS = 3  # window size a.k.a. time steps
-ROWS_AHEAD = 60  # prediction Labels are n rows ahead of the current
+ROWS_AHEAD = 1  # prediction Labels are n rows ahead of the current
 TR_SPLIT = 0.7   # part of data used for training
 N_FEATURES = 9    # Number of features (OHLC + technical indicators + time features)
 BATCH_SIZE = 256 # Number of samples per gradient update. Found by KerasTuner.
