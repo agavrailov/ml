@@ -86,11 +86,13 @@ The data flow in the refactored Python-based project is designed to be clear, mo
 
 ## 1. Raw Data Ingestion (`src/data_ingestion.py`)
 
-*   **Purpose:** The `src/data_ingestion.py` script is responsible for connecting to the Interactive Brokers (IB) Trader Workstation (TWS) or IB Gateway, fetching historical minute-level stock data for a specified instrument (currently NVDA), and saving this raw data to a CSV file.
+*   **Purpose:** The `src/data_ingestion.py` script is responsible for connecting to the Interactive Brokers (IB) Trader Workstation (TWS) or IB Gateway, fetching historical minute-level stock data for a specified instrument (currently NVDA), and saving this raw data to a CSV file. It is primarily used for initial historical data fetching or fetching specific date ranges, while `src/data_updater.py` orchestrates the continuous update and gap-filling process.
 *   **Key Components:**
     *   **`ib_insync` library:** This Python library provides a convenient and asynchronous way to interact with the TWS API.
     *   **`src/config.py`:** This file stores configuration parameters such as:
         *   `TWS_HOST`, `TWS_PORT`, `TWS_CLIENT_ID`: For connecting to TWS/IB Gateway.
+        *   `TWS_MAX_CONCURRENT_REQUESTS`: Maximum concurrent requests to TWS.
+        *   `DATA_BATCH_SAVE_SIZE`: Number of days to fetch before saving a batch to CSV.
         *   `NVDA_CONTRACT_DETAILS`: A dictionary defining the instrument (symbol, security type, exchange, currency).
         *   `RAW_DATA_CSV`: The path where the fetched raw data will be saved (`data/raw/nvda_minute.csv`).
     *   **`fetch_historical_data` function:** The core asynchronous function in `src/data_ingestion.py` that orchestrates the data fetching.
@@ -98,15 +100,28 @@ The data flow in the refactored Python-based project is designed to be clear, mo
     *   **Connection:** The `fetch_historical_data` function initializes an `IB` object from `ib_insync` and attempts to connect to TWS/IB Gateway using the configured `TWS_HOST`, `TWS_PORT`, and `TWS_CLIENT_ID`.
     *   **Contract Definition:** It constructs an `ib_insync` `Contract` object (e.g., `Stock` for NVDA) using the `NVDA_CONTRACT_DETAILS`.
     *   **Contract Qualification:** The contract is then "qualified" with IB to ensure its details are correct and unambiguous.
-    *   **Iterative Data Request:** To overcome potential API limits for large data requests, the script fetches historical data in daily chunks. It iterates backward from the `end_date` to the `start_date` (currently covering the last 3 months).
-        *   For each day, it calls `ib.reqHistoricalDataAsync()` to request minute-level data (`barSizeSetting='1 min'`).
-        *   A small delay (`asyncio.sleep(1)`) is introduced between requests to avoid hitting API rate limits.
-    *   **Data Aggregation:** The fetched bars from each daily request are collected into a list.
-    *   **DataFrame Conversion:** Once all daily chunks are fetched, the raw `ib_insync` bar objects are converted into a Pandas DataFrame.
-    *   **Data Cleaning/Formatting:** The DataFrame is sorted by date, and columns are renamed to `DateTime`, `Open`, `High`, `Low`, `Close`. The `DateTime` column is formatted to `YYYY-MM-DDTHH:MM`.
+    *   **Parallelized Data Request & Batch Saving:** To optimize retrieval and manage API limits, the script fetches historical data in daily chunks. These daily requests are highly parallelized using `asyncio.gather`, respecting the `TWS_MAX_CONCURRENT_REQUESTS` limit. Fetched data is then saved to `data/raw/nvda_minute.csv` in batches of `DATA_BATCH_SAVE_SIZE` days, improving resilience and reducing I/O overhead.
+    *   **Data Cleaning/Formatting:** The fetched bars are converted into a Pandas DataFrame, sorted by date, and columns are renamed to `DateTime`, `Open`, `High`, `Low`, `Close`. The `DateTime` column is formatted to `YYYY-MM-DDTHH:MM`.
     *   **Data Storage:** The processed DataFrame is then saved to `RAW_DATA_CSV` (`data/raw/nvda_minute.csv`). If the file already exists, new data is appended without writing the header again.
-    *   **Disconnection:** The script attempts to disconnect from TWS/IB Gateway. A `try...except TypeError` block is used to gracefully handle a known issue where disconnection might raise a `TypeError` even after a successful session.
-*   **Execution:** The script is executed directly using `python src/data_ingestion.py`. It uses `asyncio.run()` to manage the asynchronous operations.
+    *   **Disconnection:** The script attempts to disconnect from TWS/IB Gateway.
+*   **Execution:** The script can be executed directly using `python src/data_ingestion.py` for initial full fetches, but is primarily called by `src/data_updater.py` for continuous operations.
+
+## 1.5. Continuous Data Update and Gap Filling (`src/data_updater.py`)
+
+*   **Purpose:** The `src/data_updater.py` script orchestrates the continuous updating and gap-filling of the `data/raw/nvda_minute.csv` dataset. It ensures the dataset remains current, complete, and free of gaps within market hours.
+*   **Key Components:**
+    *   **`src/data_ingestion.py`:** Utilizes the `fetch_historical_data` function to retrieve new and missing data.
+    *   **`src/data_processing.py`:** Employs the `clean_raw_minute_data` function for final sorting and deduplication.
+    *   **`exchange_calendars` library:** Used to accurately identify market trading days and holidays for gap analysis.
+    *   **`src/config.py`:** Provides market-specific parameters like `MARKET_OPEN_TIME`, `MARKET_CLOSE_TIME`, `MARKET_TIMEZONE`, and `EXCHANGE_CALENDAR_NAME`.
+*   **Process Flow:**
+    *   **Load Existing Data:** Reads the current `data/raw/nvda_minute.csv` to establish the existing data range.
+    *   **Fetch Recent Data:** Calls `fetch_historical_data` to retrieve any new minute-level data from the last recorded timestamp in the file up to the current moment.
+    *   **Identify Gaps:** Iterates through the entire historical range, considering market trading days and hours (excluding weekends and holidays), to pinpoint any missing minute bars.
+    *   **Fill Gaps:** For each identified gap, it makes targeted calls to `fetch_historical_data` to retrieve the missing data. These requests are also parallelized.
+    *   **Merge and Clean:** After all new and missing data is fetched, the entire dataset is reloaded, merged, and then passed to `clean_raw_minute_data` for a final sort and deduplication, ensuring data integrity.
+    *   **Save:** The fully updated, sorted, and deduplicated dataset is saved back to `data/raw/nvda_minute.csv`.
+*   **Execution:** This script is designed to be run periodically (e.g., via a scheduled task or cron job) using `python src/data_updater.py`, typically orchestrated by `update_data.bat`.
 
 ## 2. Minute-to-Hourly Conversion (`src/data_processing.py`):
 

@@ -26,7 +26,7 @@ def build_lstm_model(input_shape, lstm_units, batch_size, learning_rate):
                              return_sequences=False, # False for single output
                              stateful=True,
                              activation='tanh')(inputs)
-    dropout = layers.Dropout(0.2)(lstm_layer)
+    dropout = layers.Dropout(0.3)(lstm_layer)
 
     # Add the Dense output layer
     outputs = layers.Dense(units=1, dtype=tf.float32)(dropout)

@@ -5,11 +5,14 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import pandas as pd
 import json
 import os
-import numpy as np # Added numpy import
+import numpy as np
+import subprocess # Added for running external scripts
 
 from src.config import (
     PROCESSED_DATA_DIR, HOURLY_DATA_CSV, TRAINING_DATA_CSV, SCALER_PARAMS_JSON, RAW_DATA_CSV
 )
+
+GAP_ANALYSIS_OUTPUT_JSON = os.path.join(PROCESSED_DATA_DIR, "missing_trading_days.json")
 
 def convert_minute_to_hourly(input_csv_path, output_csv_path):
     """
@@ -99,11 +102,100 @@ def prepare_keras_input_data(input_hourly_csv_path):
     return df_featured, feature_cols
 
 
+def clean_raw_minute_data(input_csv_path):
+    """
+    Loads raw minute data, sorts it by DateTime, removes duplicates, and saves it back.
+
+    Args:
+        input_csv_path (str): Path to the raw minute-level CSV file.
+    """
+    if not os.path.exists(input_csv_path):
+        print(f"Warning: Raw data file not found at {input_csv_path}. Skipping cleaning.")
+        return
+
+    print(f"Cleaning raw minute data at {input_csv_path}...")
+    df = pd.read_csv(input_csv_path, parse_dates=['DateTime'])
+    
+    # Sort by DateTime
+    df.sort_values('DateTime', inplace=True)
+    
+    # Drop duplicates based on DateTime
+    initial_rows = len(df)
+    df.drop_duplicates(subset=['DateTime'], inplace=True)
+    if len(df) < initial_rows:
+        print(f"Removed {initial_rows - len(df)} duplicate rows.")
+    
+    # Save cleaned data back
+    df.to_csv(input_csv_path, index=False)
+    print(f"Raw minute data cleaned and saved to {input_csv_path}")
+
+def fill_gaps(df, identified_gaps):
+    """
+    Placeholder function to fill identified gaps in the raw minute data.
+    Currently, it does not perform any filling but serves as an integration point.
+
+    Args:
+        df (pd.DataFrame): The raw minute-level DataFrame.
+        identified_gaps (list): A list of dictionaries, each describing a gap.
+
+    Returns:
+        pd.DataFrame: The DataFrame, potentially with gaps filled.
+    """
+    if identified_gaps:
+        print(f"Identified {len(identified_gaps)} gaps for potential filling. No filling performed yet.")
+        # Future implementation will go here based on user's chosen strategy
+    else:
+        print("No gaps identified for filling.")
+    return df
+
 if __name__ == "__main__":
     # Ensure data/processed exists
     os.makedirs(PROCESSED_DATA_DIR, exist_ok=True)
 
-    # Process the actual raw data
+    # Clean raw minute data before processing
+    clean_raw_minute_data(RAW_DATA_CSV)
+
+    # --- New: Analyze and potentially fill gaps ---
+    print("Analyzing gaps in raw data...")
+    # Run analyze_gaps.py as a subprocess
+    analyze_gaps_script_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'analyze_gaps.py'))
+    command = [
+        sys.executable, # Use the current python interpreter
+        analyze_gaps_script_path,
+        RAW_DATA_CSV,
+        GAP_ANALYSIS_OUTPUT_JSON
+    ]
+    
+    identified_gaps = []
+    try:
+        result = subprocess.run(command, check=True, capture_output=True, text=True)
+        print(f"Gap analysis script output: {result.stdout}")
+        if result.stderr:
+            print(f"Gap analysis script errors: {result.stderr}")
+        
+        if os.path.exists(GAP_ANALYSIS_OUTPUT_JSON):
+            with open(GAP_ANALYSIS_OUTPUT_JSON, 'r') as f:
+                identified_gaps = json.load(f)
+    except subprocess.CalledProcessError as e:
+        print(f"Error running gap analysis script: {e}")
+        print(f"Stdout: {e.stdout}")
+        print(f"Stderr: {e.stderr}")
+    except FileNotFoundError:
+        print(f"Error: analyze_gaps.py not found at {analyze_gaps_script_path}. Please ensure the script exists.")
+    except json.JSONDecodeError:
+        print(f"Error: Could not decode JSON from {GAP_ANALYSIS_OUTPUT_JSON}. File might be empty or corrupted.")
+
+
+    # Load the raw data to pass to fill_gaps
+    raw_df_for_filling = pd.read_csv(RAW_DATA_CSV, parse_dates=['DateTime'])
+    processed_df = fill_gaps(raw_df_for_filling, identified_gaps)
+    
+    # Save the processed_df back to RAW_DATA_CSV if fill_gaps actually modified it
+    # For now, since fill_gaps does nothing, this step is not strictly necessary but good for future proofing
+    processed_df.to_csv(RAW_DATA_CSV, index=False)
+    # --- End New ---
+
+    # Process the actual raw data (now potentially with gaps filled)
     print(f"Processing raw minute data from {RAW_DATA_CSV}...")
     convert_minute_to_hourly(RAW_DATA_CSV, HOURLY_DATA_CSV)
     

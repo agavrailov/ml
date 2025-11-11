@@ -1,5 +1,5 @@
 {
-    "lstm_units": 96,
+    "lstm_units": 64,
     "learning_rate": 0.01,
     "batch_size": 256,
     "tuner/epochs": 20,

@@ -2,6 +2,7 @@
 
 import os
 import json # Added import
+from datetime import datetime, time # Added datetime and time imports
 
 # --- Model Hyperparameters ---
 TSTEPS = 3  # window size a.k.a. time steps
@@ -53,6 +54,15 @@ def get_active_model_path():
 TWS_HOST = os.getenv('TWS_HOST', '127.0.0.1')
 TWS_PORT = int(os.getenv('TWS_PORT', '7496')) # Default for TWS, 4001 for Gateway
 TWS_CLIENT_ID = int(os.getenv('TWS_CLIENT_ID', '1'))
+TWS_MAX_CONCURRENT_REQUESTS = 5 # Limit concurrent requests to TWS
+
+# --- Data Ingestion Parameters ---
+INITIAL_START_DATE = datetime(2024, 1, 1) # Start of 2024 for initial data fetch
+DATA_BATCH_SAVE_SIZE = 30 # Save data to CSV after every N days fetched
+MARKET_OPEN_TIME = time(9, 30) # 9:30 AM ET
+MARKET_CLOSE_TIME = time(16, 0) # 4:00 PM ET
+MARKET_TIMEZONE = 'America/New_York' # Timezone for NYSE
+EXCHANGE_CALENDAR_NAME = 'XNYS' # NYSE calendar for market holidays and sessions
 
 # --- NVDA Stock Contract Details ---
 NVDA_CONTRACT_DETAILS = {

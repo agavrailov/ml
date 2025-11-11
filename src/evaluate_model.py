@@ -30,7 +30,7 @@ def evaluate_model_performance():
     """
     # --- 1. Load Data and Model ---
     active_model_path = get_active_model_path()
-    if active_model_path is None:
+    if active_model_path is None: # Corrected syntax
         print("Error: No active model found. Please promote a model first using 'src/promote_model.py'.")
         return
 
@@ -47,15 +47,13 @@ def evaluate_model_performance():
     
     print("Loading hourly data and scaler parameters...")
     df_hourly = pd.read_csv(HOURLY_DATA_CSV, parse_dates=['Time'])
-    df_hourly.rename(columns={'Time': 'DateTime'}, inplace=True)
     
     with open(SCALER_PARAMS_JSON, 'r') as f:
         scaler_params = json.load(f)
     
     # --- 2. Filter and Prepare Data ---
-    # Load the entire dataset first to calculate features correctly
-    df_full = pd.read_csv(HOURLY_DATA_CSV)
-    df_full_featured = add_features(df_full.copy())
+    # Use df_hourly directly for feature calculation
+    df_full_featured = add_features(df_hourly.copy())
 
     # Now, filter for the last 2 months from the featured dataset
     two_months_ago = datetime.now() - timedelta(days=60)
@@ -96,7 +94,7 @@ def evaluate_model_performance():
         input_sequence = input_sequence.reshape(1, TSTEPS, N_FEATURES)
         
         # Make prediction
-        predicted_normalized = model.predict(input_sequence, verbose=0)[0][-1][0]
+        predicted_normalized = model.predict(input_sequence, verbose=0)[0][0] # Corrected indexing
         
         # Denormalize the prediction
         predicted_price = (predicted_normalized * std_open) + mean_open

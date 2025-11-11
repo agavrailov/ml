@@ -53,11 +53,14 @@ ml_lstm/
 ├── .gitignore
 ├── ARCHITECTURE.md         # Detailed architectural design document
 ├── REFACTOR_PLAN.md        # Plan for the refactoring process
+├── update_data.bat         # Script to run data ingestion and processing
 ├── data/
-│   ├── raw/                # Raw, immutable input data (e.g., xagusd_minute.csv)
+│   ├── raw/                # Raw, immutable input data (e.g., nvda_minute.csv)
 │   └── processed/          # Processed data ready for modeling (e.g., training_data.csv)
 ├── notebooks/              # Jupyter notebooks for EDA and experimentation
 ├── src/
+│   ├── data_ingestion.py   # Fetches raw minute-level data from TWS
+│   ├── data_updater.py     # Orchestrates continuous data updates and gap filling
 │   ├── data_processing.py  # Logic for data loading, conversion, and normalization
 │   ├── model.py            # LSTM model definition
 │   ├── train.py            # Script for model training
@@ -71,11 +74,28 @@ ml_lstm/
 
 ## Usage
 
-### 1. Data Preparation
+### 1. Data Ingestion and Update
 
-Place your raw minute-level data (e.g., `xagusd_minute.csv`) into the `data/raw/` directory. The `src/data_processing.py` script will then convert this into hourly data and normalize it, saving the results in `data/processed/`.
+The project now includes an automated data ingestion and update pipeline. This process connects to Interactive Brokers (TWS/Gateway) to fetch minute-level data for NVDA, handles initial historical data fetching, continuous updates, and gap filling.
 
-### 2. Model Training
+To run the data ingestion and update process:
+
+```bash
+# On Windows:
+.\update_data.bat
+```
+This script will:
+*   Connect to IB TWS/Gateway.
+*   Fetch new minute-level data for NVDA from the last recorded timestamp up to the current time.
+*   Identify and fill any historical gaps within market hours (excluding weekends and holidays).
+*   Sort and deduplicate the entire raw dataset (`data/raw/nvda_minute.csv`).
+*   Then, it will proceed to process this raw data into hourly format and add features.
+
+### 2. Data Preparation
+
+After the data ingestion and update process, the `data/raw/nvda_minute.csv` file will contain the latest sorted and deduplicated minute-level data. The `update_data.bat` script automatically calls `src/data_processing.py` which will then convert this into hourly data and normalize it, saving the results in `data/processed/`.
+
+### 3. Model Training
 
 To train the LSTM model:
 

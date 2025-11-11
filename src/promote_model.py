@@ -1,6 +1,7 @@
 import os
 import json
 import sys
+from datetime import datetime # Moved import to top
 
 # Add the project root to the Python path to import src modules
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
