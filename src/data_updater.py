@@ -140,7 +140,8 @@ async def update_historical_data():
                     contract_details=NVDA_CONTRACT_DETAILS,
                     end_date=gap_end + timedelta(minutes=1), # Fetch up to and including gap_end
                     initial_start_date=gap_start,
-                    file_path=RAW_DATA_CSV
+                    file_path=RAW_DATA_CSV,
+                    strict_range=True # Ensure strict range for gap filling
                 )
             
             # Reload data after filling gaps

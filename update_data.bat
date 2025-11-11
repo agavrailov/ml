@@ -16,4 +16,3 @@ echo Running data processing...
 python src/data_processing.py
 
 echo Data update and processing complete.
-pause

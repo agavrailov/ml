@@ -21,9 +21,11 @@ def _get_latest_timestamp_from_csv(file_path):
                 f.seek(-2, os.SEEK_CUR) # Jump back two bytes
             last_line = f.readline().decode().strip()
         
+        print(f"DEBUG: Last line read from {file_path}: '{last_line}'")
         # Parse the DateTime from the last line
         latest_dt_str = last_line.split(',')[0]
-        return datetime.strptime(latest_dt_str, '%Y-%m-%dT%H:%M')
+        print(f"DEBUG: Extracted DateTime string: '{latest_dt_str}'")
+        return datetime.strptime(latest_dt_str, '%Y-%m-%d %H:%M:%S')
     except Exception as e:
         print(f"Error reading latest timestamp from {file_path}: {e}")
         return None
@@ -53,7 +55,7 @@ async def _fetch_single_day_data(ib, contract, end_date_str, barSizeSetting, sem
             df = df[['date', 'open', 'high', 'low', 'close']]
             df.columns = ['DateTime', 'Open', 'High', 'Low', 'Close']
             # Ensure DateTime is in the correct format
-            df['DateTime'] = df['DateTime'].dt.strftime('%Y-%m-%dT%H:%M')
+            df['DateTime'] = df['DateTime'].dt.strftime('%Y-%m-%d %H:%M:%S')
             return df
         else:
             print(f"No bars received for period ending {end_date_str}.")
@@ -64,7 +66,8 @@ async def fetch_historical_data(
     end_date: datetime,
     barSizeSetting='1 min',
     file_path=RAW_DATA_CSV,
-    initial_start_date: datetime = INITIAL_START_DATE # Use config for default
+    initial_start_date: datetime = INITIAL_START_DATE, # Use config for default
+    strict_range: bool = False # New parameter
 ):
     """
     Connects to IB TWS/Gateway, fetches historical minute-level data for the specified contract
@@ -77,6 +80,8 @@ async def fetch_historical_data(
         barSizeSetting (str): Bar size (e.g., '1 min', '5 mins', '1 hour').
         file_path (str): Path to save the fetched data as a CSV.
         initial_start_date (datetime): The start date for data fetching if no existing data.
+        strict_range (bool): If True, strictly uses initial_start_date and end_date,
+                             ignoring existing data in file_path for start date determination.
     """
     ib = IB()
     
@@ -117,17 +122,20 @@ async def fetch_historical_data(
         await ib.qualifyContractsAsync(contract)
 
         # Determine the actual start date for fetching
-        latest_timestamp_in_file = _get_latest_timestamp_from_csv(file_path)
         actual_fetch_start_date = initial_start_date
-        if latest_timestamp_in_file:
-            # Start fetching from 1 minute after the latest timestamp in the file
-            actual_fetch_start_date = latest_timestamp_in_file + timedelta(minutes=1)
-            print(f"Latest data in file is {latest_timestamp_in_file}. Fetching new data from {actual_fetch_start_date}.")
+        if not strict_range:
+            latest_timestamp_in_file = _get_latest_timestamp_from_csv(file_path)
+            if latest_timestamp_in_file:
+                # Start fetching from 1 minute after the latest timestamp in the file
+                actual_fetch_start_date = latest_timestamp_in_file + timedelta(minutes=1)
+                print(f"Latest data in file is {latest_timestamp_in_file}. Fetching new data from {actual_fetch_start_date}.")
+            else:
+                print(f"No existing data found in {file_path}. Fetching from initial start date {initial_start_date}.")
         else:
-            print(f"No existing data found in {file_path}. Fetching from initial start date {initial_start_date}.")
+            print(f"Strict range fetching: from {initial_start_date} to {end_date}.")
 
         if actual_fetch_start_date >= end_date:
-            print("Data is already up to date. No new data to fetch.")
+            print("Data is already up to date for the specified range. No new data to fetch.")
             return
 
         print(f"Fetching historical data for {contract.symbol}/{contract.currency} from {actual_fetch_start_date.strftime('%Y%m%d %H:%M:%S')} to {end_date.strftime('%Y%m%d %H:%M:%S')}...")

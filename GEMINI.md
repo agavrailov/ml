@@ -1,84 +1,132 @@
-# Project Overview
+# Machine Learning LSTM for Time Series Prediction (Python Refactor)
 
-This project uses the R language with Keras and TensorFlow to predict silver spot prices (XAG/USD) using an LSTM (Long Short-Term Memory) neural network. The project is structured into data preparation, model training, and prediction components.
+This project has been refactored from its original R-based implementation to a modern Python-based architecture. It utilizes deep learning techniques with TensorFlow/Keras for time series prediction, specifically focusing on the Silver SPOT price against USD (XAGUSD). The core model employs a Long Short-Term Memory (LSTM) neural network.
 
-The data pipeline starts with minute-based price data, which is converted to hourly data. This hourly data is then normalized and used to train the LSTM model. The model architecture consists of a single LSTM layer with 100 neurons.
+## Project Overview
 
-## Key Files
+The goal of this project is to predict future silver prices using historical data. The refactored architecture emphasizes modularity, reproducibility, and maintainability, aligning with current MLOps best practices.
 
-*   `src/main.R`: The main script that defines and orchestrates the neural network model. It includes functions for generating time series data, training the model, making predictions, and plotting the results.
-*   `data_preparation/convert data to hourly.R`: This script converts minute-based historical data into an hourly format.
-*   `data_preparation/Keras_input_data_prep.R`: This script takes the hourly data, normalizes the OHLC (Open, High, Low, Close) values, and saves the prepared data for training.
-*   `data/training_data`: The output of the data preparation scripts, used as input for the model.
-*   `models/MyModels`: The saved, trained Keras models.
+**Key Features:**
+*   **Data Preparation:** Automated pipeline to convert minute-level data to hourly, and then normalize OHLC (Open, High, Low, Close) values.
+*   **LSTM Model:** A single-layer LSTM neural network for time series forecasting.
+*   **Training & Evaluation:** Scripts for training the model and saving its state.
+*   **Configuration Management:** Centralized configuration for hyperparameters and paths.
+*   **Testing:** Unit tests for data processing and model architecture.
 
-# Building and Running
+**Key Technologies:**
+*   **Python 3.x**
+*   **Pandas:** For data manipulation and analysis.
+*   **TensorFlow/Keras:** For building and training the deep learning model.
+*   **NumPy:** For numerical operations.
+*   **Pytest:** For unit testing.
 
-This is an R project. To run it, you will need to have R installed with the necessary libraries (`keras`, `xts`).
+## Setup and Installation
 
-1.  **Data Preparation:**
-    *   Run `data_preparation/convert data to hourly.R` to convert minute data to hourly data.
-    *   Run `data_preparation/Keras_input_data_prep.R` to normalize the hourly data and create the `training_data` file.
+To set up and run this project, follow these steps:
 
-2.  **Training and Prediction:**
-    *   Run `src/main.R` to train the model, make predictions, and visualize the results. The script will also save the trained model to the `models` directory.
+1.  **Clone the repository:**
+    ```bash
+    git clone <repository_url>
+    cd ml_lstm
+    ```
 
-*TODO: Add specific commands to run the R scripts from the command line.*
+2.  **Create a Python virtual environment (recommended):**
+    ```bash
+    python -m venv venv
+    # On Windows:
+    .\venv\Scripts\activate
+    # On macOS/Linux:
+    source venv/bin/activate
+    ```
 
-# Development Conventions
+3.  **Install dependencies:**
+    ```bash
+    pip install -r requirements.txt
+    ```
 
-*   The project uses a functional approach, with separate functions for different stages of the machine learning pipeline.
-*   The main script `src/main.R` contains both function definitions and the main execution logic.
-*   Constants for the model and training process are defined at the top of `src/main.R`.
-*   The project includes a `.gitignore` file, which is a good practice for version control.
+## Project Structure
 
----
+The project follows a modular structure:
 
-# Refactoring Overview
+```
+ml_lstm/
+├── .gitignore
+├── ARCHITECTURE.md         # Detailed architectural design document
+├── REFACTOR_PLAN.md        # Plan for the refactoring process
+├── update_data.bat         # Script to run data ingestion and processing
+├── data/
+│   ├── raw/                # Raw, immutable input data (e.g., nvda_minute.csv)
+│   └── processed/          # Processed data ready for modeling (e.g., training_data.csv)
+├── notebooks/              # Jupyter notebooks for EDA and experimentation
+├── src/
+│   ├── data_ingestion.py   # Fetches raw minute-level data from TWS
+│   ├── data_updater.py     # Orchestrates continuous data updates and gap filling
+│   ├── data_processing.py  # Logic for data loading, conversion, and normalization
+│   ├── model.py            # LSTM model definition
+│   ├── train.py            # Script for model training
+│   ├── predict.py          # Script for making predictions (TODO)
+│   └── config.py           # Centralized configuration for hyperparameters and paths
+├── tests/
+│   ├── test_data_processing.py # Unit tests for data processing
+│   └── test_model.py       # Unit tests for model architecture and functionality
+└── requirements.txt        # Python project dependencies
+```
 
-The project, originally an R-based solution for LSTM time series prediction of XAG/USD prices, has been completely refactored into a modern Python-based architecture. The primary motivation was to address issues of complexity, maintainability, and scalability inherent in the previous setup, bringing the project up to current software engineering and MLOps standards.
+## Usage
 
-**What is New:**
+### 1. Data Ingestion and Update
 
-1.  **Language Transition (R to Python):**
-    *   The entire codebase has been migrated from R to Python, leveraging Python's robust ecosystem for machine learning.
+The project now includes an automated data ingestion and update pipeline. This process connects to Interactive Brokers (TWS/Gateway) to fetch minute-level data for NVDA, handles initial historical data fetching, continuous updates, and gap filling.
 
-2.  **Modular Architecture:**
-    *   **Clear Separation of Concerns:** The monolithic `main.R` script has been broken down into distinct, modular Python files:
-        *   `src/data_processing.py`: Handles all data loading, minute-to-hourly conversion, and normalization.
-        *   `src/model.py`: Defines the Keras LSTM model architecture.
-        *   `src/train.py`: Orchestrates the data preparation, model building, training, and saving.
-        *   `src/predict.py`: Manages loading the trained model, preparing new data, and making predictions.
-    *   **Standard Project Structure:** The project now adheres to a conventional Python project layout, including `src/`, `data/raw`, `data/processed`, `models/`, `tests/`, and `notebooks/` directories.
+To run the data ingestion and update process:
 
-3.  **Improved Data Pipeline:**
-    *   **Automated Data Flow:** The previously manual data preparation steps are now encapsulated in `src/data_processing.py`, allowing for a more automated and reproducible pipeline.
-    *   **Pandas for Data Handling:** Replaced R's data manipulation with Python's Pandas library, offering powerful and flexible data processing capabilities.
+```bash
+# On Windows:
+.\update_data.bat
+```
+This script will:
+*   Connect to IB TWS/Gateway.
+*   Fetch new minute-level data for NVDA from the last recorded timestamp up to the current time.
+*   Identify and fill any historical gaps within market hours (excluding weekends and holidays).
+*   Sort and deduplicate the entire raw dataset (`data/raw/nvda_minute.csv`).
+*   Then, it will proceed to process this raw data into hourly format and add features.
 
-4.  **Centralized Configuration:**
-    *   **`src/config.py`:** All hyperparameters, file paths, and other configurable settings are now centralized in `src/config.py`, making the project easier to configure, experiment with, and deploy across different environments.
+### 2. Data Preparation
 
-5.  **Robust Model Definition and Training:**
-    *   **TensorFlow/Keras Functional API:** The LSTM model is now defined using Keras's Functional API, providing more flexibility and clarity compared to the R Keras wrapper.
-    *   **Stateful LSTM Handling:** The data preparation for stateful LSTMs during training and prediction has been carefully implemented to ensure correct batching and sequence generation.
+After the data ingestion and update process, the `data/raw/nvda_minute.csv` file will contain the latest sorted and deduplicated minute-level data. The `update_data.bat` script automatically calls `src/data_processing.py` which will then convert this into hourly data and normalize it, saving the results in `data/processed/`.
 
-6.  **Comprehensive Testing:**
-    *   **`pytest` Integration:** Unit tests have been introduced using `pytest` to verify the correctness of:
-        *   `src/data_processing.py` (data conversion and normalization).
-        *   `src/model.py` (model architecture, compilation, and forward pass).
-    *   This significantly improves code quality and reduces the risk of regressions.
+### 3. Model Training
 
-7.  **Enhanced Documentation:**
-    *   **`README.md`:** Updated to provide a clear overview of the new Python project, setup instructions, and usage guidelines.
-    *   **`ARCHITECTURE.md`:** A new document detailing the design principles, proposed structure, and technology choices of the modernized project.
-    *   **`REFACTOR_PLAN.md`:** A new document outlining the step-by-step plan followed during the refactoring process.
+To train the LSTM model:
 
-8.  **Dependency Management:**
-    *   **`requirements.txt`:** Explicitly lists all Python dependencies, ensuring a reproducible development environment.
+```bash
+python src/train.py
+```
+This script will:
+*   Load the processed data from `data/processed/`.
+*   Build the LSTM model as defined in `src/model.py`.
+*   Train the model using the hyperparameters specified in `src/config.py`.
+*   Save the trained model to `models/my_lstm_model.keras`.
 
-In essence, the project has evolved from a research-oriented R script to a production-ready Python machine learning application, emphasizing best practices in code organization, testing, and MLOps.
+### 3. Making Predictions (TODO)
 
----
+The prediction logic will be implemented in `src/predict.py`.
+
+## Development
+
+### Running Tests
+
+To run the unit tests for the project:
+
+```bash
+# Ensure your virtual environment is active
+pytest tests/
+```
+
+## Further Documentation
+
+*   **`ARCHITECTURE.md`**: Provides a detailed explanation of the project's design principles, proposed structure, and technology choices.
+*   **`REFACTOR_PLAN.md`**: Outlines the step-by-step plan followed during the refactoring process.
 
 # Data Flow Description
 
@@ -101,7 +149,7 @@ The data flow in the refactored Python-based project is designed to be clear, mo
     *   **Contract Definition:** It constructs an `ib_insync` `Contract` object (e.g., `Stock` for NVDA) using the `NVDA_CONTRACT_DETAILS`.
     *   **Contract Qualification:** The contract is then "qualified" with IB to ensure its details are correct and unambiguous.
     *   **Parallelized Data Request & Batch Saving:** To optimize retrieval and manage API limits, the script fetches historical data in daily chunks. These daily requests are highly parallelized using `asyncio.gather`, respecting the `TWS_MAX_CONCURRENT_REQUESTS` limit. Fetched data is then saved to `data/raw/nvda_minute.csv` in batches of `DATA_BATCH_SAVE_SIZE` days, improving resilience and reducing I/O overhead.
-    *   **Data Cleaning/Formatting:** The fetched bars are converted into a Pandas DataFrame, sorted by date, and columns are renamed to `DateTime`, `Open`, `High`, `Low`, `Close`. The `DateTime` column is formatted to `YYYY-MM-DDTHH:MM`.
+    *   **Data Cleaning/Formatting:** The fetched bars are converted into a Pandas DataFrame, sorted by date, and columns are renamed to `DateTime`, `Open`, `High`, `Low`, `Close`. The `DateTime` column is formatted to `YYYY-MM-DDTHH:%M`.
     *   **Data Storage:** The processed DataFrame is then saved to `RAW_DATA_CSV` (`data/raw/nvda_minute.csv`). If the file already exists, new data is appended without writing the header again.
     *   **Disconnection:** The script attempts to disconnect from TWS/IB Gateway.
 *   **Execution:** The script can be executed directly using `python src/data_ingestion.py` for initial full fetches, but is primarily called by `src/data_updater.py` for continuous operations.
