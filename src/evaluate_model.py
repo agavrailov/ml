@@ -15,7 +15,6 @@ from src.config import (
     get_latest_best_model_path,
     get_hourly_data_csv_path,
     get_scaler_params_json_path,
-    N_FEATURES,
     BATCH_SIZE,
     ROWS_AHEAD,
     LSTM_UNITS,
@@ -29,9 +28,10 @@ from src.model import build_lstm_model, load_stateful_weights_into_non_stateful_
 from src.train import create_sequences_for_stateless_lstm # Import the sequence creation function
 
 def evaluate_model_performance(validation_window_size=500,
-                             frequency=FREQUENCY, tsteps=TSTEPS, n_features=N_FEATURES,
-                             lstm_units=LSTM_UNITS, n_lstm_layers=N_LSTM_LAYERS,
-                             stateful=STATEFUL, optimizer_name='rmsprop', loss_function='mae',
+                             frequency=FREQUENCY, tsteps=TSTEPS, n_features=None, # n_features will be passed dynamically
+                             lstm_units=LSTM_UNITS, n_lstm_layers=None, # n_lstm_layers will be passed dynamically
+                             stateful=None, # stateful will be passed dynamically
+                             optimizer_name='rmsprop', loss_function='mae',
                              features_to_use=None): # Added features_to_use
     """
     Loads the latest best model, generates predictions over a specified validation window,
@@ -198,10 +198,10 @@ if __name__ == "__main__":
         evaluate_model_performance(
             frequency=FREQUENCY,
             tsteps=TSTEPS,
-            n_features=N_FEATURES,
+            n_features=None, # n_features will be determined dynamically by the caller
             lstm_units=LSTM_UNITS,
-            n_lstm_layers=N_LSTM_LAYERS,
-            stateful=STATEFUL,
+            n_lstm_layers=None, # n_lstm_layers will be determined dynamically by the caller
+            stateful=None, # stateful will be determined dynamically by the caller
             optimizer_name='rmsprop', # Default for now
             loss_function='mae', # Default for now
             features_to_use=FEATURES_TO_USE_OPTIONS[0] # Default for now

@@ -25,11 +25,14 @@ def convert_minute_to_timeframe(input_csv_path, frequency, processed_data_dir=PR
         processed_data_dir (str): The directory where processed data will be saved.
     """
     output_csv_path = get_hourly_data_csv_path(frequency, processed_data_dir)
+    print(f"Converting minute data from {input_csv_path} to {frequency} frequency.")
+    print(f"Output will be saved to {output_csv_path}")
     
     # Load input timeseries file
     # Assuming the CSV has columns like "DateTime", "Open", "High", "Low", "Close"
     # and "DateTime" is in "%Y-%m-%dT%H:%M" format.
     df = pd.read_csv(input_csv_path, parse_dates=['DateTime'], index_col='DateTime')
+    print(f"Initial DataFrame shape after reading CSV: {df.shape}")
 
     # Convert to specified timeframe OHLC data
     df_resampled = df.resample(frequency).agg({
@@ -38,9 +41,16 @@ def convert_minute_to_timeframe(input_csv_path, frequency, processed_data_dir=PR
         'Low': 'min',
         'Close': 'last'
     })
+    print(f"DataFrame shape after resampling to {frequency}: {df_resampled.shape}")
 
     # Drop any rows that might have been created by resampling but have no data
     df_resampled.dropna(inplace=True)
+    print(f"DataFrame shape after dropping NaNs: {df_resampled.shape}")
+
+    if df_resampled.empty:
+        print(f"Warning: Resampled DataFrame for {frequency} is empty after dropping NaNs. No file will be saved.")
+        return
+
 
     # Reset index to make 'DateTime' a column again and rename it to 'Time'
     df_resampled = df_resampled.reset_index().rename(columns={'DateTime': 'Time'})

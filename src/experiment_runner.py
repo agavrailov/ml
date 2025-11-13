@@ -103,7 +103,7 @@ def run_single_experiment(params):
             return {'mae': mae, 'correlation': correlation, 'validation_loss': final_val_loss, 'model_path': model_path}
         
     except Exception as e:
-        print(f"Error re-running experiment {experiment_id}: {e}")
+        print(f"Error re-running experiment {experiment_id}: {e}", file=sys.stderr)
         return None
 
 def run_experiments():
@@ -233,7 +233,7 @@ def run_experiments():
                     print(f"Updated best hyperparameters for {frequency}, TSTEPS={tsteps} with new best loss: {final_val_loss:.4f}")
 
         except Exception as e:
-            print(f"Error running experiment for {frequency}, {tsteps}, {lstm_units}, {batch_size}: {e}")
+            print(f"Error running experiment for {frequency}, {tsteps}, {lstm_units}, {batch_size}: {e}", file=sys.stderr)
 
 
     # Save all experiment results

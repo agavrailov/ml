@@ -92,69 +92,69 @@ async def update_historical_data():
     print(f"Reloaded {len(existing_df)} records after fetching new data.")
 
     # 3. Identify and fill historical gaps
-    print("Identifying and filling historical gaps...")
+    # print("Identifying and filling historical gaps...")
     
-    # Generate a complete list of expected minute timestamps within market hours
-    # from the earliest data point to the latest.
-    if not existing_df.empty:
-        min_date = existing_df.index.min().date()
-        max_date = existing_df.index.max().date()
+    # # Generate a complete list of expected minute timestamps within market hours
+    # # from the earliest data point to the latest.
+    # if not existing_df.empty:
+    #     min_date = existing_df.index.min().date()
+    #     max_date = existing_df.index.max().date()
         
-        all_expected_minutes = []
-        for session_label in market_calendar.sessions_in_range(min_date, max_date):
-            session_start = market_calendar.session_open(session_label).tz_convert(MARKET_TIMEZONE)
-            session_end = market_calendar.session_close(session_label).tz_convert(MARKET_TIMEZONE)
+    #     all_expected_minutes = []
+    #     for session_label in market_calendar.sessions_in_range(min_date, max_date):
+    #         session_start = market_calendar.session_open(session_label).tz_convert(MARKET_TIMEZONE)
+    #         session_end = market_calendar.session_close(session_label).tz_convert(MARKET_TIMEZONE)
             
-            current_minute = session_start.replace(hour=MARKET_OPEN_TIME.hour, minute=MARKET_OPEN_TIME.minute)
-            while current_minute < session_end.replace(hour=MARKET_CLOSE_TIME.hour, minute=MARKET_CLOSE_TIME.minute):
-                if _is_market_open(current_minute, market_calendar):
-                    all_expected_minutes.append(current_minute)
-                current_minute += timedelta(minutes=1)
+    #         current_minute = session_start.replace(hour=MARKET_OPEN_TIME.hour, minute=MARKET_OPEN_TIME.minute)
+    #         while current_minute < session_end.replace(hour=MARKET_CLOSE_TIME.hour, minute=MARKET_CLOSE_TIME.minute):
+    #             if _is_market_open(current_minute, market_calendar):
+    #                 all_expected_minutes.append(current_minute)
+    #             current_minute += timedelta(minutes=1)
         
-        expected_series = pd.Series(index=pd.to_datetime(all_expected_minutes))
+    #     expected_series = pd.Series(index=pd.to_datetime(all_expected_minutes))
         
-        # Find missing timestamps
-        missing_timestamps = expected_series.index.difference(existing_df.index)
+    #     # Find missing timestamps
+    #     missing_timestamps = expected_series.index.difference(existing_df.index)
         
-        if not missing_timestamps.empty:
-            print(f"Found {len(missing_timestamps)} missing minute bars. Attempting to fill gaps.")
+    #     if not missing_timestamps.empty:
+    #         print(f"Found {len(missing_timestamps)} missing minute bars. Attempting to fill gaps.")
             
-            # Group missing timestamps into contiguous intervals
-            gaps_to_fill = []
-            if len(missing_timestamps) > 0:
-                current_gap_start = missing_timestamps[0]
-                current_gap_end = missing_timestamps[0]
+    #         # Group missing timestamps into contiguous intervals
+    #         gaps_to_fill = []
+    #         if len(missing_timestamps) > 0:
+    #             current_gap_start = missing_timestamps[0]
+    #             current_gap_end = missing_timestamps[0]
                 
-                for i in range(1, len(missing_timestamps)):
-                    if missing_timestamps[i] == current_gap_end + timedelta(minutes=1):
-                        current_gap_end = missing_timestamps[i]
-                    else:
-                        gaps_to_fill.append((current_gap_start, current_gap_end))
-                        current_gap_start = missing_timestamps[i]
-                        current_gap_end = missing_timestamps[i]
-                gaps_to_fill.append((current_gap_start, current_gap_end)) # Add the last gap
+    #             for i in range(1, len(missing_timestamps)):
+    #                 if missing_timestamps[i] == current_gap_end + timedelta(minutes=1):
+    #                     current_gap_end = missing_timestamps[i]
+    #                 else:
+    #                     gaps_to_fill.append((current_gap_start, current_gap_end))
+    #                     current_gap_start = missing_timestamps[i]
+    #                     current_gap_end = missing_timestamps[i]
+    #             gaps_to_fill.append((current_gap_start, current_gap_end)) # Add the last gap
 
-            for gap_start, gap_end in gaps_to_fill:
-                print(f"Filling gap from {gap_start} to {gap_end}...")
-                # Fetch data for the gap. Note: IB API endDateTime is exclusive, so we need to go one minute past the gap_end
-                await fetch_historical_data(
-                    contract_details=NVDA_CONTRACT_DETAILS,
-                    end_date=gap_end + timedelta(minutes=1), # Fetch up to and including gap_end
-                    initial_start_date=gap_start,
-                    file_path=RAW_DATA_CSV,
-                    strict_range=True # Ensure strict range for gap filling
-                )
+    #         for gap_start, gap_end in gaps_to_fill:
+    #             print(f"Filling gap from {gap_start} to {gap_end}...")
+    #             # Fetch data for the gap. Note: IB API endDateTime is exclusive, so we need to go one minute past the gap_end
+    #             await fetch_historical_data(
+    #                 contract_details=NVDA_CONTRACT_DETAILS,
+    #                 end_date=gap_end + timedelta(minutes=1), # Fetch up to and including gap_end
+    #                 initial_start_date=gap_start,
+    #                 file_path=RAW_DATA_CSV,
+    #                 strict_range=True # Ensure strict range for gap filling
+    #             )
             
-            # Reload data after filling gaps
-            existing_df = pd.read_csv(RAW_DATA_CSV, parse_dates=['DateTime'])
-            existing_df.set_index('DateTime', inplace=True)
-            existing_df.sort_index(inplace=True)
-            existing_df = existing_df[~existing_df.index.duplicated(keep='first')]
-            print(f"Reloaded {len(existing_df)} records after filling gaps.")
-        else:
-            print("No historical gaps identified.")
-    else:
-        print("No existing data to check for historical gaps.")
+    #         # Reload data after filling gaps
+    #         existing_df = pd.read_csv(RAW_DATA_CSV, parse_dates=['DateTime'])
+    #         existing_df.set_index('DateTime', inplace=True)
+    #         existing_df.sort_index(inplace=True)
+    #         existing_df = existing_df[~existing_df.index.duplicated(keep='first')]
+    #         print(f"Reloaded {len(existing_df)} records after filling gaps.")
+    #     else:
+    #         print("No historical gaps identified.")
+    # else:
+    #     print("No existing data to check for historical gaps.")
 
     # 4. Final clean-up: sort and deduplicate the entire dataset
     print("Performing final sort and deduplication...")
