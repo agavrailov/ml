@@ -43,7 +43,7 @@ def convert_minute_to_hourly(input_csv_path, output_csv_path):
     df_hourly = df_hourly.reset_index().rename(columns={'DateTime': 'Time'})
     
     # Ensure DateTime is in the correct format
-    df_hourly['Time'] = df_hourly['Time'].dt.strftime('%Y-%m-%dT%H:%M')
+    df_hourly['Time'] = df_hourly['Time'].dt.strftime('%Y-%m-%d %H:%M:%S')
 
     # Save the hourly data to a new CSV file
     df_hourly.to_csv(output_csv_path, index=False)
@@ -69,8 +69,6 @@ def add_features(df):
     df['RSI'] = 100 - (100 / (1 + rs))
 
     # --- Time-Based Features ---
-    df['Hour'] = df['Time'].dt.hour
-    df['DayOfWeek'] = df['Time'].dt.dayofweek
 
     # Drop rows with NaN values created by rolling indicators
     df.dropna(inplace=True)

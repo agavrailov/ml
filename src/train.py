@@ -147,6 +147,7 @@ def create_sequences_for_stateful_lstm(data, sequence_length, batch_size, rows_a
 def train_model(lstm_units=LSTM_UNITS, learning_rate=LEARNING_RATE, epochs=EPOCHS, current_batch_size=BATCH_SIZE):
     """
     Loads processed data, builds and trains the LSTM model, and saves the trained model.
+    Uses a standard train-validation split.
     """
     # Set random seeds for reproducibility
     np.random.seed(42)
@@ -155,18 +156,28 @@ def train_model(lstm_units=LSTM_UNITS, learning_rate=LEARNING_RATE, epochs=EPOCH
     # --- Data Preparation ---
     # Get featured data (without normalization)
     df_featured, feature_cols = prepare_keras_input_data(HOURLY_DATA_CSV)
-    
-    # Split data into raw training and validation sets
-    train_size = int(len(df_featured) * TR_SPLIT)
-    df_train_raw = df_featured.iloc[:train_size].copy()
-    df_val_raw = df_featured.iloc[train_size:].copy()
 
+    # Split data into training and validation sets
+    split_index = int(len(df_featured) * TR_SPLIT)
+    df_train_raw = df_featured.iloc[:split_index].copy()
+    df_val_raw = df_featured.iloc[split_index:].copy()
+
+    # --- Normalization ---
     # Calculate mean and standard deviation for normalization ONLY on training data
     mean_vals = df_train_raw[feature_cols].mean()
     std_vals = df_train_raw[feature_cols].std()
 
     # Handle cases where std_vals might be zero to avoid division by zero
-    std_vals = std_vals.replace(0, 1) # Replace 0 with 1 to prevent division by zero
+    std_vals = std_vals.replace(0, 1)
+
+    # Save the single, correct set of scaler parameters
+    scaler_params = {
+        'mean': mean_vals.to_dict(),
+        'std': std_vals.to_dict()
+    }
+    with open(SCALER_PARAMS_JSON, 'w') as f:
+        json.dump(scaler_params, f, indent=4)
+    print(f"Scaler parameters calculated on training data and saved to {SCALER_PARAMS_JSON}")
 
     # Normalize both training and validation sets using the scaler fitted on training data
     df_train_normalized = df_train_raw.copy()
@@ -174,17 +185,8 @@ def train_model(lstm_units=LSTM_UNITS, learning_rate=LEARNING_RATE, epochs=EPOCH
 
     df_train_normalized[feature_cols] = (df_train_raw[feature_cols] - mean_vals) / std_vals
     df_val_normalized[feature_cols] = (df_val_raw[feature_cols] - mean_vals) / std_vals
-
-    # Save scaler parameters
-    scaler_params = {
-        'mean': mean_vals.to_dict(),
-        'std': std_vals.to_dict()
-    }
-    with open(SCALER_PARAMS_JSON, 'w') as f:
-        json.dump(scaler_params, f, indent=4)
-    print(f"Scaler parameters saved to {SCALER_PARAMS_JSON}")
-
-    # Create X and Y arrays for training and validation using normalized data
+    
+    # --- Sequence Creation ---
     # Truncate data to be divisible by the current_batch_size for stateful LSTM
     max_sequences_train = get_effective_data_length(df_train_normalized, TSTEPS, ROWS_AHEAD)
     remainder_train = max_sequences_train % current_batch_size
@@ -198,40 +200,41 @@ def train_model(lstm_units=LSTM_UNITS, learning_rate=LEARNING_RATE, epochs=EPOCH
 
     X_train, Y_train = create_sequences_for_stateful_lstm(df_train_normalized, TSTEPS, current_batch_size, ROWS_AHEAD)
     X_val, Y_val = create_sequences_for_stateful_lstm(df_val_normalized, TSTEPS, current_batch_size, ROWS_AHEAD)
-    
+
+    if X_train.shape[0] == 0 or X_val.shape[0] == 0:
+        print(f"Warning: Not enough data to create sequences for training or validation. Skipping training.")
+        return None
+
     # --- Model Building and Training ---
-    # Build the model
     model = build_lstm_model(
         input_shape=(TSTEPS, N_FEATURES),
         lstm_units=lstm_units,
-        batch_size=current_batch_size, # Pass batch_size for stateful model
+        batch_size=current_batch_size,
         learning_rate=learning_rate
     )
 
-    # Define Early Stopping callback
-    early_stopping = EarlyStopping(monitor='val_loss', patience=3, restore_best_weights=True)
+    early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
 
-    # Train the model
     print("Starting model training...")
     history = model.fit(X_train, Y_train,
               epochs=epochs,
               batch_size=current_batch_size,
               validation_data=(X_val, Y_val),
               callbacks=[early_stopping],
-              shuffle=False) # Shuffle is False for time series data to preserve temporal order
+              shuffle=False,
+              verbose=1)
     print("Model training finished.")
 
-    # Save the trained model to a versioned path
+    final_val_loss = min(history.history['val_loss'])
+    
+    # --- Model Saving ---
     os.makedirs(MODEL_REGISTRY_DIR, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    versioned_model_path = os.path.join(MODEL_REGISTRY_DIR, f"my_lstm_model_{timestamp}.keras")
-    model.save(versioned_model_path)
-    print(f"Trained model saved to {versioned_model_path}")
+    model_path = os.path.join(MODEL_REGISTRY_DIR, f"my_lstm_model_best_{timestamp}.keras")
+    model.save(model_path)
+    print(f"Model saved to {model_path} with validation loss {final_val_loss:.4f}")
 
-    # Return the final training loss
-    if history and history.history:
-        return history.history['loss'][-1]
-    return None
+    return final_val_loss
 
 if __name__ == "__main__":
     import argparse
@@ -295,4 +298,4 @@ if __name__ == "__main__":
         current_batch_size=args.batch_size # Pass batch_size from args
     )
     if final_loss is not None:
-        print(f"Final Training Loss: {final_loss:.4f}")
+        print(f"Final Validation Loss: {final_loss:.4f}")

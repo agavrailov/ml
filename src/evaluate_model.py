@@ -13,25 +13,30 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.config import (
     get_active_model_path,
+    get_latest_best_model_path, # Import new function
     SCALER_PARAMS_JSON,
     HOURLY_DATA_CSV,
     TSTEPS,
     N_FEATURES,
     BATCH_SIZE,
-    ROWS_AHEAD
+    ROWS_AHEAD,
+    LSTM_UNITS # Default fallback
 )
 
 from src.data_processing import add_features # Import add_features
+from src.model import build_non_stateful_lstm_model, load_stateful_weights_into_non_stateful_model # Import new functions
 
-def evaluate_model_performance():
+from src.train import create_sequences_for_stateless_lstm # Import the sequence creation function
+
+def evaluate_model_performance(validation_window_size=500): # Added validation_window_size parameter
     """
-    Loads the active model, generates predictions over the last 2 months of data,
+    Loads the latest best model, generates predictions over a specified validation window,
     and plots the predicted prices against the actual prices.
     """
     # --- 1. Load Data and Model ---
-    active_model_path = get_active_model_path()
-    if active_model_path is None: # Corrected syntax
-        print("Error: No active model found. Please promote a model first using 'src/promote_model.py'.")
+    best_model_path = get_latest_best_model_path()
+    if best_model_path is None:
+        print("Error: No best model found. Please train a model first using 'src/train.py'.")
         return
 
     if not os.path.exists(HOURLY_DATA_CSV):
@@ -42,8 +47,29 @@ def evaluate_model_performance():
         print(f"Error: Scaler parameters not found at '{SCALER_PARAMS_JSON}'.")
         return
 
-    print(f"Loading active model: {active_model_path}")
-    model = keras.models.load_model(active_model_path)
+    print(f"Loading best (stateful) model: {best_model_path}")
+    stateful_model = keras.models.load_model(best_model_path)
+    
+    # Load best hyperparameters to get the correct lstm_units
+    best_hps = {}
+    best_hps_path = 'best_hyperparameters.json'
+    if os.path.exists(best_hps_path):
+        with open(best_hps_path, 'r') as f:
+            best_hps = json.load(f)
+        print(f"Loaded hyperparameters from {best_hps_path}")
+    
+    lstm_units = best_hps.get('lstm_units', LSTM_UNITS) # Use loaded value or fallback to config default
+
+    # Create a non-stateful model for prediction and transfer weights
+    print(f"Creating non-stateful model with {lstm_units} LSTM units for evaluation...")
+    non_stateful_model = build_non_stateful_lstm_model(
+        input_shape=(TSTEPS, N_FEATURES),
+        lstm_units=lstm_units
+    )
+    load_stateful_weights_into_non_stateful_model(stateful_model, non_stateful_model)
+    
+    # Use the non_stateful_model for predictions
+    model = non_stateful_model
     
     print("Loading hourly data and scaler parameters...")
     df_hourly = pd.read_csv(HOURLY_DATA_CSV, parse_dates=['Time'])
@@ -52,64 +78,57 @@ def evaluate_model_performance():
         scaler_params = json.load(f)
     
     # --- 2. Filter and Prepare Data ---
-    # Use df_hourly directly for feature calculation
     df_full_featured = add_features(df_hourly.copy())
 
-    # Now, filter for the last 2 months from the featured dataset
-    two_months_ago = datetime.now() - timedelta(days=60)
-    # Ensure the 'Time' column is in datetime format for comparison
-    df_full_featured['Time'] = pd.to_datetime(df_full_featured['Time'])
-    df_eval_featured = df_full_featured[df_full_featured['Time'] >= two_months_ago].copy()
+    if len(df_full_featured) < validation_window_size:
+        print(f"Warning: Not enough data ({len(df_full_featured)} rows) for the specified validation window size ({validation_window_size}). Using all available data.")
+        validation_window_size = len(df_full_featured)
+
+    df_eval_featured = df_full_featured.iloc[-validation_window_size:].copy()
 
     if len(df_eval_featured) < TSTEPS + ROWS_AHEAD:
-        print(f"Error: Not enough data in the last 2 months ({len(df_eval_featured)} rows) to generate a prediction after feature calculation.")
+        print(f"Error: Not enough data in the evaluation window ({len(df_eval_featured)} rows) to generate a prediction.")
         return
         
-    print(f"Evaluating on {len(df_eval_featured)} data points from the last 2 months.")
+    print(f"Evaluating on {len(df_eval_featured)} data points from the last validation window.")
 
-    # Normalize the evaluation data using the saved scaler params
     feature_cols = [col for col in df_eval_featured.columns if col != 'Time']
     
-    # Ensure the order of columns matches the scaler
-    ordered_mean = np.array([scaler_params['mean'][col] for col in feature_cols])
-    ordered_std = np.array([scaler_params['std'][col] for col in feature_cols])
-
-    df_eval_normalized = (df_eval_featured[feature_cols] - ordered_mean) / ordered_std
+    mean_vals = pd.Series(scaler_params['mean'])
+    std_vals = pd.Series(scaler_params['std'])
+    
+    df_eval_normalized = df_eval_featured.copy()
+    df_eval_normalized[feature_cols] = (df_eval_featured[feature_cols] - mean_vals[feature_cols]) / std_vals[feature_cols]
     
     mean_open = scaler_params['mean']['Open']
     std_open = scaler_params['std']['Open']
 
-    # --- 3. Generate Predictions ---
-    predictions = []
-    actuals = []
-    prediction_dates = []
+    # --- 3. Generate Predictions using Sequence Method ---
+    print("Generating predictions using sequence method...")
     
-    print("Generating predictions...")
-    # We can't predict for the last (TSTEPS + ROWS_AHEAD) data points
-    for i in range(len(df_eval_normalized) - TSTEPS - ROWS_AHEAD):
-        # Get the input sequence
-        input_sequence = df_eval_normalized.iloc[i : i + TSTEPS].values
-        
-        # Reshape for the model (add batch dimension for a single sample)
-        input_sequence = input_sequence.reshape(1, TSTEPS, N_FEATURES)
-        
-        # Make prediction
-        predicted_normalized = model.predict(input_sequence, verbose=0)[0][0] # Corrected indexing
-        
-        # Denormalize the prediction
-        predicted_price = (predicted_normalized * std_open) + mean_open
-        predictions.append(predicted_price)
-        
-        # Get the actual future price from the *un-normalized* featured dataframe
-        actual_price = df_eval_featured.iloc[i + TSTEPS + ROWS_AHEAD]['Open']
-        actuals.append(actual_price)
-        
-        # Get the date for which the prediction is made
-        prediction_dates.append(df_eval_featured.iloc[i + TSTEPS + ROWS_AHEAD]['Time'])
+    # Create sequences from the normalized evaluation data
+    X_eval, Y_eval_normalized = create_sequences_for_stateless_lstm(df_eval_normalized, TSTEPS, ROWS_AHEAD)
 
-    if not predictions:
-        print("Could not generate any predictions with the available data.")
+    if X_eval.shape[0] == 0:
+        print("Could not generate any evaluation sequences with the available data.")
         return
+
+    # Get the corresponding dates for the predictions
+    # The actual values (Y_eval) correspond to the end of each sequence
+    prediction_dates = df_eval_featured['Time'].iloc[TSTEPS + ROWS_AHEAD - 1 : TSTEPS + ROWS_AHEAD - 1 + len(Y_eval_normalized)].values
+
+    # Make predictions on the entire set of sequences
+    predictions_normalized = model.predict(X_eval, batch_size=BATCH_SIZE)
+
+    # --- DIAGNOSTIC: Compare standard deviations ---
+    print("\n--- Diagnostic Stats ---")
+    print(f"Std Dev of Normalized Predictions: {np.std(predictions_normalized):.4f}")
+    print(f"Std Dev of Normalized Actuals (Y_eval): {np.std(Y_eval_normalized):.4f}")
+    print("------------------------\n")
+
+    # Denormalize predictions and actuals
+    predictions = (predictions_normalized * std_open) + mean_open
+    actuals = (Y_eval_normalized * std_open) + mean_open
 
     # --- 4. Calculate and Print Evaluation Metrics ---
     mae = mean_absolute_error(actuals, predictions)
@@ -130,17 +149,15 @@ def evaluate_model_performance():
     ax.plot(prediction_dates, actuals, label='Actual Prices', color='royalblue', linewidth=2)
     ax.plot(prediction_dates, predictions, label='Predicted Prices', color='orangered', linestyle='--', linewidth=2)
     
-    ax.set_title('Model Prediction vs. Actual Prices (Last 2 Months)', fontsize=16)
+    ax.set_title('Model Prediction vs. Actual Prices', fontsize=16)
     ax.set_xlabel('Date', fontsize=12)
     ax.set_ylabel('Price (USD)', fontsize=12)
     ax.legend(fontsize=12)
     ax.grid(True)
     
-    # Improve formatting
     fig.autofmt_xdate()
     plt.tight_layout()
 
-    # Save the plot
     plot_filename = 'evaluation_plot.png'
     plt.savefig(plot_filename)
     print(f"Evaluation plot saved as '{plot_filename}'")

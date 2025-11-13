@@ -34,13 +34,15 @@ async def predict(request: PredictionRequest):
     """
     Accepts a list of historical OHLC data points and returns a future price prediction.
 
-    The input `data` list must contain exactly `TSTEPS` (configured in src/config.py)
-    OHLC data points, representing the most recent historical data.
+    The input `data` list must contain enough data points to allow for feature
+    engineering and still provide `TSTEPS` (configured in src/config.py) data points
+    for the model's input. This means `20 + TSTEPS` OHLC data points are required.
     """
-    if len(request.data) != TSTEPS:
+    required_data_points = 20 + TSTEPS # 20 for SMA_21, plus TSTEPS for the model input
+    if len(request.data) < required_data_points:
         raise HTTPException(
             status_code=400,
-            detail=f"Input data must contain exactly {TSTEPS} OHLC data points."
+            detail=f"Input data must contain at least {required_data_points} OHLC data points to allow for feature engineering and {TSTEPS} timesteps for the model. (Currently, TSTEPS={TSTEPS})"
         )
 
     # Convert list of Pydantic models to a Pandas DataFrame
@@ -57,6 +59,7 @@ async def predict(request: PredictionRequest):
     input_df = input_df[expected_columns]
 
     try:
+        # Pass the full input_df to predict_future_prices, which will handle tailing TSTEPS
         predicted_price = predict_future_prices(input_df)
         
         # Get the active model path and extract the timestamp for versioning

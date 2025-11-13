@@ -5,10 +5,10 @@ import json # Added import
 from datetime import datetime, time # Added datetime and time imports
 
 # --- Model Hyperparameters ---
-TSTEPS = 3  # window size a.k.a. time steps
+TSTEPS = 24  # window size a.k.a. time steps
 ROWS_AHEAD = 1  # prediction Labels are n rows ahead of the current
 TR_SPLIT = 0.7   # part of data used for training
-N_FEATURES = 9    # Number of features (OHLC + technical indicators + time features)
+N_FEATURES = 7    # Number of features (OHLC + technical indicators)
 BATCH_SIZE = 256 # Number of samples per gradient update. Found by KerasTuner.
 EPOCHS = 20
 LEARNING_RATE = 0.01
@@ -34,6 +34,19 @@ def get_latest_model_path():
     # Assuming models are named with a timestamp, e.g., my_lstm_model_YYYYMMDD_HHMMSS.keras
     latest_model_file = sorted(model_files, reverse=True)[0]
     return os.path.join(MODEL_REGISTRY_DIR, latest_model_file)
+
+def get_latest_best_model_path():
+    """Returns the path to the latest saved 'best' model from the registry."""
+    if not os.path.exists(MODEL_REGISTRY_DIR):
+        return None
+    
+    best_model_files = [f for f in os.listdir(MODEL_REGISTRY_DIR) if f.endswith('.keras') and '_best_' in f]
+    if not best_model_files:
+        return None
+    
+    # Assuming models are named with a timestamp, e.g., my_lstm_model_best_YYYYMMDD_HHMMSS.keras
+    latest_best_model_file = sorted(best_model_files, reverse=True)[0]
+    return os.path.join(MODEL_REGISTRY_DIR, latest_best_model_file)
 
 def get_active_model_path():
     """
