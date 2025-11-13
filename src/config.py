@@ -5,17 +5,34 @@ import json
 from datetime import datetime, time
 
 # --- Model Hyperparameters ---
+# Default values for a single run
 FREQUENCY = '30min' # Resampling frequency for the data
 TSTEPS = 8 # Number of time steps to look back. Found by KerasTuner.
 ROWS_AHEAD = 1  # prediction Labels are n rows ahead of the current
 TR_SPLIT = 0.7   # part of data used for training
-N_FEATURES = 7    # Number of features (OHLC + technical indicators)
 BATCH_SIZE = 128 # Number of samples per gradient update. Found by KerasTuner.
 EPOCHS = 20
 LEARNING_RATE = 0.01
 LSTM_UNITS = 128  # number of neurons in a LSTM layer. Found by KerasTuner.
 DROPOUT_RATE_1 = 0.1
 DROPOUT_RATE_2 = 0.1
+N_LSTM_LAYERS = 1 # Number of LSTM layers
+STATEFUL = True # Whether the LSTM model is stateful
+
+# --- Hyperparameter Tuning Options ---
+RESAMPLE_FREQUENCIES = ['15min', '30min', '60min', '240min']
+TSTEPS_OPTIONS = [5, 8, 16, 24, 48]
+LSTM_UNITS_OPTIONS = [64, 128, 256]
+BATCH_SIZE_OPTIONS = [64, 128, 256]
+DROPOUT_RATE_OPTIONS = [0.0, 0.1, 0.2, 0.3]
+N_LSTM_LAYERS_OPTIONS = [1, 2] # 1 or 2 LSTM layers
+STATEFUL_OPTIONS = [True, False] # Stateful or non-stateful LSTM
+OPTIMIZER_OPTIONS = ['rmsprop', 'adam']
+LOSS_FUNCTION_OPTIONS = ['mae', 'mse']
+FEATURES_TO_USE_OPTIONS = [
+    ['Open', 'High', 'Low', 'Close', 'SMA_7', 'SMA_21', 'RSI'],
+    ['Open', 'High', 'Low', 'Close', 'SMA_7', 'SMA_21', 'RSI', 'Hour', 'DayOfWeek']
+]
 
 # --- Paths ---
 RAW_DATA_DIR = "data/raw"
@@ -25,17 +42,17 @@ MODEL_REGISTRY_DIR = "models/registry" # Directory to store versioned models
 ACTIVE_MODEL_PATH_FILE = os.path.join("models", "active_model.txt") # Added active model pointer file
 RAW_DATA_CSV = os.path.join(RAW_DATA_DIR, "nvda_minute.csv")
 
-def get_hourly_data_csv_path():
-    """Generates the path for the resampled data CSV based on the global FREQUENCY."""
-    return os.path.join(PROCESSED_DATA_DIR, f"nvda_{FREQUENCY}.csv")
+def get_hourly_data_csv_path(frequency, processed_data_dir=PROCESSED_DATA_DIR):
+    """Generates the path for the resampled data CSV based on the given frequency."""
+    return os.path.join(processed_data_dir, f"nvda_{frequency}.csv")
 
-def get_training_data_csv_path():
-    """Generates the path for the training data CSV based on the global FREQUENCY."""
-    return os.path.join(PROCESSED_DATA_DIR, f"training_data_{FREQUENCY}.csv")
+def get_training_data_csv_path(frequency, processed_data_dir=PROCESSED_DATA_DIR):
+    """Generates the path for the training data CSV based on the given frequency."""
+    return os.path.join(processed_data_dir, f"training_data_{frequency}.csv")
 
-def get_scaler_params_json_path():
-    """Generates the path for the scaler parameters JSON based on the global FREQUENCY."""
-    return os.path.join(PROCESSED_DATA_DIR, f"scaler_params_{FREQUENCY}.json")
+def get_scaler_params_json_path(frequency, processed_data_dir=PROCESSED_DATA_DIR):
+    """Generates the path for the scaler parameters JSON based on the given frequency."""
+    return os.path.join(processed_data_dir, f"scaler_params_{frequency}.json")
 
 def get_active_model_path():
     """

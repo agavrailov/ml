@@ -9,15 +9,19 @@ from tensorflow import keras
 import json
 import os
 
-from src.model import build_lstm_model, build_non_stateful_lstm_model, load_stateful_weights_into_non_stateful_model
+from src.model import build_lstm_model, load_stateful_weights_into_non_stateful_model
 from src.data_processing import add_features # Import add_features
 from src.config import (
     TSTEPS, N_FEATURES, BATCH_SIZE, FREQUENCY,
     PROCESSED_DATA_DIR, get_scaler_params_json_path,
-    LSTM_UNITS, LEARNING_RATE, get_latest_best_model_path
+    LSTM_UNITS, LEARNING_RATE, get_latest_best_model_path,
+    N_LSTM_LAYERS, STATEFUL, FEATURES_TO_USE_OPTIONS
 )
 
-def predict_future_prices(input_data_df):
+def predict_future_prices(input_data_df, frequency=FREQUENCY, tsteps=TSTEPS, n_features=N_FEATURES,
+                          lstm_units=LSTM_UNITS, n_lstm_layers=N_LSTM_LAYERS,
+                          stateful=STATEFUL, optimizer_name='rmsprop', loss_function='mae',
+                          features_to_use=None):
     """
     Loads the latest trained LSTM model, prepares and normalizes input data,
     makes predictions, and denormalizes the predictions using a non-stateful model.
@@ -30,19 +34,42 @@ def predict_future_prices(input_data_df):
     Returns:
         np.array: Denormalized predicted prices.
     """
+    if features_to_use is None:
+        features_to_use = FEATURES_TO_USE_OPTIONS[0] # Default to the first option if not provided
+
     # Get the path to the best model for the current FREQUENCY and TSTEPS
-    active_model_path = get_latest_best_model_path(target_frequency=FREQUENCY, tsteps=TSTEPS)
+    active_model_path = get_latest_best_model_path(target_frequency=frequency, tsteps=tsteps)
     if not active_model_path or not os.path.exists(active_model_path):
-        raise FileNotFoundError(f"No best model found for frequency {FREQUENCY} and TSTEPS {TSTEPS}. Please train a model first.")
+        raise FileNotFoundError(f"No best model found for frequency {frequency} and TSTEPS {tsteps}. Please train a model first.")
 
     print(f"Loading stateful model from: {active_model_path}")
     stateful_model = keras.models.load_model(active_model_path)
 
+    # Load best hyperparameters to get the correct lstm_units, n_lstm_layers, etc.
+    best_hps = {}
+    best_hps_path = 'best_hyperparameters.json'
+    if os.path.exists(best_hps_path):
+        with open(best_hps_path, 'r') as f:
+            best_hps_data = json.load(f)
+            if frequency in best_hps_data and str(tsteps) in best_hps_data[frequency]:
+                best_hps = best_hps_data[frequency][str(tsteps)]
+    
+    lstm_units = best_hps.get('lstm_units', LSTM_UNITS)
+    n_lstm_layers = best_hps.get('n_lstm_layers', N_LSTM_LAYERS)
+    optimizer_name = best_hps.get('optimizer_name', 'rmsprop')
+    loss_function = best_hps.get('loss_function', 'mae')
+
     # Build a non-stateful model for prediction and transfer weights
     print("Creating non-stateful model for prediction and transferring weights...")
-    prediction_model = build_non_stateful_lstm_model(
-        input_shape=(TSTEPS, N_FEATURES),
-        lstm_units=LSTM_UNITS # Assuming LSTM_UNITS is consistent or loaded from model metadata
+    prediction_model = build_lstm_model( # Changed to build_lstm_model
+        input_shape=(tsteps, n_features),
+        lstm_units=lstm_units,
+        batch_size=None, # Non-stateful model does not require batch_size
+        learning_rate=0.001, # Learning rate is not used for prediction model compilation
+        n_lstm_layers=n_lstm_layers,
+        stateful=False, # Always non-stateful for prediction
+        optimizer_name=optimizer_name,
+        loss_function=loss_function
     )
     load_stateful_weights_into_non_stateful_model(stateful_model, prediction_model)
 
@@ -58,12 +85,12 @@ def predict_future_prices(input_data_df):
 
     # Prepare input data
     input_data_df_copy = input_data_df.copy()
-    df_featured_input = add_features(input_data_df_copy)
+    df_featured_input, _ = add_features(input_data_df_copy, features_to_use) # Pass features_to_use
 
-    if len(df_featured_input) < TSTEPS:
-        raise ValueError(f"Not enough data after feature engineering to form {TSTEPS} timesteps.")
+    if len(df_featured_input) < tsteps:
+        raise ValueError(f"Not enough data after feature engineering to form {tsteps} timesteps.")
     
-    df_featured_input = df_featured_input.tail(TSTEPS)
+    df_featured_input = df_featured_input.tail(tsteps)
 
     feature_cols = [col for col in df_featured_input.columns if col != 'Time']
     
@@ -106,5 +133,16 @@ if __name__ == "__main__":
         dummy_input_data['Time'] = pd.to_datetime(pd.date_range(end=pd.Timestamp.now(), periods=MIN_DATA_FOR_FEATURES, freq='H'))
         
         print(f"Input data for prediction (raw OHLC):\n{dummy_input_data}")
-        predicted_price = predict_future_prices(dummy_input_data)
+        predicted_price = predict_future_prices(
+            dummy_input_data,
+            frequency=FREQUENCY,
+            tsteps=TSTEPS,
+            n_features=N_FEATURES,
+            lstm_units=LSTM_UNITS,
+            n_lstm_layers=N_LSTM_LAYERS,
+            stateful=STATEFUL,
+            optimizer_name='rmsprop', # Default for now
+            loss_function='mae', # Default for now
+            features_to_use=FEATURES_TO_USE_OPTIONS[0] # Default for now
+        )
         print(f"Predicted future price: {predicted_price}")

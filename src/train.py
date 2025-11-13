@@ -145,7 +145,10 @@ def create_sequences_for_stateful_lstm(data, sequence_length, batch_size, rows_a
     return X, Y
 
 
-def train_model(lstm_units=LSTM_UNITS, learning_rate=LEARNING_RATE, epochs=EPOCHS, current_batch_size=BATCH_SIZE):
+def train_model(frequency=FREQUENCY, tsteps=TSTEPS, n_features=N_FEATURES,
+                lstm_units=LSTM_UNITS, learning_rate=LEARNING_RATE, epochs=EPOCHS,
+                current_batch_size=BATCH_SIZE, n_lstm_layers=N_LSTM_LAYERS,
+                stateful=STATEFUL, optimizer_name='rmsprop', loss_function='mae'):
     """
     Loads processed data, builds and trains the LSTM model, and saves the trained model.
     Uses a standard train-validation split.
@@ -159,7 +162,7 @@ def train_model(lstm_units=LSTM_UNITS, learning_rate=LEARNING_RATE, epochs=EPOCH
     scaler_params_path = get_scaler_params_json_path()
 
     if not os.path.exists(training_data_path):
-        print(f"Error: Training data not found for frequency {FREQUENCY} at {training_data_path}. Skipping training.")
+        print(f"Error: Training data not found for frequency {frequency} at {training_data_path}. Skipping training.")
         return None
 
     df_featured, feature_cols = prepare_keras_input_data(training_data_path)
@@ -195,34 +198,38 @@ def train_model(lstm_units=LSTM_UNITS, learning_rate=LEARNING_RATE, epochs=EPOCH
     
     # --- Sequence Creation ---
     # Truncate data to be divisible by the current_batch_size for stateful LSTM
-    max_sequences_train = get_effective_data_length(df_train_normalized, TSTEPS, ROWS_AHEAD)
+    max_sequences_train = get_effective_data_length(df_train_normalized, tsteps, ROWS_AHEAD)
     remainder_train = max_sequences_train % current_batch_size
     if remainder_train > 0:
         df_train_normalized = df_train_normalized.iloc[:-remainder_train]
 
-    max_sequences_val = get_effective_data_length(df_val_normalized, TSTEPS, ROWS_AHEAD)
+    max_sequences_val = get_effective_data_length(df_val_normalized, tsteps, ROWS_AHEAD)
     remainder_val = max_sequences_val % current_batch_size
     if remainder_val > 0:
         df_val_normalized = df_val_normalized.iloc[:-remainder_val]
 
-    X_train, Y_train = create_sequences_for_stateful_lstm(df_train_normalized, TSTEPS, current_batch_size, ROWS_AHEAD)
-    X_val, Y_val = create_sequences_for_stateful_lstm(df_val_normalized, TSTEPS, current_batch_size, ROWS_AHEAD)
+    X_train, Y_train = create_sequences_for_stateful_lstm(df_train_normalized, tsteps, current_batch_size, ROWS_AHEAD)
+    X_val, Y_val = create_sequences_for_stateful_lstm(df_val_normalized, tsteps, current_batch_size, ROWS_AHEAD)
 
     if X_train.shape[0] == 0 or X_val.shape[0] == 0:
-        print(f"Warning: Not enough data to create sequences for training or validation for {FREQUENCY} with TSTEPS={TSTEPS}. Skipping training.")
+        print(f"Warning: Not enough data to create sequences for training or validation for {frequency} with TSTEPS={tsteps}. Skipping training.")
         return None
 
     # --- Model Building and Training ---
     model = build_lstm_model(
-        input_shape=(TSTEPS, N_FEATURES),
+        input_shape=(tsteps, n_features),
         lstm_units=lstm_units,
-        batch_size=current_batch_size,
-        learning_rate=learning_rate
+        batch_size=current_batch_size if stateful else None, # Pass batch_size only if stateful
+        learning_rate=learning_rate,
+        n_lstm_layers=n_lstm_layers,
+        stateful=stateful,
+        optimizer_name=optimizer_name,
+        loss_function=loss_function
     )
 
     early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
 
-    print(f"Starting model training for {FREQUENCY} with TSTEPS={TSTEPS}...")
+    print(f"Starting model training for {frequency} with TSTEPS={tsteps}...")
     history = model.fit(X_train, Y_train,
               epochs=epochs,
               batch_size=current_batch_size,
@@ -230,14 +237,14 @@ def train_model(lstm_units=LSTM_UNITS, learning_rate=LEARNING_RATE, epochs=EPOCH
               callbacks=[early_stopping],
               shuffle=False,
               verbose=1)
-    print(f"Model training finished for {FREQUENCY} with TSTEPS={TSTEPS}.")
+    print(f"Model training finished for {frequency} with TSTEPS={tsteps}.")
 
     final_val_loss = min(history.history['val_loss'])
     
     # --- Model Saving ---
     os.makedirs(MODEL_REGISTRY_DIR, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    model_path = os.path.join(MODEL_REGISTRY_DIR, f"my_lstm_model_{FREQUENCY}_tsteps{TSTEPS}_{timestamp}.keras")
+    model_path = os.path.join(MODEL_REGISTRY_DIR, f"my_lstm_model_{frequency}_tsteps{tsteps}_{timestamp}.keras")
     model.save(model_path)
     print(f"Model saved to {model_path} with validation loss {final_val_loss:.4f}")
 
@@ -250,10 +257,17 @@ if __name__ == "__main__":
     print(f"\n--- Training model for frequency: {FREQUENCY}, TSTEPS: {TSTEPS} ---")
     
     final_loss_model_path = train_model(
+        frequency=FREQUENCY,
+        tsteps=TSTEPS,
+        n_features=N_FEATURES,
         lstm_units=LSTM_UNITS,
         learning_rate=LEARNING_RATE,
         epochs=EPOCHS,
-        current_batch_size=BATCH_SIZE
+        current_batch_size=BATCH_SIZE,
+        n_lstm_layers=N_LSTM_LAYERS,
+        stateful=STATEFUL,
+        optimizer_name='rmsprop', # Default for now, will be configurable later
+        loss_function='mae' # Default for now, will be configurable later
     )
     
     if final_loss_model_path is not None:
@@ -281,7 +295,11 @@ if __name__ == "__main__":
                 'lstm_units': LSTM_UNITS,
                 'learning_rate': LEARNING_RATE,
                 'epochs': EPOCHS,
-                'batch_size': BATCH_SIZE
+                'batch_size': BATCH_SIZE,
+                'n_lstm_layers': N_LSTM_LAYERS,
+                'stateful': STATEFUL,
+                'optimizer_name': 'rmsprop',
+                'loss_function': 'mae'
             }
             print(f"Updated best hyperparameters for Frequency: {FREQUENCY}, TSTEPS: {TSTEPS} with validation loss {final_loss:.4f}")
         

@@ -9,19 +9,22 @@ import numpy as np
 import subprocess # Added for running external scripts
 
 from src.config import (
-    PROCESSED_DATA_DIR, RAW_DATA_CSV, FREQUENCY, get_hourly_data_csv_path
+    PROCESSED_DATA_DIR, RAW_DATA_CSV, FREQUENCY, get_hourly_data_csv_path,
+    FEATURES_TO_USE_OPTIONS
 )
 
 GAP_ANALYSIS_OUTPUT_JSON = os.path.join(PROCESSED_DATA_DIR, "missing_trading_days.json")
 
-def convert_minute_to_timeframe(input_csv_path):
+def convert_minute_to_timeframe(input_csv_path, frequency, processed_data_dir=PROCESSED_DATA_DIR):
     """
     Converts minute-level OHLC data from a CSV file to a specified timeframe OHLC data.
 
     Args:
         input_csv_path (str): Path to the input minute-level CSV file.
+        frequency (str): The resampling frequency (e.g., '60min', '30min').
+        processed_data_dir (str): The directory where processed data will be saved.
     """
-    output_csv_path = get_hourly_data_csv_path()
+    output_csv_path = get_hourly_data_csv_path(frequency, processed_data_dir)
     
     # Load input timeseries file
     # Assuming the CSV has columns like "DateTime", "Open", "High", "Low", "Close"
@@ -29,7 +32,7 @@ def convert_minute_to_timeframe(input_csv_path):
     df = pd.read_csv(input_csv_path, parse_dates=['DateTime'], index_col='DateTime')
 
     # Convert to specified timeframe OHLC data
-    df_resampled = df.resample(FREQUENCY).agg({
+    df_resampled = df.resample(frequency).agg({
         'Open': 'first',
         'High': 'max',
         'Low': 'min',
@@ -47,57 +50,69 @@ def convert_minute_to_timeframe(input_csv_path):
 
     # Save the resampled data to a new CSV file
     df_resampled.to_csv(output_csv_path, index=False)
-    print(f"Successfully converted minute data to {FREQUENCY} and saved to {output_csv_path}")
+    print(f"Successfully converted minute data to {frequency} and saved to {output_csv_path}")
 
-def add_features(df):
+def add_features(df, features_to_generate):
     """
-    Adds technical indicators and time-based features to the DataFrame.
+    Adds technical indicators and time-based features to the DataFrame based on the provided list.
     """
     # Ensure 'Time' is a datetime object
     df['Time'] = pd.to_datetime(df['Time'])
 
     # --- Technical Indicators ---
-    # Simple Moving Averages (SMA)
-    df['SMA_7'] = df['Close'].rolling(window=7).mean()
-    df['SMA_21'] = df['Close'].rolling(window=21).mean()
+    if 'SMA_7' in features_to_generate:
+        df['SMA_7'] = df['Close'].rolling(window=7).mean()
+    if 'SMA_21' in features_to_generate:
+        df['SMA_21'] = df['Close'].rolling(window=21).mean()
 
-    # Relative Strength Index (RSI)
-    delta = df['Close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    rs = gain / loss
-    df['RSI'] = 100 - (100 / (1 + rs))
+    if 'RSI' in features_to_generate:
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        df['RSI'] = 100 - (100 / (1 + rs))
 
     # --- Time-Based Features ---
+    if 'Hour' in features_to_generate:
+        df['Hour'] = df['Time'].dt.hour
+    if 'DayOfWeek' in features_to_generate:
+        df['DayOfWeek'] = df['Time'].dt.dayofweek # Monday=0, Sunday=6
 
     # Drop rows with NaN values created by rolling indicators
     df.dropna(inplace=True)
     
     return df
 
-def prepare_keras_input_data(input_hourly_csv_path):
+def prepare_keras_input_data(input_hourly_csv_path, features_to_use):
     """
-    Prepares data for Keras input by adding features.
+    Prepares data for Keras input by adding features and selecting only the specified ones.
     Normalization is handled separately in the training script to prevent data leakage.
 
     Args:
         input_hourly_csv_path (str): Path to the input hourly-level CSV file.
+        features_to_use (list): A list of feature names to be used by the model.
 
     Returns:
         tuple: A tuple containing:
-            - pd.DataFrame: DataFrame with added features.
-            - list: List of feature column names.
+            - pd.DataFrame: DataFrame with selected features.
+            - list: List of selected feature column names.
     """
     df = pd.read_csv(input_hourly_csv_path)
 
-    # Add features
-    df_featured = add_features(df)
-
-    # Select all feature columns for normalization
-    # Exclude the 'Time' column as it's not a feature for the model
-    feature_cols = [col for col in df_featured.columns if col != 'Time']
+    # Define all possible features that can be generated
+    all_possible_features_to_generate = [
+        'Open', 'High', 'Low', 'Close', 'SMA_7', 'SMA_21', 'RSI', 'Hour', 'DayOfWeek'
+    ]
     
-    return df_featured, feature_cols
+    # Add all possible features to the DataFrame
+    df_featured = add_features(df, all_possible_features_to_generate)
+
+    # Filter to only include the features specified in features_to_use
+    # Ensure 'Time' is not included in features_to_use if it's not meant to be a model feature
+    final_features = [f for f in features_to_use if f in df_featured.columns]
+    df_filtered = df_featured[['Time'] + final_features] # Keep 'Time' for indexing/merging if needed
+
+    return df_filtered, final_features
 
 
 def clean_raw_minute_data(input_csv_path):
@@ -195,11 +210,14 @@ if __name__ == "__main__":
 
     # Process the actual raw data (now potentially with gaps filled)
     print(f"Processing raw minute data from {RAW_DATA_CSV}...")
-    convert_minute_to_timeframe(RAW_DATA_CSV)
+    convert_minute_to_timeframe(RAW_DATA_CSV, FREQUENCY, PROCESSED_DATA_DIR)
     
     # Prepare features, normalization will be handled in training script
-    df_featured, feature_cols = prepare_keras_input_data(get_hourly_data_csv_path())
-    print("Features added to hourly data. Normalization will be performed during model training.")
+    # Use a default set of features for standalone execution
+    from src.config import FEATURES_TO_USE_OPTIONS
+    default_features_to_use = FEATURES_TO_USE_OPTIONS[0] # Use the first set of features as default
+    df_featured, feature_cols = prepare_keras_input_data(get_hourly_data_csv_path(FREQUENCY, PROCESSED_DATA_DIR), default_features_to_use)
+    print(f"Features added to hourly data: {feature_cols}. Normalization will be performed during model training.")
     
     # Optionally save the featured data before normalization for inspection if needed
     # df_featured.to_csv(os.path.join(PROCESSED_DATA_DIR, "featured_hourly_data.csv"), index=False)
