@@ -9,27 +9,27 @@ import numpy as np
 import subprocess # Added for running external scripts
 
 from src.config import (
-    PROCESSED_DATA_DIR, HOURLY_DATA_CSV, TRAINING_DATA_CSV, SCALER_PARAMS_JSON, RAW_DATA_CSV
+    PROCESSED_DATA_DIR, RAW_DATA_CSV, FREQUENCY, get_hourly_data_csv_path
 )
 
 GAP_ANALYSIS_OUTPUT_JSON = os.path.join(PROCESSED_DATA_DIR, "missing_trading_days.json")
 
-def convert_minute_to_hourly(input_csv_path, output_csv_path):
+def convert_minute_to_timeframe(input_csv_path):
     """
-    Converts minute-level OHLC data from a CSV file to hourly OHLC data.
+    Converts minute-level OHLC data from a CSV file to a specified timeframe OHLC data.
 
     Args:
         input_csv_path (str): Path to the input minute-level CSV file.
-        output_csv_path (str): Path to save the output hourly-level CSV file.
     """
+    output_csv_path = get_hourly_data_csv_path()
+    
     # Load input timeseries file
     # Assuming the CSV has columns like "DateTime", "Open", "High", "Low", "Close"
     # and "DateTime" is in "%Y-%m-%dT%H:%M" format.
     df = pd.read_csv(input_csv_path, parse_dates=['DateTime'], index_col='DateTime')
 
-    # Convert to hourly OHLC data
-    # 'first' for Open, 'max' for High, 'min' for Low, 'last' for Close
-    df_hourly = df.resample('h').agg({
+    # Convert to specified timeframe OHLC data
+    df_resampled = df.resample(FREQUENCY).agg({
         'Open': 'first',
         'High': 'max',
         'Low': 'min',
@@ -37,17 +37,17 @@ def convert_minute_to_hourly(input_csv_path, output_csv_path):
     })
 
     # Drop any rows that might have been created by resampling but have no data
-    df_hourly.dropna(inplace=True)
+    df_resampled.dropna(inplace=True)
 
     # Reset index to make 'DateTime' a column again and rename it to 'Time'
-    df_hourly = df_hourly.reset_index().rename(columns={'DateTime': 'Time'})
+    df_resampled = df_resampled.reset_index().rename(columns={'DateTime': 'Time'})
     
     # Ensure DateTime is in the correct format
-    df_hourly['Time'] = df_hourly['Time'].dt.strftime('%Y-%m-%d %H:%M:%S')
+    df_resampled['Time'] = df_resampled['Time'].dt.strftime('%Y-%m-%d %H:%M:%S')
 
-    # Save the hourly data to a new CSV file
-    df_hourly.to_csv(output_csv_path, index=False)
-    print(f"Successfully converted minute data to hourly and saved to {output_csv_path}")
+    # Save the resampled data to a new CSV file
+    df_resampled.to_csv(output_csv_path, index=False)
+    print(f"Successfully converted minute data to {FREQUENCY} and saved to {output_csv_path}")
 
 def add_features(df):
     """
@@ -195,10 +195,10 @@ if __name__ == "__main__":
 
     # Process the actual raw data (now potentially with gaps filled)
     print(f"Processing raw minute data from {RAW_DATA_CSV}...")
-    convert_minute_to_hourly(RAW_DATA_CSV, HOURLY_DATA_CSV)
+    convert_minute_to_timeframe(RAW_DATA_CSV)
     
     # Prepare features, normalization will be handled in training script
-    df_featured, feature_cols = prepare_keras_input_data(HOURLY_DATA_CSV)
+    df_featured, feature_cols = prepare_keras_input_data(get_hourly_data_csv_path())
     print("Features added to hourly data. Normalization will be performed during model training.")
     
     # Optionally save the featured data before normalization for inspection if needed

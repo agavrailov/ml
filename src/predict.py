@@ -1,3 +1,7 @@
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import pandas as pd
 import numpy as np
 import tensorflow as tf
@@ -5,15 +9,15 @@ from tensorflow import keras
 import json
 import os
 
-from src.model import build_lstm_model
+from src.model import build_lstm_model, build_non_stateful_lstm_model, load_stateful_weights_into_non_stateful_model
 from src.data_processing import add_features # Import add_features
 from src.config import (
-    TSTEPS, N_FEATURES, BATCH_SIZE,
-    PROCESSED_DATA_DIR, SCALER_PARAMS_JSON, MODEL_SAVE_PATH,
-    LSTM_UNITS, LEARNING_RATE, get_latest_model_path, get_active_model_path
+    TSTEPS, N_FEATURES, BATCH_SIZE, FREQUENCY,
+    PROCESSED_DATA_DIR, get_scaler_params_json_path,
+    LSTM_UNITS, LEARNING_RATE, get_latest_best_model_path
 )
 
-def predict_future_prices(input_data_df, scaler_params_path=SCALER_PARAMS_JSON):
+def predict_future_prices(input_data_df):
     """
     Loads the latest trained LSTM model, prepares and normalizes input data,
     makes predictions, and denormalizes the predictions using a non-stateful model.
@@ -22,35 +26,31 @@ def predict_future_prices(input_data_df, scaler_params_path=SCALER_PARAMS_JSON):
         input_data_df (pd.DataFrame): DataFrame containing the raw OHLC input data for prediction.
                                       It must contain enough historical data to allow for feature
                                       engineering and still provide `TSTEPS` data points.
-        scaler_params_path (str): Path to the JSON file containing scaler parameters (mean, std).
 
     Returns:
         np.array: Denormalized predicted prices.
     """
-    active_model_path = get_active_model_path()
+    # Get the path to the best model for the current FREQUENCY and TSTEPS
+    active_model_path = get_latest_best_model_path(target_frequency=FREQUENCY, tsteps=TSTEPS)
     if not active_model_path or not os.path.exists(active_model_path):
-        raise FileNotFoundError("No active model found. Please train and promote a model first.")
+        raise FileNotFoundError(f"No best model found for frequency {FREQUENCY} and TSTEPS {TSTEPS}. Please train a model first.")
 
-    print(f"Loading active stateful model from: {active_model_path}")
+    print(f"Loading stateful model from: {active_model_path}")
     stateful_model = keras.models.load_model(active_model_path)
-
-    # Load best hyperparameters to get LSTM units
-    best_hps = {}
-    best_hps_path = 'best_hyperparameters.json'
-    if os.path.exists(best_hps_path):
-        with open(best_hps_path, 'r') as f:
-            best_hps = json.load(f)
-    lstm_units = best_hps.get('lstm_units', LSTM_UNITS)
 
     # Build a non-stateful model for prediction and transfer weights
     print("Creating non-stateful model for prediction and transferring weights...")
     prediction_model = build_non_stateful_lstm_model(
         input_shape=(TSTEPS, N_FEATURES),
-        lstm_units=lstm_units
+        lstm_units=LSTM_UNITS # Assuming LSTM_UNITS is consistent or loaded from model metadata
     )
     load_stateful_weights_into_non_stateful_model(stateful_model, prediction_model)
 
-    # Load scaler parameters
+    # Load scaler parameters for the current FREQUENCY
+    scaler_params_path = get_scaler_params_json_path()
+    if not os.path.exists(scaler_params_path):
+        raise FileNotFoundError(f"Scaler parameters not found at {scaler_params_path}.")
+    
     with open(scaler_params_path, 'r') as f:
         scaler_params = json.load(f)
     mean_vals = pd.Series(scaler_params['mean'])
@@ -87,9 +87,11 @@ if __name__ == "__main__":
     print("Running prediction example...")
 
     # Ensure an active model and scaler params exist
-    active_model_path = get_active_model_path()
-    if not active_model_path or not os.path.exists(SCALER_PARAMS_JSON):
-        print("Error: Active model or scaler parameters not found. Please train and promote a model first.")
+    active_model_path = get_latest_best_model_path(target_frequency=FREQUENCY, tsteps=TSTEPS)
+    scaler_params_path = get_scaler_params_json_path()
+
+    if not active_model_path or not os.path.exists(scaler_params_path):
+        print(f"Error: Active model for {FREQUENCY} (TSTEPS={TSTEPS}) or scaler parameters not found. Please train a model first.")
     else:
         # Define the minimum number of data points required for feature engineering
         # Max rolling window (SMA_21) is 21.

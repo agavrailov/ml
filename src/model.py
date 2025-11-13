@@ -4,6 +4,7 @@ from tensorflow.keras import layers
 from tensorflow.keras.models import Model # Import Model
 
 from tensorflow.keras.layers import Bidirectional
+from src.config import DROPOUT_RATE_1, DROPOUT_RATE_2
 
 def build_lstm_model(input_shape, lstm_units, batch_size, learning_rate):
     """
@@ -26,10 +27,11 @@ def build_lstm_model(input_shape, lstm_units, batch_size, learning_rate):
                              return_sequences=False, # False for single output
                              stateful=True,
                              activation='tanh')(inputs)
-    dropout = layers.Dropout(0.3)(lstm_layer)
+    dropout1 = layers.Dropout(DROPOUT_RATE_1)(lstm_layer)
+    dropout2 = layers.Dropout(DROPOUT_RATE_2)(dropout1)
 
     # Add the Dense output layer
-    outputs = layers.Dense(units=1, dtype=tf.float32)(dropout)
+    outputs = layers.Dense(units=1, dtype=tf.float32)(dropout2)
 
     # Create the model
     model = Model(inputs=inputs, outputs=outputs)
@@ -61,10 +63,11 @@ def build_non_stateful_lstm_model(input_shape, lstm_units):
                              return_sequences=False,
                              stateful=False, # Key difference: non-stateful
                              activation='tanh')(inputs)
-    dropout = layers.Dropout(0.3)(lstm_layer)
+    dropout1 = layers.Dropout(DROPOUT_RATE_1)(lstm_layer)
+    dropout2 = layers.Dropout(DROPOUT_RATE_2)(dropout1)
 
     # Add the Dense output layer
-    outputs = layers.Dense(units=1, dtype=tf.float32)(dropout)
+    outputs = layers.Dense(units=1, dtype=tf.float32)(dropout2)
 
     # Create the model
     model = Model(inputs=inputs, outputs=outputs)

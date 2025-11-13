@@ -11,12 +11,13 @@ import os
 from tensorflow.keras.callbacks import EarlyStopping # Added import
 
 from src.model import build_lstm_model
-from src.data_processing import convert_minute_to_hourly, prepare_keras_input_data
+from src.data_processing import prepare_keras_input_data
 from datetime import datetime # Added import
 from src.config import (
-    TSTEPS, ROWS_AHEAD, TR_SPLIT, N_FEATURES, BATCH_SIZE,
+    ROWS_AHEAD, TR_SPLIT, N_FEATURES, BATCH_SIZE,
     EPOCHS, LEARNING_RATE, LSTM_UNITS,
-    PROCESSED_DATA_DIR, HOURLY_DATA_CSV, TRAINING_DATA_CSV, SCALER_PARAMS_JSON, MODEL_SAVE_PATH, MODEL_REGISTRY_DIR
+    PROCESSED_DATA_DIR, MODEL_REGISTRY_DIR,
+    FREQUENCY, TSTEPS, get_training_data_csv_path, get_scaler_params_json_path
 )
 
 def get_effective_data_length(data, sequence_length, rows_ahead):
@@ -154,8 +155,14 @@ def train_model(lstm_units=LSTM_UNITS, learning_rate=LEARNING_RATE, epochs=EPOCH
     tf.random.set_seed(42)
 
     # --- Data Preparation ---
-    # Get featured data (without normalization)
-    df_featured, feature_cols = prepare_keras_input_data(HOURLY_DATA_CSV)
+    training_data_path = get_training_data_csv_path()
+    scaler_params_path = get_scaler_params_json_path()
+
+    if not os.path.exists(training_data_path):
+        print(f"Error: Training data not found for frequency {FREQUENCY} at {training_data_path}. Skipping training.")
+        return None
+
+    df_featured, feature_cols = prepare_keras_input_data(training_data_path)
 
     # Split data into training and validation sets
     split_index = int(len(df_featured) * TR_SPLIT)
@@ -175,9 +182,9 @@ def train_model(lstm_units=LSTM_UNITS, learning_rate=LEARNING_RATE, epochs=EPOCH
         'mean': mean_vals.to_dict(),
         'std': std_vals.to_dict()
     }
-    with open(SCALER_PARAMS_JSON, 'w') as f:
+    with open(scaler_params_path, 'w') as f:
         json.dump(scaler_params, f, indent=4)
-    print(f"Scaler parameters calculated on training data and saved to {SCALER_PARAMS_JSON}")
+    print(f"Scaler parameters calculated on training data and saved to {scaler_params_path}")
 
     # Normalize both training and validation sets using the scaler fitted on training data
     df_train_normalized = df_train_raw.copy()
@@ -202,7 +209,7 @@ def train_model(lstm_units=LSTM_UNITS, learning_rate=LEARNING_RATE, epochs=EPOCH
     X_val, Y_val = create_sequences_for_stateful_lstm(df_val_normalized, TSTEPS, current_batch_size, ROWS_AHEAD)
 
     if X_train.shape[0] == 0 or X_val.shape[0] == 0:
-        print(f"Warning: Not enough data to create sequences for training or validation. Skipping training.")
+        print(f"Warning: Not enough data to create sequences for training or validation for {FREQUENCY} with TSTEPS={TSTEPS}. Skipping training.")
         return None
 
     # --- Model Building and Training ---
@@ -215,7 +222,7 @@ def train_model(lstm_units=LSTM_UNITS, learning_rate=LEARNING_RATE, epochs=EPOCH
 
     early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
 
-    print("Starting model training...")
+    print(f"Starting model training for {FREQUENCY} with TSTEPS={TSTEPS}...")
     history = model.fit(X_train, Y_train,
               epochs=epochs,
               batch_size=current_batch_size,
@@ -223,79 +230,67 @@ def train_model(lstm_units=LSTM_UNITS, learning_rate=LEARNING_RATE, epochs=EPOCH
               callbacks=[early_stopping],
               shuffle=False,
               verbose=1)
-    print("Model training finished.")
+    print(f"Model training finished for {FREQUENCY} with TSTEPS={TSTEPS}.")
 
     final_val_loss = min(history.history['val_loss'])
     
     # --- Model Saving ---
     os.makedirs(MODEL_REGISTRY_DIR, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    model_path = os.path.join(MODEL_REGISTRY_DIR, f"my_lstm_model_best_{timestamp}.keras")
+    model_path = os.path.join(MODEL_REGISTRY_DIR, f"my_lstm_model_{FREQUENCY}_tsteps{TSTEPS}_{timestamp}.keras")
     model.save(model_path)
     print(f"Model saved to {model_path} with validation loss {final_val_loss:.4f}")
 
-    return final_val_loss
+    return final_val_loss, model_path
 
 if __name__ == "__main__":
-    import argparse
-
-    # Load best hyperparameters if available
-    best_hps = {}
-    best_hps_path = 'best_hyperparameters.json'
-    if os.path.exists(best_hps_path):
-        with open(best_hps_path, 'r') as f:
-            best_hps = json.load(f)
-        print(f"Loaded best hyperparameters from {best_hps_path}")
-    else:
-        print("No 'best_hyperparameters.json' found. Using default hyperparameters from config.py.")
-
-    parser = argparse.ArgumentParser(description="Train the LSTM model with specified hyperparameters.")
-    parser.add_argument('--lstm_units', type=int, default=best_hps.get('lstm_units', LSTM_UNITS),
-                        help=f"Number of LSTM units in the layer (default: {best_hps.get('lstm_units', LSTM_UNITS)})")
-    parser.add_argument('--learning_rate', type=float, default=best_hps.get('learning_rate', LEARNING_RATE),
-                        help=f"Learning rate for the optimizer (default: {best_hps.get('learning_rate', LEARNING_RATE)})")
-    parser.add_argument('--epochs', type=int, default=EPOCHS,
-                        help=f"Number of training epochs (default: {EPOCHS})")
-    parser.add_argument('--batch_size', type=int, default=best_hps.get('batch_size', BATCH_SIZE),
-                        help=f"Batch size for training (default: {best_hps.get('batch_size', BATCH_SIZE)})")
+    # Ensure data/processed exists
+    os.makedirs(PROCESSED_DATA_DIR, exist_ok=True)
     
-    args = parser.parse_args()
-
-    # Ensure data/processed exists and contains necessary files for testing
-    if not os.path.exists(PROCESSED_DATA_DIR):
-        os.makedirs(PROCESSED_DATA_DIR)
+    print(f"\n--- Training model for frequency: {FREQUENCY}, TSTEPS: {TSTEPS} ---")
     
-    # Create dummy data if not present (for standalone testing)
-    if not os.path.exists(HOURLY_DATA_CSV):
-        print("Creating dummy processed data for standalone train.py test...")
-        
-        # Generate a continuous range of minute-level datetimes
-        start_time = pd.to_datetime('2023-01-01T00:00')
-        num_minutes = 120000 # Increased for more data
-        dummy_datetimes = pd.date_range(start=start_time, periods=num_minutes, freq='min')
-
-        dummy_minute_data = {
-            'DateTime': dummy_datetimes,
-            'Open': np.random.rand(num_minutes) * 100 + 100,
-            'High': np.random.rand(num_minutes) * 100 + 101,
-            'Low': np.random.rand(num_minutes) * 100 + 99,
-            'Close': np.random.rand(num_minutes) * 100 + 100
-        }
-        dummy_df_minute = pd.DataFrame(dummy_minute_data)
-        dummy_input_minute_path = "data/raw/nvda_minute.csv"
-        os.makedirs("data/raw", exist_ok=True)
-        dummy_df_minute.to_csv(dummy_input_minute_path, index=False)
-
-        hourly_output_path = os.path.join(PROCESSED_DATA_DIR, "nvda_hourly.csv")
-        convert_minute_to_hourly(dummy_input_minute_path, hourly_output_path)
-        print("Dummy hourly data created.")
-
-    # Call train_model with parsed arguments
-    final_loss = train_model(
-        lstm_units=args.lstm_units,
-        learning_rate=args.learning_rate,
-        epochs=args.epochs,
-        current_batch_size=args.batch_size # Pass batch_size from args
+    final_loss_model_path = train_model(
+        lstm_units=LSTM_UNITS,
+        learning_rate=LEARNING_RATE,
+        epochs=EPOCHS,
+        current_batch_size=BATCH_SIZE
     )
-    if final_loss is not None:
-        print(f"Final Validation Loss: {final_loss:.4f}")
+    
+    if final_loss_model_path is not None:
+        final_loss, model_path = final_loss_model_path
+        model_filename = os.path.basename(model_path)
+
+        # Load best hyperparameters if available
+        best_hps_overall = {}
+        best_hps_path = 'best_hyperparameters.json'
+        if os.path.exists(best_hps_path):
+            with open(best_hps_path, 'r') as f:
+                best_hps_overall = json.load(f)
+        else:
+            best_hps_overall = {}
+
+        if FREQUENCY not in best_hps_overall:
+            best_hps_overall[FREQUENCY] = {}
+
+        if str(TSTEPS) not in best_hps_overall[FREQUENCY] or \
+           final_loss < best_hps_overall[FREQUENCY][str(TSTEPS)].get('validation_loss', float('inf')):
+            
+            best_hps_overall[FREQUENCY][str(TSTEPS)] = {
+                'validation_loss': final_loss,
+                'model_filename': model_filename,
+                'lstm_units': LSTM_UNITS,
+                'learning_rate': LEARNING_RATE,
+                'epochs': EPOCHS,
+                'batch_size': BATCH_SIZE
+            }
+            print(f"Updated best hyperparameters for Frequency: {FREQUENCY}, TSTEPS: {TSTEPS} with validation loss {final_loss:.4f}")
+        
+        # Save the updated best_hyperparameters.json
+        with open(best_hps_path, 'w') as f:
+            json.dump(best_hps_overall, f, indent=4)
+        print(f"\nUpdated best hyperparameters saved to {best_hps_path}")
+
+        print("\n--- Training Summary ---")
+        print(f"Frequency: {FREQUENCY}, TSTEPS: {TSTEPS}, Validation Loss: {final_loss:.4f}, Model: {model_filename}")
+    else:
+        print("Model training was not successful.")

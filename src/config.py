@@ -1,89 +1,99 @@
 # src/config.py
 
 import os
-import json # Added import
-from datetime import datetime, time # Added datetime and time imports
+import json
+from datetime import datetime, time
 
 # --- Model Hyperparameters ---
-TSTEPS = 24  # window size a.k.a. time steps
+FREQUENCY = '30min' # Resampling frequency for the data
+TSTEPS = 8 # Number of time steps to look back. Found by KerasTuner.
 ROWS_AHEAD = 1  # prediction Labels are n rows ahead of the current
 TR_SPLIT = 0.7   # part of data used for training
 N_FEATURES = 7    # Number of features (OHLC + technical indicators)
-BATCH_SIZE = 256 # Number of samples per gradient update. Found by KerasTuner.
+BATCH_SIZE = 128 # Number of samples per gradient update. Found by KerasTuner.
 EPOCHS = 20
 LEARNING_RATE = 0.01
-LSTM_UNITS = 96  # number of neurons in a LSTM layer. Found by KerasTuner.
+LSTM_UNITS = 128  # number of neurons in a LSTM layer. Found by KerasTuner.
+DROPOUT_RATE_1 = 0.1
+DROPOUT_RATE_2 = 0.1
 
 # --- Paths ---
+RAW_DATA_DIR = "data/raw"
 PROCESSED_DATA_DIR = "data/processed"
-TRAINING_DATA_CSV = os.path.join(PROCESSED_DATA_DIR, "training_data.csv")
-SCALER_PARAMS_JSON = os.path.join(PROCESSED_DATA_DIR, "scaler_params.json")
 MODEL_SAVE_PATH = "models/my_lstm_model.keras" # Keras native format
 MODEL_REGISTRY_DIR = "models/registry" # Directory to store versioned models
 ACTIVE_MODEL_PATH_FILE = os.path.join("models", "active_model.txt") # Added active model pointer file
+RAW_DATA_CSV = os.path.join(RAW_DATA_DIR, "nvda_minute.csv")
 
-def get_latest_model_path():
-    """Returns the path to the latest saved model in the registry."""
-    if not os.path.exists(MODEL_REGISTRY_DIR):
-        return None
-    
-    model_files = [f for f in os.listdir(MODEL_REGISTRY_DIR) if f.endswith('.keras')]
-    if not model_files:
-        return None
-    
-    # Assuming models are named with a timestamp, e.g., my_lstm_model_YYYYMMDD_HHMMSS.keras
-    latest_model_file = sorted(model_files, reverse=True)[0]
-    return os.path.join(MODEL_REGISTRY_DIR, latest_model_file)
+def get_hourly_data_csv_path():
+    """Generates the path for the resampled data CSV based on the global FREQUENCY."""
+    return os.path.join(PROCESSED_DATA_DIR, f"nvda_{FREQUENCY}.csv")
 
-def get_latest_best_model_path():
-    """Returns the path to the latest saved 'best' model from the registry."""
-    if not os.path.exists(MODEL_REGISTRY_DIR):
-        return None
-    
-    best_model_files = [f for f in os.listdir(MODEL_REGISTRY_DIR) if f.endswith('.keras') and '_best_' in f]
-    if not best_model_files:
-        return None
-    
-    # Assuming models are named with a timestamp, e.g., my_lstm_model_best_YYYYMMDD_HHMMSS.keras
-    latest_best_model_file = sorted(best_model_files, reverse=True)[0]
-    return os.path.join(MODEL_REGISTRY_DIR, latest_best_model_file)
+def get_training_data_csv_path():
+    """Generates the path for the training data CSV based on the global FREQUENCY."""
+    return os.path.join(PROCESSED_DATA_DIR, f"training_data_{FREQUENCY}.csv")
+
+def get_scaler_params_json_path():
+    """Generates the path for the scaler parameters JSON based on the global FREQUENCY."""
+    return os.path.join(PROCESSED_DATA_DIR, f"scaler_params_{FREQUENCY}.json")
 
 def get_active_model_path():
     """
-    Returns the path to the currently active model based on active_model.txt.
-    Returns None if no active model is designated or file is missing/corrupted.
+    Reads the path of the currently active model from a file.
     """
-    if not os.path.exists(ACTIVE_MODEL_PATH_FILE):
-        return None
-    try:
+    if os.path.exists(ACTIVE_MODEL_PATH_FILE):
         with open(ACTIVE_MODEL_PATH_FILE, 'r') as f:
-            active_model_info = json.load(f)
-            return active_model_info.get("path")
-    except json.JSONDecodeError:
-        print(f"Warning: {ACTIVE_MODEL_PATH_FILE} is corrupted. No active model found.")
+            return f.read().strip()
+    return None
+
+def get_latest_best_model_path(target_frequency=None, tsteps=None):
+    """
+    Finds the path to the model with the lowest validation loss for a given
+    frequency and TSTEPS, or the overall best model, by consulting best_hyperparameters.json.
+    """
+    best_hps_path = 'best_hyperparameters.json'
+    if not os.path.exists(best_hps_path):
         return None
 
-# --- TWS API Connection Parameters ---
-TWS_HOST = os.getenv('TWS_HOST', '127.0.0.1')
-TWS_PORT = int(os.getenv('TWS_PORT', '7496')) # Default for TWS, 4001 for Gateway
-TWS_CLIENT_ID = int(os.getenv('TWS_CLIENT_ID', '1'))
-TWS_MAX_CONCURRENT_REQUESTS = 5 # Limit concurrent requests to TWS
+    with open(best_hps_path, 'r') as f:
+        best_hps_data = json.load(f)
 
-# --- Data Ingestion Parameters ---
-INITIAL_START_DATE = datetime(2024, 1, 1) # Start of 2024 for initial data fetch
-DATA_BATCH_SAVE_SIZE = 30 # Save data to CSV after every N days fetched
-MARKET_OPEN_TIME = time(9, 30) # 9:30 AM ET
-MARKET_CLOSE_TIME = time(16, 0) # 4:00 PM ET
-MARKET_TIMEZONE = 'America/New_York' # Timezone for NYSE
-EXCHANGE_CALENDAR_NAME = 'XNYS' # NYSE calendar for market holidays and sessions
+    best_loss = float('inf')
+    best_model_filename = None
+    
+    for freq, tsteps_data in best_hps_data.items():
+        if target_frequency and freq != target_frequency:
+            continue
+        for tstep_val_str, metrics in tsteps_data.items():
+            current_tsteps = int(tstep_val_str)
+            if tsteps and current_tsteps != tsteps:
+                continue
+            
+            if metrics['validation_loss'] < best_loss:
+                best_loss = metrics['validation_loss']
+                best_model_filename = metrics['model_filename'] # Assuming filename is stored here
+    
+    if best_model_filename:
+        return os.path.join(MODEL_REGISTRY_DIR, best_model_filename)
+    return None
 
-# --- NVDA Stock Contract Details ---
+# --- Data Ingestion Configuration ---
+TWS_HOST = '127.0.0.1'
+TWS_PORT = 7497
+TWS_CLIENT_ID = 1
+TWS_MAX_CONCURRENT_REQUESTS = 3 # Max concurrent historical data requests to TWS
+DATA_BATCH_SAVE_SIZE = 7 # Save raw data in batches of N days
+
+# Contract details for NVDA
 NVDA_CONTRACT_DETAILS = {
     'symbol': 'NVDA',
     'secType': 'STK',
     'exchange': 'SMART',
-    'currency': 'USD',
+    'currency': 'USD'
 }
 
-RAW_DATA_CSV = "data/raw/nvda_minute.csv"
-HOURLY_DATA_CSV = os.path.join(PROCESSED_DATA_DIR, "nvda_hourly.csv")
+# Market hours for gap analysis (New York time)
+MARKET_TIMEZONE = 'America/New_York'
+MARKET_OPEN_TIME = time(9, 30)
+MARKET_CLOSE_TIME = time(16, 0)
+EXCHANGE_CALENDAR_NAME = 'XNYS' # New York Stock Exchange

@@ -12,15 +12,15 @@ import matplotlib.pyplot as plt
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.config import (
-    get_active_model_path,
-    get_latest_best_model_path, # Import new function
-    SCALER_PARAMS_JSON,
-    HOURLY_DATA_CSV,
-    TSTEPS,
+    get_latest_best_model_path,
+    get_hourly_data_csv_path,
+    get_scaler_params_json_path,
     N_FEATURES,
     BATCH_SIZE,
     ROWS_AHEAD,
-    LSTM_UNITS # Default fallback
+    LSTM_UNITS,
+    FREQUENCY,
+    TSTEPS
 )
 
 from src.data_processing import add_features # Import add_features
@@ -28,23 +28,26 @@ from src.model import build_non_stateful_lstm_model, load_stateful_weights_into_
 
 from src.train import create_sequences_for_stateless_lstm # Import the sequence creation function
 
-def evaluate_model_performance(validation_window_size=500): # Added validation_window_size parameter
+def evaluate_model_performance(validation_window_size=500):
     """
     Loads the latest best model, generates predictions over a specified validation window,
     and plots the predicted prices against the actual prices.
     """
     # --- 1. Load Data and Model ---
-    best_model_path = get_latest_best_model_path()
+    best_model_path = get_latest_best_model_path(target_frequency=FREQUENCY, tsteps=TSTEPS)
     if best_model_path is None:
-        print("Error: No best model found. Please train a model first using 'src/train.py'.")
+        print("Error: No best model found for the specified frequency and TSTEPS. Please train a model first.")
         return
 
-    if not os.path.exists(HOURLY_DATA_CSV):
-        print(f"Error: Hourly data not found at '{HOURLY_DATA_CSV}'. Please process data first.")
+    hourly_data_csv = get_hourly_data_csv_path()
+    scaler_params_json = get_scaler_params_json_path()
+
+    if not os.path.exists(hourly_data_csv):
+        print(f"Error: Hourly data not found at '{hourly_data_csv}'. Please process data first.")
         return
 
-    if not os.path.exists(SCALER_PARAMS_JSON):
-        print(f"Error: Scaler parameters not found at '{SCALER_PARAMS_JSON}'.")
+    if not os.path.exists(scaler_params_json):
+        print(f"Error: Scaler parameters not found at '{scaler_params_json}'.")
         return
 
     print(f"Loading best (stateful) model: {best_model_path}")
@@ -55,7 +58,9 @@ def evaluate_model_performance(validation_window_size=500): # Added validation_w
     best_hps_path = 'best_hyperparameters.json'
     if os.path.exists(best_hps_path):
         with open(best_hps_path, 'r') as f:
-            best_hps = json.load(f)
+            best_hps_data = json.load(f)
+            if FREQUENCY in best_hps_data and str(TSTEPS) in best_hps_data[FREQUENCY]:
+                best_hps = best_hps_data[FREQUENCY][str(TSTEPS)]
         print(f"Loaded hyperparameters from {best_hps_path}")
     
     lstm_units = best_hps.get('lstm_units', LSTM_UNITS) # Use loaded value or fallback to config default
@@ -63,7 +68,7 @@ def evaluate_model_performance(validation_window_size=500): # Added validation_w
     # Create a non-stateful model for prediction and transfer weights
     print(f"Creating non-stateful model with {lstm_units} LSTM units for evaluation...")
     non_stateful_model = build_non_stateful_lstm_model(
-        input_shape=(TSTEPS, N_FEATURES),
+        input_shape=(TSTEPS, N_FEATURES), # Use TSTEPS here
         lstm_units=lstm_units
     )
     load_stateful_weights_into_non_stateful_model(stateful_model, non_stateful_model)
@@ -72,9 +77,9 @@ def evaluate_model_performance(validation_window_size=500): # Added validation_w
     model = non_stateful_model
     
     print("Loading hourly data and scaler parameters...")
-    df_hourly = pd.read_csv(HOURLY_DATA_CSV, parse_dates=['Time'])
+    df_hourly = pd.read_csv(hourly_data_csv, parse_dates=['Time'])
     
-    with open(SCALER_PARAMS_JSON, 'r') as f:
+    with open(scaler_params_json, 'r') as f:
         scaler_params = json.load(f)
     
     # --- 2. Filter and Prepare Data ---
@@ -86,7 +91,7 @@ def evaluate_model_performance(validation_window_size=500): # Added validation_w
 
     df_eval_featured = df_full_featured.iloc[-validation_window_size:].copy()
 
-    if len(df_eval_featured) < TSTEPS + ROWS_AHEAD:
+    if len(df_eval_featured) < TSTEPS + ROWS_AHEAD: # Use TSTEPS here
         print(f"Error: Not enough data in the evaluation window ({len(df_eval_featured)} rows) to generate a prediction.")
         return
         
@@ -107,7 +112,7 @@ def evaluate_model_performance(validation_window_size=500): # Added validation_w
     print("Generating predictions using sequence method...")
     
     # Create sequences from the normalized evaluation data
-    X_eval, Y_eval_normalized = create_sequences_for_stateless_lstm(df_eval_normalized, TSTEPS, ROWS_AHEAD)
+    X_eval, Y_eval_normalized = create_sequences_for_stateless_lstm(df_eval_normalized, TSTEPS, ROWS_AHEAD) # Use TSTEPS here
 
     if X_eval.shape[0] == 0:
         print("Could not generate any evaluation sequences with the available data.")
@@ -115,7 +120,7 @@ def evaluate_model_performance(validation_window_size=500): # Added validation_w
 
     # Get the corresponding dates for the predictions
     # The actual values (Y_eval) correspond to the end of each sequence
-    prediction_dates = df_eval_featured['Time'].iloc[TSTEPS + ROWS_AHEAD - 1 : TSTEPS + ROWS_AHEAD - 1 + len(Y_eval_normalized)].values
+    prediction_dates = df_eval_featured['Time'].iloc[TSTEPS + ROWS_AHEAD - 1 : TSTEPS + ROWS_AHEAD - 1 + len(Y_eval_normalized)].values # Use TSTEPS here
 
     # Make predictions on the entire set of sequences
     predictions_normalized = model.predict(X_eval, batch_size=BATCH_SIZE)
@@ -163,4 +168,7 @@ def evaluate_model_performance(validation_window_size=500): # Added validation_w
     print(f"Evaluation plot saved as '{plot_filename}'")
 
 if __name__ == "__main__":
-    evaluate_model_performance()
+    try:
+        evaluate_model_performance()
+    except Exception as e:
+        print(f"ERROR: An unexpected error occurred during model evaluation: {e}")

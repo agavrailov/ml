@@ -10,3 +10,8 @@ models/registry/
 hyperparameter_tuning/
 evaluation_plot.png
 models/active_model.txt
+data/processed/*.json
+.idea/
+src/data/
+src/models/
+src/__pycache__/
