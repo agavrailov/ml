@@ -22,60 +22,46 @@ from src.config import (
     TSTEPS
 )
 
-from src.data_processing import add_features # Import add_features
+from src.data_processing import prepare_keras_input_data, add_features # Import add_features
 from src.model import build_lstm_model, load_stateful_weights_into_non_stateful_model # Import new functions
 
 from src.train import create_sequences_for_stateless_lstm # Import the sequence creation function
 
-def evaluate_model_performance(validation_window_size=500,
+def evaluate_model_performance(model_path, validation_window_size=500,
                              frequency=FREQUENCY, tsteps=TSTEPS, n_features=None, # n_features will be passed dynamically
                              lstm_units=LSTM_UNITS, n_lstm_layers=None, # n_lstm_layers will be passed dynamically
                              stateful=None, # stateful will be passed dynamically
                              optimizer_name='rmsprop', loss_function='mae',
                              features_to_use=None): # Added features_to_use
     """
-    Loads the latest best model, generates predictions over a specified validation window,
-    and plots the predicted prices against the actual prices.
+    Evaluates the performance of a trained LSTM model.
     """
     if features_to_use is None:
         from src.config import FEATURES_TO_USE_OPTIONS
         features_to_use = FEATURES_TO_USE_OPTIONS[0] # Default to the first option if not provided
 
     # --- 1. Load Data and Model ---
-    best_model_path = get_latest_best_model_path(target_frequency=frequency, tsteps=tsteps)
-    if best_model_path is None:
-        print("Error: No best model found for the specified frequency and TSTEPS. Please train a model first.")
+    if model_path is None:
+        print("Error: No model path provided for evaluation.")
         return
 
-    hourly_data_csv = get_hourly_data_csv_path()
-    scaler_params_json = get_scaler_params_json_path()
+    hourly_data_csv = get_hourly_data_csv_path(frequency)
+    scaler_params_json = get_scaler_params_json_path(frequency)
 
     if not os.path.exists(hourly_data_csv):
-        print(f"Error: Hourly data not found at '{hourly_data_csv}'. Please process data first.")
+        print(f"Error: Hourly data not found for frequency {frequency} at '{hourly_data_csv}'. Please process data first.")
         return
 
     if not os.path.exists(scaler_params_json):
         print(f"Error: Scaler parameters not found at '{scaler_params_json}'.")
         return
 
-    print(f"Loading best (stateful) model: {best_model_path}")
-    stateful_model = keras.models.load_model(best_model_path)
+    print(f"Loading trained (stateful) model from: {model_path}")
+    stateful_model = keras.models.load_model(model_path)
     
-    # Load best hyperparameters to get the correct lstm_units
-    best_hps = {}
-    best_hps_path = 'best_hyperparameters.json'
-    if os.path.exists(best_hps_path):
-        with open(best_hps_path, 'r') as f:
-            best_hps_data = json.load(f)
-            if frequency in best_hps_data and str(tsteps) in best_hps_data[frequency]:
-                best_hps = best_hps_data[frequency][str(tsteps)]
-        print(f"Loaded hyperparameters from {best_hps_path}")
-    
-    lstm_units = best_hps.get('lstm_units', LSTM_UNITS) # Use loaded value or fallback to config default
-    n_lstm_layers = best_hps.get('n_lstm_layers', N_LSTM_LAYERS)
-    stateful = best_hps.get('stateful', STATEFUL)
-    optimizer_name = best_hps.get('optimizer_name', 'rmsprop')
-    loss_function = best_hps.get('loss_function', 'mae')
+    # Hyperparameters are passed directly, no need to load from best_hps.json
+    # lstm_units, n_lstm_layers, stateful, optimizer_name, loss_function are already arguments
+
 
     # Create a non-stateful model for prediction and transfer weights
     print(f"Creating non-stateful model with {lstm_units} LSTM units for evaluation...")

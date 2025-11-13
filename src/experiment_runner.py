@@ -77,12 +77,14 @@ def run_single_experiment(params):
             n_lstm_layers=n_lstm_layers,
             stateful=stateful,
             optimizer_name=optimizer_name,
-            loss_function=loss_function
+            loss_function=loss_function,
+            features_to_use=features_to_use # Pass features_to_use
         )
 
         if model_path:
             # --- Evaluate Model ---
             mae, correlation = evaluate_model_performance(
+                model_path=model_path, # Pass the newly trained model's path
                 frequency=frequency,
                 tsteps=tsteps,
                 n_features=n_features,
@@ -116,8 +118,12 @@ def run_experiments():
 
     # Load existing best hyperparameters if available
     if os.path.exists(best_hps_path):
-        with open(best_hps_path, 'r') as f:
-            best_hps_overall = json.load(f)
+        try:
+            with open(best_hps_path, 'r') as f:
+                best_hps_overall = json.load(f)
+        except json.JSONDecodeError:
+            print(f"Warning: '{best_hps_path}' is empty or contains invalid JSON. Initializing best hyperparameters as empty.")
+            best_hps_overall = {}
 
     # Iterate through all combinations of hyperparameters
     # For simplicity, we'll iterate through a subset of options first.
@@ -165,12 +171,14 @@ def run_experiments():
                 n_lstm_layers=n_lstm_layers,
                 stateful=stateful,
                 optimizer_name=optimizer_name,
-                loss_function=loss_function
+                loss_function=loss_function,
+                features_to_use=features_to_use # Pass features_to_use
             )
 
             if model_path:
                 # --- Evaluate Model ---
                 mae, correlation = evaluate_model_performance(
+                    model_path=model_path, # Pass the newly trained model's path
                     frequency=frequency,
                     tsteps=tsteps,
                     n_features=n_features,
