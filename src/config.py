@@ -22,7 +22,7 @@ STATEFUL = True # Whether the LSTM model is stateful
 # --- Hyperparameter Tuning Options ---
 RESAMPLE_FREQUENCIES = ['15min', '30min', '60min', '240min']
 TSTEPS_OPTIONS = [5, 8, 16, 24, 48]
-LSTM_UNITS_OPTIONS = [64, 128, 256]
+LSTM_UNITS_OPTIONS = [32, 64, 128, 256]
 BATCH_SIZE_OPTIONS = [64, 128, 256]
 DROPOUT_RATE_OPTIONS = [0.0, 0.1, 0.2, 0.3]
 N_LSTM_LAYERS_OPTIONS = [1, 2] # 1 or 2 LSTM layers
