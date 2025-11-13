@@ -19,6 +19,93 @@ from src.data_processing import convert_minute_to_timeframe, prepare_keras_input
 from src.train import train_model
 from src.evaluate_model import evaluate_model_performance
 
+def load_experiment_parameters(experiment_id, results_file='experiment_results.json'):
+    """
+    Loads the parameters of a specific experiment from the results file.
+    """
+    if not os.path.exists(results_file):
+        print(f"Error: Results file '{results_file}' not found.")
+        return None
+
+    with open(results_file, 'r') as f:
+        results = json.load(f)
+
+    for exp in results:
+        if exp.get('experiment_id') == experiment_id:
+            return exp
+    
+    print(f"Error: Experiment with ID '{experiment_id}' not found.")
+    return None
+
+def run_single_experiment(params):
+    """
+    Runs a single experiment given a dictionary of parameters.
+    This function encapsulates the logic for training and evaluating a single model.
+    """
+    frequency = params['frequency']
+    tsteps = params['tsteps']
+    lstm_units = params['lstm_units']
+    batch_size = params['batch_size']
+    n_lstm_layers = params['n_lstm_layers']
+    stateful = params['stateful']
+    features_to_use = params['features_to_use']
+    optimizer_name = params['optimizer_name']
+    loss_function = params['loss_function']
+    
+    experiment_id = params.get('experiment_id', 'N/A')
+
+    print(f"\n--- Re-running Experiment ID: {experiment_id} ---")
+    print(f"Frequency: {frequency}, TSTEPS: {tsteps}, LSTM Units: {lstm_units}, "
+          f"Batch Size: {batch_size}, N_LSTM_Layers: {n_lstm_layers}, Stateful: {stateful}, "
+          f"Features: {features_to_use}, Optimizer: {optimizer_name}, Loss: {loss_function}")
+
+    try:
+        # Convert minute data to current frequency
+        convert_minute_to_timeframe(RAW_DATA_CSV, frequency)
+        
+        n_features = len(features_to_use)
+
+        # --- Train Model ---
+        final_val_loss, model_path = train_model(
+            frequency=frequency,
+            tsteps=tsteps,
+            n_features=n_features,
+            lstm_units=lstm_units,
+            learning_rate=0.01, # Using a fixed learning rate for now
+            epochs=20, # Using fixed epochs for now
+            current_batch_size=batch_size,
+            n_lstm_layers=n_lstm_layers,
+            stateful=stateful,
+            optimizer_name=optimizer_name,
+            loss_function=loss_function
+        )
+
+        if model_path:
+            # --- Evaluate Model ---
+            mae, correlation = evaluate_model_performance(
+                frequency=frequency,
+                tsteps=tsteps,
+                n_features=n_features,
+                lstm_units=lstm_units,
+                n_lstm_layers=n_lstm_layers,
+                stateful=stateful,
+                optimizer_name=optimizer_name,
+                loss_function=loss_function,
+                features_to_use=features_to_use
+            )
+
+            print(f"--- Re-run Summary for Experiment ID: {experiment_id} ---")
+            print(f"  Validation Loss: {final_val_loss:.4f}")
+            print(f"  MAE: {mae:.4f}")
+            print(f"  Correlation: {correlation:.4f}")
+            print(f"  Model Path: {model_path}")
+            print("------------------------------------")
+            return {'mae': mae, 'correlation': correlation, 'validation_loss': final_val_loss, 'model_path': model_path}
+        
+    except Exception as e:
+        print(f"Error re-running experiment {experiment_id}: {e}")
+        return None
+
 def run_experiments():
     """
     Orchestrates running experiments with different hyperparameter combinations.
@@ -52,17 +139,18 @@ def run_experiments():
     for (frequency, tsteps, lstm_units, batch_size, n_lstm_layers, stateful,
          features_to_use, optimizer_name, loss_function) in experiment_params:
         
-        print(f"\n--- Running Experiment ---")
+        experiment_id = datetime.now().strftime("%Y%m%d-%H%M%S-%f") # Unique ID for each experiment
+        
+        print(f"\n--- Running Experiment ID: {experiment_id} ---")
         print(f"Frequency: {frequency}, TSTEPS: {tsteps}, LSTM Units: {lstm_units}, "
               f"Batch Size: {batch_size}, N_LSTM_Layers: {n_lstm_layers}, Stateful: {stateful}, "
               f"Features: {features_to_use}, Optimizer: {optimizer_name}, Loss: {loss_function}")
 
         try:
             # Convert minute data to current frequency
-            convert_minute_to_timeframe(RAW_DATA_CSV)
+            convert_minute_to_timeframe(RAW_DATA_CSV, frequency)
             
             # Prepare Keras input data (features will be selected in train/eval)
-            # N_FEATURES will be determined by len(features_to_use)
             n_features = len(features_to_use)
 
             # --- Train Model ---
@@ -95,6 +183,7 @@ def run_experiments():
                 )
 
                 experiment_result = {
+                    'experiment_id': experiment_id,
                     'timestamp': datetime.now().isoformat(),
                     'frequency': frequency,
                     'tsteps': tsteps,
@@ -112,6 +201,13 @@ def run_experiments():
                 }
                 results.append(experiment_result)
 
+                print(f"--- Experiment {experiment_id} Summary ---")
+                print(f"  Validation Loss: {final_val_loss:.4f}")
+                print(f"  MAE: {mae:.4f}")
+                print(f"  Correlation: {correlation:.4f}")
+                print(f"  Model Path: {model_path}")
+                print("------------------------------------")
+
                 # Update best_hps_overall
                 if frequency not in best_hps_overall:
                     best_hps_overall[frequency] = {}
@@ -121,6 +217,7 @@ def run_experiments():
                 current_best_loss = best_hps_overall[frequency][str(tsteps)].get('validation_loss', float('inf'))
                 if final_val_loss < current_best_loss:
                     best_hps_overall[frequency][str(tsteps)] = {
+                        'experiment_id': experiment_id, # Store the ID of the best experiment
                         'validation_loss': final_val_loss,
                         'model_filename': os.path.basename(model_path),
                         'lstm_units': lstm_units,
@@ -150,4 +247,11 @@ def run_experiments():
     print(f"Updated best hyperparameters saved to '{best_hps_path}'")
 
 if __name__ == "__main__":
+    # Example of how to run all experiments
     run_experiments()
+
+    # Example of how to re-run a specific experiment by ID
+    # experiment_id_to_rerun = "20251113-220000-123456" # Replace with an actual ID from experiment_results.json
+    # params_to_rerun = load_experiment_parameters(experiment_id_to_rerun)
+    # if params_to_rerun:
+    #     run_single_experiment(params_to_rerun)

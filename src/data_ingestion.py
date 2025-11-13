@@ -33,7 +33,7 @@ def _get_latest_timestamp_from_csv(file_path):
 # Add the project root to the Python path to import src modules
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.config import RAW_DATA_CSV, TWS_HOST, TWS_PORT, TWS_CLIENT_ID, NVDA_CONTRACT_DETAILS, TWS_MAX_CONCURRENT_REQUESTS, INITIAL_START_DATE, DATA_BATCH_SAVE_SIZE
+from src.config import RAW_DATA_CSV, TWS_HOST, TWS_PORT, TWS_CLIENT_ID, NVDA_CONTRACT_DETAILS, TWS_MAX_CONCURRENT_REQUESTS, DATA_BATCH_SAVE_SIZE
 
 async def _fetch_single_day_data(ib, contract, end_date_str, barSizeSetting, semaphore):
     """Helper function to fetch data for a single day with rate limiting and return as DataFrame."""
@@ -64,10 +64,10 @@ async def _fetch_single_day_data(ib, contract, end_date_str, barSizeSetting, sem
 async def fetch_historical_data(
     contract_details: dict,
     end_date: datetime,
+    initial_start_date: datetime, # Non-default argument
     barSizeSetting='1 min',
     file_path=RAW_DATA_CSV,
-    initial_start_date: datetime = INITIAL_START_DATE, # Use config for default
-    strict_range: bool = False # New parameter
+    strict_range: bool = False
 ):
     """
     Connects to IB TWS/Gateway, fetches historical minute-level data for the specified contract
@@ -200,9 +200,10 @@ if __name__ == "__main__":
     
     # Define the date range for data fetching (January 1, 2024, until now)
     end_date = datetime.now()
-    # initial_start_date is now taken from config.py by default in fetch_historical_data
+    default_initial_start_date = datetime(2024, 1, 1) # Default for standalone execution
 
     asyncio.run(fetch_historical_data(
         contract_details=NVDA_CONTRACT_DETAILS,
-        end_date=end_date
+        end_date=end_date,
+        initial_start_date=default_initial_start_date
     ))

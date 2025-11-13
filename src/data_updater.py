@@ -11,7 +11,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.config import (
     RAW_DATA_CSV, TWS_HOST, TWS_PORT, TWS_CLIENT_ID, NVDA_CONTRACT_DETAILS,
-    TWS_MAX_CONCURRENT_REQUESTS, INITIAL_START_DATE, MARKET_OPEN_TIME,
+    TWS_MAX_CONCURRENT_REQUESTS, MARKET_OPEN_TIME,
     MARKET_CLOSE_TIME, MARKET_TIMEZONE, EXCHANGE_CALENDAR_NAME
 )
 from src.data_ingestion import _get_latest_timestamp_from_csv, fetch_historical_data
@@ -70,7 +70,8 @@ async def update_historical_data():
 
     # Determine the actual start date for fetching new data
     latest_timestamp_in_file = _get_latest_timestamp_from_csv(RAW_DATA_CSV)
-    fetch_start_date = latest_timestamp_in_file + timedelta(minutes=1) if latest_timestamp_in_file else INITIAL_START_DATE
+    # Use a default start date if no data exists, e.g., beginning of 2024
+    fetch_start_date = latest_timestamp_in_file + timedelta(minutes=1) if latest_timestamp_in_file else datetime(2024, 1, 1)
     
     current_time = datetime.now()
 
