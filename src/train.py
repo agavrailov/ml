@@ -14,7 +14,7 @@ from src.model import build_lstm_model
 from src.data_processing import prepare_keras_input_data
 from datetime import datetime # Added import
 from src.config import (
-    ROWS_AHEAD, TR_SPLIT, N_FEATURES, BATCH_SIZE,
+    ROWS_AHEAD, TR_SPLIT, BATCH_SIZE,
     EPOCHS, LEARNING_RATE, LSTM_UNITS,
     PROCESSED_DATA_DIR, MODEL_REGISTRY_DIR,
     FREQUENCY, TSTEPS, get_training_data_csv_path, get_scaler_params_json_path
@@ -145,10 +145,11 @@ def create_sequences_for_stateful_lstm(data, sequence_length, batch_size, rows_a
     return X, Y
 
 
-def train_model(frequency=FREQUENCY, tsteps=TSTEPS, n_features=N_FEATURES,
+def train_model(frequency=FREQUENCY, tsteps=TSTEPS, n_features=None, # n_features will be passed dynamically
                 lstm_units=LSTM_UNITS, learning_rate=LEARNING_RATE, epochs=EPOCHS,
-                current_batch_size=BATCH_SIZE, n_lstm_layers=N_LSTM_LAYERS,
-                stateful=STATEFUL, optimizer_name='rmsprop', loss_function='mae'):
+                current_batch_size=BATCH_SIZE, n_lstm_layers=None, # n_lstm_layers will be passed dynamically
+                stateful=None, # stateful will be passed dynamically
+                optimizer_name='rmsprop', loss_function='mae', features_to_use=None):
     """
     Loads processed data, builds and trains the LSTM model, and saves the trained model.
     Uses a standard train-validation split.
@@ -158,14 +159,14 @@ def train_model(frequency=FREQUENCY, tsteps=TSTEPS, n_features=N_FEATURES,
     tf.random.set_seed(42)
 
     # --- Data Preparation ---
-    training_data_path = get_training_data_csv_path()
-    scaler_params_path = get_scaler_params_json_path()
+    training_data_path = get_training_data_csv_path(frequency)
+    scaler_params_path = get_scaler_params_json_path(frequency)
 
     if not os.path.exists(training_data_path):
         print(f"Error: Training data not found for frequency {frequency} at {training_data_path}. Skipping training.")
         return None
 
-    df_featured, feature_cols = prepare_keras_input_data(training_data_path)
+    df_featured, feature_cols = prepare_keras_input_data(training_data_path, features_to_use)
 
     # Split data into training and validation sets
     split_index = int(len(df_featured) * TR_SPLIT)
@@ -259,12 +260,12 @@ if __name__ == "__main__":
     final_loss_model_path = train_model(
         frequency=FREQUENCY,
         tsteps=TSTEPS,
-        n_features=N_FEATURES,
+        n_features=None, # n_features will be determined dynamically by the caller
         lstm_units=LSTM_UNITS,
         learning_rate=LEARNING_RATE,
         epochs=EPOCHS,
         current_batch_size=BATCH_SIZE,
-        n_lstm_layers=N_LSTM_LAYERS,
+        n_lstm_layers=None, # n_lstm_layers will be determined dynamically by the caller
         stateful=STATEFUL,
         optimizer_name='rmsprop', # Default for now, will be configurable later
         loss_function='mae' # Default for now, will be configurable later
@@ -296,7 +297,7 @@ if __name__ == "__main__":
                 'learning_rate': LEARNING_RATE,
                 'epochs': EPOCHS,
                 'batch_size': BATCH_SIZE,
-                'n_lstm_layers': N_LSTM_LAYERS,
+                'n_lstm_layers': None, # n_lstm_layers will be determined dynamically by the caller
                 'stateful': STATEFUL,
                 'optimizer_name': 'rmsprop',
                 'loss_function': 'mae'
