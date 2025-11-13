@@ -17,7 +17,8 @@ from src.config import (
     ROWS_AHEAD, TR_SPLIT, BATCH_SIZE,
     EPOCHS, LEARNING_RATE, LSTM_UNITS,
     PROCESSED_DATA_DIR, MODEL_REGISTRY_DIR,
-    FREQUENCY, TSTEPS, get_training_data_csv_path, get_scaler_params_json_path
+    FREQUENCY, TSTEPS, get_training_data_csv_path, get_scaler_params_json_path,
+    get_hourly_data_csv_path # Added import
 )
 
 def get_effective_data_length(data, sequence_length, rows_ahead):
@@ -159,14 +160,14 @@ def train_model(frequency=FREQUENCY, tsteps=TSTEPS, n_features=None, # n_feature
     tf.random.set_seed(42)
 
     # --- Data Preparation ---
-    training_data_path = get_training_data_csv_path(frequency)
+    hourly_data_path = get_hourly_data_csv_path(frequency) # Get path to the hourly data
     scaler_params_path = get_scaler_params_json_path(frequency)
 
-    if not os.path.exists(training_data_path):
-        print(f"Error: Training data not found for frequency {frequency} at {training_data_path}. Skipping training.")
+    if not os.path.exists(hourly_data_path):
+        print(f"Error: Hourly data not found for frequency {frequency} at {hourly_data_path}. Skipping training.")
         return None
 
-    df_featured, feature_cols = prepare_keras_input_data(training_data_path, features_to_use)
+    df_featured, feature_cols = prepare_keras_input_data(hourly_data_path, features_to_use)
 
     # Split data into training and validation sets
     split_index = int(len(df_featured) * TR_SPLIT)
@@ -197,18 +198,6 @@ def train_model(frequency=FREQUENCY, tsteps=TSTEPS, n_features=None, # n_feature
     df_train_normalized[feature_cols] = (df_train_raw[feature_cols] - mean_vals) / std_vals
     df_val_normalized[feature_cols] = (df_val_raw[feature_cols] - mean_vals) / std_vals
     
-    # --- Sequence Creation ---
-    # Truncate data to be divisible by the current_batch_size for stateful LSTM
-    max_sequences_train = get_effective_data_length(df_train_normalized, tsteps, ROWS_AHEAD)
-    remainder_train = max_sequences_train % current_batch_size
-    if remainder_train > 0:
-        df_train_normalized = df_train_normalized.iloc[:-remainder_train]
-
-    max_sequences_val = get_effective_data_length(df_val_normalized, tsteps, ROWS_AHEAD)
-    remainder_val = max_sequences_val % current_batch_size
-    if remainder_val > 0:
-        df_val_normalized = df_val_normalized.iloc[:-remainder_val]
-
     X_train, Y_train = create_sequences_for_stateful_lstm(df_train_normalized, tsteps, current_batch_size, ROWS_AHEAD)
     X_val, Y_val = create_sequences_for_stateful_lstm(df_val_normalized, tsteps, current_batch_size, ROWS_AHEAD)
 
