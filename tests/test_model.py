@@ -1,7 +1,3 @@
-import sys
-import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
 import pytest
 import tensorflow as tf
 from tensorflow import keras
@@ -33,8 +29,8 @@ def test_build_lstm_model_architecture_single_layer_stateful():
     )
 
     assert isinstance(model, keras.Model)
-    # InputLayer, LSTM, Dropout1, Dropout2, Dense
-    assert len(model.layers) == 5
+    # InputLayer, LSTM, Dropout, Dense
+    assert len(model.layers) == 4
 
     # Check InputLayer
     input_layer = model.layers[0]
@@ -45,18 +41,16 @@ def test_build_lstm_model_architecture_single_layer_stateful():
     lstm_layer = model.layers[1]
     assert isinstance(lstm_layer, keras.layers.LSTM)
     assert lstm_layer.units == LSTM_UNITS
-    assert lstm_layer.return_sequences is False # For a single layer, return_sequences is False
+    assert lstm_layer.return_sequences is False  # For a single layer, return_sequences is False
     assert lstm_layer.stateful is True
-    assert lstm_layer.activation.__name__ == 'tanh'
+    assert lstm_layer.activation.__name__ == "tanh"
 
-    # Check Dropout layers
-    dropout1 = model.layers[2]
-    assert isinstance(dropout1, keras.layers.Dropout)
-    dropout2 = model.layers[3]
-    assert isinstance(dropout2, keras.layers.Dropout)
+    # Check Dropout layer
+    dropout = model.layers[2]
+    assert isinstance(dropout, keras.layers.Dropout)
 
     # Check Dense output layer
-    dense_layer = model.layers[4]
+    dense_layer = model.layers[3]
     assert isinstance(dense_layer, keras.layers.Dense)
     assert dense_layer.units == 1
 
@@ -76,30 +70,30 @@ def test_build_lstm_model_architecture_multi_layer_non_stateful():
     )
 
     assert isinstance(model, keras.Model)
-    # InputLayer, LSTM1, Dropout1, Dropout2, LSTM2, Dropout1, Dropout2, Dense
-    assert len(model.layers) == 8
+    # InputLayer, LSTM1, Dropout1, LSTM2, Dropout2, Dense
+    assert len(model.layers) == 6
 
     # Check InputLayer
     input_layer = model.layers[0]
     assert isinstance(input_layer, keras.layers.InputLayer)
-    assert input_layer.batch_shape == (None, TSTEPS, DEFAULT_N_FEATURES) # batch_size is None for non-stateful
+    assert input_layer.batch_shape == (None, TSTEPS, DEFAULT_N_FEATURES)  # batch_size is None for non-stateful
 
     # Check first LSTM layer
     lstm_layer_1 = model.layers[1]
     assert isinstance(lstm_layer_1, keras.layers.LSTM)
     assert lstm_layer_1.units == LSTM_UNITS
-    assert lstm_layer_1.return_sequences is True # Intermediate layers return sequences
+    assert lstm_layer_1.return_sequences is True  # Intermediate layers return sequences
     assert lstm_layer_1.stateful is False
 
     # Check second LSTM layer (last LSTM layer)
-    lstm_layer_2 = model.layers[4] # Adjusted index due to dropouts
+    lstm_layer_2 = model.layers[3]  # Adjusted index due to single dropout per LSTM
     assert isinstance(lstm_layer_2, keras.layers.LSTM)
     assert lstm_layer_2.units == LSTM_UNITS
-    assert lstm_layer_2.return_sequences is False # Last LSTM layer returns single output
+    assert lstm_layer_2.return_sequences is False  # Last LSTM layer returns single output
     assert lstm_layer_2.stateful is False
 
     # Check Dense output layer
-    dense_layer = model.layers[7] # Adjusted index
+    dense_layer = model.layers[5]  # Adjusted index
     assert isinstance(dense_layer, keras.layers.Dense)
     assert dense_layer.units == 1
 
