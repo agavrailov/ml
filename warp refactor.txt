@@ -1,0 +1,234 @@
+
+## Cross-cutting / Architecture
+
+- **Package structure vs manual `sys.path` hacks**  
+  - Multiple modules (`train.py`, `data_ingestion.py`, `data_processing.py`, `experiment_runner.py`, `evaluate_model.py`, `api/main.py`, `ui/app.py`) do `sys.path.append(...)`.  
+  - Improvement: turn `src` into a proper Python package (`__init__.py`) and import using package imports, or install the project in editable mode. This avoids brittle path manipulation and makes tooling / tests easier.
+
+- **Configuration management & environment separation**  
+  - `src/config.py` mixes model hyperparameters, data paths, broker connection details, market hours, etc., as top-level globals.  
+  - Improvement: introduce structured config (e.g., dataclasses or Pydantic settings) and separate concerns (training config, data config, IB/TWS config, paths). Consider reading env-specific values from environment variables or `.env`.
+
+- **Logging instead of print**  
+  - Many modules use `print` (including debug ones), which makes production logs noisy and unstructured.  
+  - Improvement: replace `print` with `logging` (with levels: debug/info/warning/error), and remove or guard debug prints behind a flag.
+
+- **Type hints & docstrings**  
+  - Many functions lack type hints and some docstrings are high-level only.  
+  - Improvement: add full type annotations and more precise docstrings for public functions, especially data-shaping functions and model builders. This will help IDEs, static analysis, and future refactors.
+
+- **Error handling & domain-specific exceptions**  
+  - Errors are mostly surfaced via prints or generic exceptions.  
+  - Improvement: introduce domain-specific exceptions (e.g., `DataNotAvailableError`, `ModelNotFoundError`) and use them consistently, especially across API/UI boundaries.
+
+- **Reusability of data preparation logic**  
+  - Normalization, feature creation, and sequence generation are sprinkled across modules (`data_processing`, `train`, `evaluate_model`).  
+  - Improvement: centralize data transformation steps (normalization, sequence creation) into reusable, tested utilities to avoid drift between training and evaluation.
+
+---
+
+## `src/config.py`
+
+- **Constants vs tuned hyperparameters**  
+  - Tuned values (e.g., `TSTEPS`, `LSTM_UNITS`, `BATCH_SIZE`) are stored as global constants alongside candidate options lists.  
+  - Improvement: clarify which constants are “current chosen defaults” vs “search space.” Possibly move chosen hyperparameters into `best_hyperparameters.json` and keep config only for defaults and ranges.
+
+- **Hardcoded paths**  
+  - Paths like `"data/raw"`, `"models/my_lstm_model.keras"`, `"models/registry"` are hardcoded relative paths.  
+  - Improvement: derive paths relative to project root in a single place (e.g., a `BASE_DIR`) and allow overriding with environment variables.
+
+- **`get_latest_best_model_path` complexity & resilience**  
+  - Iterates JSON structure but silently returns `None`s when file absent or malformed; doesn’t validate structure.  
+  - Improvements:
+    - Add schema validation / clearer error messages if keys are missing.
+    - Optionally allow limiting search by more criteria (e.g., `stateful`, `features_to_use`) and explicitly log what model was selected.
+
+---
+
+## `src/model.py`
+
+- **Double Dropout per LSTM layer**  
+  - Each LSTM layer is followed by *two* dropout layers (`DROPOUT_RATE_1` then `DROPOUT_RATE_2`), which is unusual.  
+  - Improvement: consider a single dropout per layer, or make the pattern explicit (e.g., separate “spatial” vs “temporal” dropout) and configurable.
+
+- **Stateful input shape handling**  
+  - For `stateful=True` you pass a fixed `batch_shape`. That’s fine, but:  
+    - Improvement: enforce that the training code always uses matching `batch_size`, and add assertions / checks to avoid silent mismatches.
+
+- **Example code in `__main__`**  
+  - The example block builds and summarizes models inside the same module as production code.  
+  - Improvement: move example/tests to a separate script or test file, and keep the module focused on defining the model.
+
+- **No regularization on Dense layer**  
+  - The output layer is a simple `Dense(1)` with no constraint or regularization.  
+  - Improvement: consider adding kernel regularizers if overfitting is observed, or make it configurable through parameters.
+
+---
+
+## `src/train.py`
+
+- **Inconsistent API vs `experiment_runner`**  
+  - `train_model` signature is:
+    - `train_model(frequency, tsteps, lstm_units, learning_rate, epochs, current_batch_size, n_lstm_layers, stateful, features_to_use)`
+  - But `experiment_runner.run_experiments` calls it with extra parameters (`n_features`, `optimizer_name`, `loss_function`), which no longer exist in the signature.  
+  - Improvement: fix this API mismatch (either update `experiment_runner` or change `train_model`) and add tests to catch these interface drifts.
+
+- **Stateful-only sequence generation in training**  
+  - Inside `train_model`, sequences are always created with `create_sequences_for_stateful_lstm`, even if `stateful` is `False`.  
+  - Improvement: branch on `stateful` to use the correct sequence function, and validate the batch-size divisibility constraints only when stateful.
+
+- **`n_features_dynamic` derived from `features_to_use`**  
+  - Good practice, but relies on `features_to_use` being consistent with `prepare_keras_input_data` output.  
+  - Improvement: assert that `len(feature_cols) == n_features_dynamic` to catch accidental mismatches.
+
+- **Scaler persistence & reuse**  
+  - Scaler parameters are saved per frequency to a JSON file.  
+  - Improvement:
+    - Validate that the feature set at evaluation matches the one used when the scaler was fitted.
+    - Consider versioning scaler files alongside models, not just by frequency.
+
+- **Random seeds**  
+  - Seeds are set inside `train_model`, which is good, but:  
+  - Improvement: centralize RNG seeding (NumPy, TF, Python) and document reproducibility assumptions, especially for multi-run experiment scenarios.
+
+- **Model registry naming conventions**  
+  - Model filenames embed frequency, tsteps, timestamp.  
+  - Improvement: include additional hyperparameters in the filename or metadata (features used, stateful, layers) to make manual inspection easier.
+
+- **Bias correction in training**  
+  - Bias correction is always computed and saved; this might be optional.  
+  - Improvement: allow toggling bias-correction computation, and quantify its benefit via tests/metrics.
+
+---
+
+## `src/data_ingestion.py`
+
+- **File-tail logic for latest timestamp**  
+  - `_get_latest_timestamp_from_csv` manually seeks from the end of file to get the last line.  
+  - Improvements:
+    - Add more robust handling for very short files or different newline conventions.
+    - Consider using `pandas.read_csv(..., nrows=1, skiprows=...)` or a small chunk-based approach for clarity, even if slightly slower.
+
+- **Mixed IB instruments with one function**  
+  - `fetch_historical_data` handles multiple security types in one function.  
+  - Improvement: split per instrument type or have small helpers per asset class to simplify the branching logic.
+
+- **Rate limiting and batching**  
+  - Uses a semaphore and daily batching – good.  
+  - Improvement: externalize `barSizeSetting`, `durationStr`, and `DATA_BATCH_SAVE_SIZE` into config to tune for different assets.
+
+- **Error handling on disconnect**  
+  - `finally` block has a `TypeError` catch on disconnection.  
+  - Improvement: log more context or check connection status explicitly rather than relying on catching `TypeError`.
+
+---
+
+## `src/data_processing.py`
+
+- **Feature-generation inefficiency**  
+  - `prepare_keras_input_data` always calls `add_features` with *all possible features* then filters.  
+  - Improvement: only compute the features actually requested by `features_to_use` (or at least narrow the set), which saves computation and reduces risk of unused columns drift.
+
+- **Gap analysis via subprocess**  
+  - The module calls `analyze_gaps.py` via `subprocess.run`.  
+  - Improvements:
+    - Prefer importing a function from `analyze_gaps` instead of launching a subprocess.
+    - Handle absence/corruption of `GAP_ANALYSIS_OUTPUT_JSON` more strictly (e.g., fail fast vs just printing).
+
+- **`fill_gaps` is a stub**  
+  - Currently only prints a message.  
+  - Improvement: design and implement a concrete gap-filling strategy (e.g., forward-fill, drop, or re-fetch), or at least document that it’s intentionally unimplemented and not used in production.
+
+- **Hardcoded assumptions about columns**  
+  - Assumes `DateTime` in raw, `Time` in processed, etc.  
+  - Improvement: clearly document schema expectations and consider schema validation steps (e.g., checking required columns and dtypes before processing).
+
+---
+
+## `src/experiment_runner.py`
+
+- **API mismatch with `train_model` and `evaluate_model_performance`**  
+  - As noted, this module appears outdated relative to `train_model` and evaluation signatures.  
+  - Improvement: audit all call sites and update them to match the current definitions; add tests that actually execute a small “experiment” to detect drift.
+
+- **Huge search space via full Cartesian product**  
+  - Uses `itertools.product` over many hyperparameter lists, which can explode combinatorially.  
+  - Improvement: add configuration to limit search or implement smarter search (random search, Bayesian optimization, or KerasTuner) instead of naive grid search.
+
+- **Result persistence**  
+  - Results and best hyperparameters are written to JSON files with no locking.  
+  - Improvement: add atomic writes (e.g., write to temp and rename) and maybe a simple schema/version field in the JSON.
+
+- **Redundant data processing calls**  
+  - Each experiment converts minute-to-frequency data, which may be repeated.  
+  - Improvement: precompute and cache resampled data per frequency before running experiments.
+
+---
+
+## `src/evaluate_model.py`
+
+- **Redundant `n_features` argument**  
+  - `evaluate_model_performance` accepts `n_features` but recomputes `n_features_dynamic` from `features_to_use` and doesn’t use the input `n_features`.  
+  - Improvement: either remove the argument or assert consistency.
+
+- **Heavy plotting in core evaluation function**  
+  - Evaluation always writes PNG plots.  
+  - Improvement: separate metrics computation and plotting into different functions; allow headless evaluation without plotting for CI or batch runs.
+
+- **Complex rolling bias & amplitude correction**  
+  - Rolling bias correction with amplitude scaling is embedded directly in evaluation.  
+  - Improvements:
+    - Extract this into a dedicated function with tests.
+    - Provide toggles/parameters to enable/disable or choose correction strategies.
+
+- **Metric calculation & return type**  
+  - Returns only `(mae, correlation)` while also computing MSE/RMSE.  
+  - Improvement: return a structured metrics dict (MAE, MSE, RMSE, correlation, maybe window size) to be more reusable.
+
+- **Error handling when data is insufficient**  
+  - Several early returns with prints when not enough data.  
+  - Improvement: raise exceptions or return a structured failure result instead of relying on `None`, to make caller behavior explicit.
+
+---
+
+## `api/main.py` (FastAPI)
+
+- **Inconsistent expectations vs training logic**  
+  - API requires `20 + TSTEPS` OHLC points (for SMA_21, etc.). The UI, however, demands exactly `TSTEPS` rows in some modes.  
+  - Improvement: unify this requirement across API, prediction logic (`predict_future_prices`), and UI; ideally compute indicators inside backend functions so the client only has to send TSTEPS.
+
+- **Reliance on `get_active_model_path`**  
+  - API will error if no active model is set.  
+  - Improvements:
+    - Provide a health or metadata endpoint that shows active model status.
+    - Give clearer instructions or automated fallbacks (e.g., choose latest best model if active not set).
+
+- **Error responses**  
+  - Both `FileNotFoundError` and generic `Exception` map to 500 with short messages.  
+  - Improvement: log full tracebacks internally and provide user-friendly but informative error messages, possibly with error codes.
+
+---
+
+## `ui/app.py` (Streamlit)
+
+- **Mismatch in required data length vs API**  
+  - Streamlit UI requires exactly `TSTEPS` rows, whereas the API requires `20 + TSTEPS`. This will likely cause API errors when using manual/CSV input.  
+  - Improvement: either:
+    - Have UI generate indicators and pass only the last `TSTEPS` to model-level endpoint, or
+    - Align UI’s required rows with the API’s expectation and clearly explain it to the user.
+
+- **Hardcoded path to hourly data**  
+  - UI assumes a specific CSV path (`data/processed/nvda_hourly.csv` with `Time` column).  
+  - Improvement: centralize this path in config or make it user-configurable in the UI.
+
+- **Mixing UI logic and data access**  
+  - Streamlit app loads CSVs directly from disk.  
+  - Improvement: consider using the API for data retrieval as well, keeping UI purely client-like and backend logic in the API/server.
+
+- **No retry/backoff for API calls**  
+  - API call is a single `requests.post` without retries.  
+  - Improvement: optionally add a lightweight retry/backoff or at least more granular error feedback for common failure cases.
+
+---
+
+If you’d like, I can next prioritize these into “quick wins” vs “bigger refactors” and then apply specific changes in the codebase.

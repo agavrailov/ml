@@ -1,168 +1,68 @@
-import sys
-import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
 import pandas as pd
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras
 import json
 import os
-from tensorflow.keras.callbacks import EarlyStopping # Added import
-import importlib # Added import for reloading modules
+from tensorflow.keras.callbacks import EarlyStopping
+import importlib
+from datetime import datetime
 
 from src.model import build_lstm_model, load_stateful_weights_into_non_stateful_model
 from src.data_processing import prepare_keras_input_data
-from datetime import datetime # Added import
+from src.data_utils import (
+    fit_standard_scaler,
+    apply_standard_scaler,
+    get_effective_data_length,
+    create_sequences_for_stateful_lstm,
+)
 from src.config import (
     ROWS_AHEAD, TR_SPLIT, BATCH_SIZE,
     EPOCHS, LEARNING_RATE, LSTM_UNITS,
     PROCESSED_DATA_DIR, MODEL_REGISTRY_DIR,
     FREQUENCY, TSTEPS, get_training_data_csv_path, get_scaler_params_json_path,
     get_hourly_data_csv_path, N_LSTM_LAYERS, STATEFUL,
-    FEATURES_TO_USE_OPTIONS, OPTIMIZER_NAME, LOSS_FUNCTION
+    FEATURES_TO_USE_OPTIONS, OPTIMIZER_NAME, LOSS_FUNCTION,
+    get_run_hyperparameters,
 )
 import src.config # Import src.config as a module
 
-def get_effective_data_length(data, sequence_length, rows_ahead):
+from src.data_utils import create_sequences_for_stateless_lstm  # re-export for backwards compatibility
+
+
+def train_model(
+    frequency: str = FREQUENCY,
+    tsteps: int = TSTEPS,
+    lstm_units: int | None = None,
+    learning_rate: float | None = None,
+    epochs: int | None = None,
+    current_batch_size: int | None = None,
+    n_lstm_layers: int | None = None,
+    stateful: bool | None = None,
+    features_to_use: list[str] | None = None,
+):
+    """Train an LSTM model for the given frequency/tsteps using tuned defaults.
+
+    Callers may override individual hyperparameters; otherwise tuned values
+    (if available) or TRAINING defaults are used via ``get_run_hyperparameters``.
     """
-    Calculates the effective number of data points available for sequence creation
-    after considering sequence_length and rows_ahead.
-    """
-    # Use all columns except 'Time' as features
-    feature_cols = [col for col in data.columns if col != 'Time']
-    features_array = data[feature_cols].values
-    labels_array = data['Open'].values
-
-    shifted_labels = np.full_like(labels_array, np.nan, dtype=float)
-    if rows_ahead < len(labels_array):
-        shifted_labels[:-rows_ahead] = labels_array[rows_ahead:]
-    
-    valid_indices = ~np.isnan(shifted_labels)
-    
-    # The number of valid feature rows after considering shifted labels
-    num_valid_feature_rows = np.sum(valid_indices)
-
-    # The number of sequences that can be formed
-    if num_valid_feature_rows < sequence_length:
-        return 0
-    return num_valid_feature_rows - sequence_length + 1
-
-
-def create_sequences_for_stateless_lstm(data, sequence_length, rows_ahead):
-    """
-    Manually creates X and Y sequences for a stateless LSTM.
-
-    Args:
-        data (pd.DataFrame): The input DataFrame with all normalized features.
-        sequence_length (int): The length of the input sequences (tsteps).
-        rows_ahead (int): How many rows ahead the label should be.
-
-    Returns:
-        tuple: (X_sequences, Y_labels) as numpy arrays.
-    """
-    # Use all columns except 'Time' as features
-    feature_cols = [col for col in data.columns if col != 'Time']
-    features_array = data[feature_cols].values
-    labels_array = data['Open'].values
-
-    shifted_labels = np.full_like(labels_array, np.nan, dtype=float)
-    if rows_ahead < len(labels_array):
-        shifted_labels[:-rows_ahead] = labels_array[rows_ahead:]
-    
-    valid_indices = ~np.isnan(shifted_labels)
-    features_array = features_array[valid_indices]
-    shifted_labels = shifted_labels[valid_indices]
-
-    if len(features_array) < sequence_length:
-        print(f"Warning: Not enough data ({len(features_array)} rows) to create sequences of length {sequence_length}. Returning empty arrays.")
-        return np.array([]), np.array([])
-
-    X, Y = [], []
-    # Iterate to create sequences
-    for i in range(len(features_array) - sequence_length + 1):
-        X.append(features_array[i : i + sequence_length])
-        Y.append(shifted_labels[i + sequence_length - 1]) # Target for the end of the sequence
-
-    X = np.array(X)
-    Y = np.array(Y)
-
-    # Reshape Y to be (num_samples, 1) if it's not already
-    if Y.ndim == 1:
-        Y = Y.reshape(-1, 1)
-
-    return X, Y
-
-
-def create_sequences_for_stateful_lstm(data, sequence_length, batch_size, rows_ahead):
-    """
-    Creates X and Y sequences for a stateful LSTM, ensuring that the number of samples
-    is divisible by the batch_size and maintaining temporal order.
-
-    Args:
-        data (pd.DataFrame): The input DataFrame with all normalized features.
-        sequence_length (int): The length of the input sequences (tsteps).
-        batch_size (int): The batch size for the stateful LSTM.
-        rows_ahead (int): How many rows ahead the label should be.
-
-    Returns:
-        tuple: (X_sequences, Y_labels) as numpy arrays.
-    """
-    feature_cols = [col for col in data.columns if col != 'Time']
-    features_array = data[feature_cols].values
-    labels_array = data['Open'].values
-
-    shifted_labels = np.full_like(labels_array, np.nan, dtype=float)
-    if rows_ahead < len(labels_array):
-        shifted_labels[:-rows_ahead] = labels_array[rows_ahead:]
-    
-    valid_indices = ~np.isnan(shifted_labels)
-    features_array = features_array[valid_indices]
-    shifted_labels = shifted_labels[valid_indices]
-
-    # Calculate the number of sequences that can be formed
-    num_sequences = len(features_array) - sequence_length + 1
-
-    if num_sequences <= 0:
-        print(f"Warning: Not enough data ({len(features_array)} rows) to create sequences of length {sequence_length}. Returning empty arrays.")
-        return np.array([]), np.array([])
-
-    # Truncate data to be divisible by batch_size
-    num_batches = num_sequences // batch_size
-    effective_num_sequences = num_batches * batch_size
-
-    if effective_num_sequences == 0:
-        print(f"Warning: Not enough effective sequences ({num_sequences}) for batch_size {batch_size}. Returning empty arrays.")
-        return np.array([]), np.array([])
-
-    X, Y = [], []
-    for i in range(effective_num_sequences):
-        X.append(features_array[i : i + sequence_length])
-        Y.append(shifted_labels[i + sequence_length - 1])
-
-    X = np.array(X)
-    Y = np.array(Y)
-
-    if Y.ndim == 1:
-        Y = Y.reshape(-1, 1)
-
-    return X, Y
-
-
-def train_model(frequency=FREQUENCY, tsteps=TSTEPS,
-                lstm_units=LSTM_UNITS, learning_rate=LEARNING_RATE, epochs=EPOCHS,
-                current_batch_size=BATCH_SIZE, n_lstm_layers=None,
-                stateful=None, features_to_use=None):
-    """
-    Loads processed data, builds and trains the LSTM model, and saves the trained model.
-    Uses a standard train-validation split.
-    """
-    importlib.reload(src.config) # Ensure latest config is loaded
+    importlib.reload(src.config)  # Ensure latest config is loaded
     # Set random seeds for reproducibility
     np.random.seed(42)
     tf.random.set_seed(42)
 
-    n_features_dynamic = len(features_to_use) # Calculate n_features dynamically
+    # Resolve effective hyperparameters for this run
+    hps = get_run_hyperparameters(frequency=frequency, tsteps=tsteps)
+    lstm_units = lstm_units or hps["lstm_units"]
+    learning_rate = learning_rate or hps["learning_rate"]
+    epochs = epochs or hps["epochs"]
+    current_batch_size = current_batch_size or hps["batch_size"]
+    n_lstm_layers = n_lstm_layers or hps["n_lstm_layers"]
+    stateful = stateful if stateful is not None else hps["stateful"]
+    if features_to_use is None:
+        features_to_use = hps["features_to_use"]
+
+    n_features_dynamic = len(features_to_use)
 
     # --- Data Preparation ---
     hourly_data_path = get_hourly_data_csv_path(frequency) # Get path to the hourly data
@@ -180,28 +80,15 @@ def train_model(frequency=FREQUENCY, tsteps=TSTEPS,
     df_val_raw = df_featured.iloc[split_index:].copy()
 
     # --- Normalization ---
-    # Calculate mean and standard deviation for normalization ONLY on training data
-    mean_vals = df_train_raw[feature_cols].mean()
-    std_vals = df_train_raw[feature_cols].std()
-
-    # Handle cases where std_vals might be zero to avoid division by zero
-    std_vals = std_vals.replace(0, 1)
-
-    # Save the single, correct set of scaler parameters
-    scaler_params = {
-        'mean': mean_vals.to_dict(),
-        'std': std_vals.to_dict()
-    }
+    # Fit scaler on training data and persist parameters
+    mean_vals, std_vals, scaler_params = fit_standard_scaler(df_train_raw, feature_cols)
     with open(scaler_params_path, 'w') as f:
         json.dump(scaler_params, f, indent=4)
     print(f"Scaler parameters calculated on training data and saved to {scaler_params_path}")
 
     # Normalize both training and validation sets using the scaler fitted on training data
-    df_train_normalized = df_train_raw.copy()
-    df_val_normalized = df_val_raw.copy()
-
-    df_train_normalized[feature_cols] = (df_train_raw[feature_cols] - mean_vals) / std_vals
-    df_val_normalized[feature_cols] = (df_val_raw[feature_cols] - mean_vals) / std_vals
+    df_train_normalized = apply_standard_scaler(df_train_raw, feature_cols, scaler_params)
+    df_val_normalized = apply_standard_scaler(df_val_raw, feature_cols, scaler_params)
     
     X_train, Y_train = create_sequences_for_stateful_lstm(df_train_normalized, tsteps, current_batch_size, ROWS_AHEAD)
     X_val, Y_val = create_sequences_for_stateful_lstm(df_val_normalized, tsteps, current_batch_size, ROWS_AHEAD)

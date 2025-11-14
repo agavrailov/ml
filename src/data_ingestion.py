@@ -5,6 +5,21 @@ from ib_insync import IB, Stock, util, Forex, CFD, Contract, Future
 from datetime import datetime, timedelta
 import asyncio
 
+# Maximum simultaneous historical data requests as per IB docs.
+# See: "The maximum number of simultaneous open historical data requests from the API is 50."
+_IB_HIST_MAX_SIMULT_REQUESTS = 50
+
+# Bar sizes considered "small" for pacing purposes (30 seconds or less).
+_SMALL_BAR_SIZES = {
+    "1 secs",
+    "2 secs",
+    "3 secs",
+    "5 secs",
+    "10 secs",
+    "15 secs",
+    "30 secs",
+}
+
 def _get_latest_timestamp_from_csv(file_path):
     """
     Reads the latest DateTime from the CSV file.
@@ -36,7 +51,16 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from src.config import RAW_DATA_CSV, TWS_HOST, TWS_PORT, TWS_CLIENT_ID, NVDA_CONTRACT_DETAILS, TWS_MAX_CONCURRENT_REQUESTS, DATA_BATCH_SAVE_SIZE
 
 async def _fetch_single_day_data(ib, contract, end_date_str, barSizeSetting, semaphore):
-    """Helper function to fetch data for a single day with rate limiting and return as DataFrame."""
+    """Helper function to fetch data for a single day with rate limiting and return as DataFrame.
+
+    Pacing considerations:
+        * IB limits simultaneous historical requests to 50.
+        * For small bar sizes (<= 30 seconds), additional pacing rules apply
+          (e.g. no more than 6 requests for the same contract within 2 seconds).
+
+    We rely on a shared semaphore to cap concurrent requests below IB's hard
+    limit and keep effective concurrency modest for small bars.
+    """
     async with semaphore:
         print(f"Requesting data ending {end_date_str} for duration '1 D'...")
         bars = await ib.reqHistoricalDataAsync(
@@ -64,24 +88,25 @@ async def _fetch_single_day_data(ib, contract, end_date_str, barSizeSetting, sem
 async def fetch_historical_data(
     contract_details: dict,
     end_date: datetime,
-    initial_start_date: datetime, # Non-default argument
-    barSizeSetting='1 min',
-    file_path=RAW_DATA_CSV,
-    strict_range: bool = False
-):
-    """
-    Connects to IB TWS/Gateway, fetches historical minute-level data for the specified contract
-    between start_date and end_date, and saves it to a CSV file. Data is fetched concurrently
-    and saved in batches.
+    start_date: datetime,
+    barSizeSetting: str = "1 min",
+    file_path: str = RAW_DATA_CSV,
+    strict_range: bool = False,
+) -> None:
+    """Fetch historical data from IB and append it to a CSV file.
+
+    Data is requested in daily chunks, optionally respecting existing data in
+    ``file_path`` to avoid re-downloading overlapping periods.
 
     Args:
-        contract_details (dict): A dictionary containing contract details (e.g., symbol, secType, exchange, currency).
-        end_date (datetime): The end date for data fetching.
-        barSizeSetting (str): Bar size (e.g., '1 min', '5 mins', '1 hour').
-        file_path (str): Path to save the fetched data as a CSV.
-        initial_start_date (datetime): The start date for data fetching if no existing data.
-        strict_range (bool): If True, strictly uses initial_start_date and end_date,
-                             ignoring existing data in file_path for start date determination.
+        contract_details: Contract description (symbol, secType, exchange, currency).
+        end_date: End of the requested period (exclusive).
+        start_date: Start of the requested period if no prior data exists, or
+            when ``strict_range=True``.
+        barSizeSetting: IB bar size (e.g. ``"1 min"``, ``"5 mins"``, ``"1 hour"``).
+        file_path: CSV path where fetched data will be appended.
+        strict_range: When ``True``, ignore existing CSV contents and always use
+            ``start_date``/``end_date`` as the effective range.
     """
     ib = IB()
     
@@ -122,7 +147,7 @@ async def fetch_historical_data(
         await ib.qualifyContractsAsync(contract)
 
         # Determine the actual start date for fetching
-        actual_fetch_start_date = initial_start_date
+        actual_fetch_start_date = start_date
         if not strict_range:
             latest_timestamp_in_file = _get_latest_timestamp_from_csv(file_path)
             if latest_timestamp_in_file:
@@ -130,15 +155,32 @@ async def fetch_historical_data(
                 actual_fetch_start_date = latest_timestamp_in_file + timedelta(minutes=1)
                 print(f"Latest data in file is {latest_timestamp_in_file}. Fetching new data from {actual_fetch_start_date}.")
             else:
-                print(f"No existing data found in {file_path}. Fetching from initial start date {initial_start_date}.")
+                print(f"No existing data found in {file_path}. Fetching from initial start date {start_date}.")
         else:
-            print(f"Strict range fetching: from {initial_start_date} to {end_date}.")
+            print(f"Strict range fetching: from {start_date} to {end_date}.")
 
         if actual_fetch_start_date >= end_date:
             print("Data is already up to date for the specified range. No new data to fetch.")
             return
 
         print(f"Fetching historical data for {contract.symbol}/{contract.currency} from {actual_fetch_start_date.strftime('%Y%m%d %H:%M:%S')} to {end_date.strftime('%Y%m%d %H:%M:%S')}...")
+
+        # Determine effective concurrency based on IB pacing guidance.
+        # - Hard cap at 50 simultaneous historical requests.
+        # - For small bars (<= 30 secs) we keep concurrency very low to avoid
+        #   6-requests-in-2-seconds pacing violations.
+        if barSizeSetting in _SMALL_BAR_SIZES:
+            effective_concurrency = min(TWS_MAX_CONCURRENT_REQUESTS, 2, _IB_HIST_MAX_SIMULT_REQUESTS)
+        else:
+            # For barSize >= 1 min, IB has lifted the hard pacing limits but
+            # still implements soft throttling. We cap by both user config and
+            # the documented 50-request ceiling.
+            effective_concurrency = min(TWS_MAX_CONCURRENT_REQUESTS, _IB_HIST_MAX_SIMULT_REQUESTS)
+
+        if effective_concurrency <= 0:
+            raise ValueError("TWS_MAX_CONCURRENT_REQUESTS must be >= 1")
+
+        print(f"Using effective_concurrency={effective_concurrency} (configured={TWS_MAX_CONCURRENT_REQUESTS}, barSize='{barSizeSetting}')")
 
         # Generate all daily end dates for requests in reverse chronological order
         request_dates = []
@@ -147,8 +189,9 @@ async def fetch_historical_data(
             request_dates.append(current_date)
             current_date -= timedelta(days=1)
         
-        # Create a semaphore to limit concurrent requests
-        semaphore = asyncio.Semaphore(TWS_MAX_CONCURRENT_REQUESTS)
+        # Create a semaphore to limit concurrent requests according to
+        # effective pacing-aware concurrency.
+        semaphore = asyncio.Semaphore(effective_concurrency)
         
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
         file_exists = os.path.exists(file_path)
@@ -200,10 +243,10 @@ if __name__ == "__main__":
     
     # Define the date range for data fetching (January 1, 2024, until now)
     end_date = datetime.now()
-    default_initial_start_date = datetime(2024, 1, 1) # Default for standalone execution
+    default_start_date = datetime(2024, 1, 1) # Default for standalone execution
 
     asyncio.run(fetch_historical_data(
         contract_details=NVDA_CONTRACT_DETAILS,
         end_date=end_date,
-        initial_start_date=default_initial_start_date
+        start_date=default_start_date
     ))

@@ -7,9 +7,6 @@ import altair as alt
 import os
 import sys
 
-# Add the project root to the Python path to import src modules
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
 from src.config import TSTEPS
 
 # --- Configuration ---

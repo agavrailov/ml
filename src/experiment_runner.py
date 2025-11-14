@@ -5,15 +5,13 @@ import itertools
 import pandas as pd
 from datetime import datetime
 
-# Add the project root to the Python path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
 from src.config import (
     RESAMPLE_FREQUENCIES, TSTEPS_OPTIONS, LSTM_UNITS_OPTIONS, BATCH_SIZE_OPTIONS,
     DROPOUT_RATE_OPTIONS, N_LSTM_LAYERS_OPTIONS, STATEFUL_OPTIONS,
     OPTIMIZER_OPTIONS, LOSS_FUNCTION_OPTIONS, FEATURES_TO_USE_OPTIONS,
     PROCESSED_DATA_DIR, RAW_DATA_CSV,
-    get_hourly_data_csv_path, get_training_data_csv_path, get_scaler_params_json_path
+    get_hourly_data_csv_path, get_training_data_csv_path, get_scaler_params_json_path,
+    get_run_hyperparameters,
 )
 from src.data_processing import convert_minute_to_timeframe, prepare_keras_input_data
 from src.train import train_model
@@ -38,72 +36,78 @@ def load_experiment_parameters(experiment_id, results_file='experiment_results.j
     return None
 
 def run_single_experiment(params):
-    """
-    Runs a single experiment given a dictionary of parameters.
-    This function encapsulates the logic for training and evaluating a single model.
+    """Run a single experiment with the current train/eval APIs.
+
+    If some hyperparameters are missing from ``params``, fall back to tuned or
+    default values via :func:`get_run_hyperparameters`.
     """
     frequency = params['frequency']
     tsteps = params['tsteps']
-    lstm_units = params['lstm_units']
-    batch_size = params['batch_size']
-    n_lstm_layers = params['n_lstm_layers']
-    stateful = params['stateful']
-    features_to_use = params['features_to_use']
-    optimizer_name = params['optimizer_name']
-    loss_function = params['loss_function']
-    
+
+    # Resolve hyperparameters, letting explicit params override tuned/defaults
+    hps = get_run_hyperparameters(frequency=frequency, tsteps=tsteps)
+    lstm_units = params.get('lstm_units', hps['lstm_units'])
+    batch_size = params.get('batch_size', hps['batch_size'])
+    n_lstm_layers = params.get('n_lstm_layers', hps['n_lstm_layers'])
+    stateful = params.get('stateful', hps['stateful'])
+    features_to_use = params.get('features_to_use', hps['features_to_use'])
+
     experiment_id = params.get('experiment_id', 'N/A')
 
     print(f"\n--- Re-running Experiment ID: {experiment_id} ---")
-    print(f"Frequency: {frequency}, TSTEPS: {tsteps}, LSTM Units: {lstm_units}, "
-          f"Batch Size: {batch_size}, N_LSTM_Layers: {n_lstm_layers}, Stateful: {stateful}, "
-          f"Features: {features_to_use}, Optimizer: {optimizer_name}, Loss: {loss_function}")
+    print(
+        f"Frequency: {frequency}, TSTEPS: {tsteps}, LSTM Units: {lstm_units}, "
+        f"Batch Size: {batch_size}, N_LSTM_Layers: {n_lstm_layers}, Stateful: {stateful}, "
+        f"Features: {features_to_use}"
+    )
 
     try:
         # Convert minute data to current frequency
         convert_minute_to_timeframe(RAW_DATA_CSV, frequency)
-        
-        n_features = len(features_to_use)
 
         # --- Train Model ---
-        final_val_loss, model_path = train_model(
+        train_result = train_model(
             frequency=frequency,
             tsteps=tsteps,
-            n_features=n_features,
             lstm_units=lstm_units,
-            learning_rate=0.01, # Using a fixed learning rate for now
-            epochs=20, # Using fixed epochs for now
+            learning_rate=0.01,  # Fixed for now
+            epochs=20,  # Fixed for now
             current_batch_size=batch_size,
             n_lstm_layers=n_lstm_layers,
             stateful=stateful,
-            optimizer_name=optimizer_name,
-            loss_function=loss_function,
-            features_to_use=features_to_use # Pass features_to_use
+            features_to_use=features_to_use,
         )
 
-        if model_path:
-            # --- Evaluate Model ---
-            mae, correlation = evaluate_model_performance(
-                model_path=model_path, # Pass the newly trained model's path
-                frequency=frequency,
-                tsteps=tsteps,
-                n_features=n_features,
-                lstm_units=lstm_units,
-                n_lstm_layers=n_lstm_layers,
-                stateful=stateful,
-                optimizer_name=optimizer_name,
-                loss_function=loss_function,
-                features_to_use=features_to_use
-            )
+        if not train_result:
+            return None
 
-            print(f"--- Re-run Summary for Experiment ID: {experiment_id} ---")
-            print(f"  Validation Loss: {final_val_loss:.4f}")
-            print(f"  MAE: {mae:.4f}")
-            print(f"  Correlation: {correlation:.4f}")
-            print(f"  Model Path: {model_path}")
-            print("------------------------------------")
-            return {'mae': mae, 'correlation': correlation, 'validation_loss': final_val_loss, 'model_path': model_path}
-        
+        final_val_loss, model_path, bias_correction_path = train_result
+
+        # --- Evaluate Model ---
+        mae, correlation = evaluate_model_performance(
+            model_path=model_path,
+            frequency=frequency,
+            tsteps=tsteps,
+            lstm_units=lstm_units,
+            n_lstm_layers=n_lstm_layers,
+            stateful=stateful,
+            features_to_use=features_to_use,
+            bias_correction_path=bias_correction_path,
+        )
+
+        print(f"--- Re-run Summary for Experiment ID: {experiment_id} ---")
+        print(f"  Validation Loss: {final_val_loss:.4f}")
+        print(f"  MAE: {mae:.4f}")
+        print(f"  Correlation: {correlation:.4f}")
+        print(f"  Model Path: {model_path}")
+        print("------------------------------------")
+        return {
+            'mae': mae,
+            'correlation': correlation,
+            'validation_loss': final_val_loss,
+            'model_path': model_path,
+        }
+
     except Exception as e:
         print(f"Error re-running experiment {experiment_id}: {e}", file=sys.stderr)
         return None
@@ -159,35 +163,35 @@ def run_experiments():
             # Prepare Keras input data (features will be selected in train/eval)
             n_features = len(features_to_use)
 
-            # --- Train Model ---
-            final_val_loss, model_path = train_model(
+        # --- Train Model ---
+            train_result = train_model(
                 frequency=frequency,
                 tsteps=tsteps,
-                n_features=n_features,
                 lstm_units=lstm_units,
-                learning_rate=0.01, # Using a fixed learning rate for now
-                epochs=20, # Using fixed epochs for now
+                learning_rate=0.01,  # Fixed for now
+                epochs=20,  # Fixed for now
                 current_batch_size=batch_size,
                 n_lstm_layers=n_lstm_layers,
                 stateful=stateful,
-                optimizer_name=optimizer_name,
-                loss_function=loss_function,
-                features_to_use=features_to_use # Pass features_to_use
+                features_to_use=features_to_use,
             )
+
+            if not train_result:
+                continue
+
+            final_val_loss, model_path, bias_correction_path = train_result
 
             if model_path:
                 # --- Evaluate Model ---
                 mae, correlation = evaluate_model_performance(
-                    model_path=model_path, # Pass the newly trained model's path
+                    model_path=model_path,
                     frequency=frequency,
                     tsteps=tsteps,
-                    n_features=n_features,
                     lstm_units=lstm_units,
                     n_lstm_layers=n_lstm_layers,
                     stateful=stateful,
-                    optimizer_name=optimizer_name,
-                    loss_function=loss_function,
-                    features_to_use=features_to_use
+                    features_to_use=features_to_use,
+                    bias_correction_path=bias_correction_path,
                 )
 
                 experiment_result = {

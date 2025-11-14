@@ -9,9 +9,6 @@ from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 import importlib # Added import for reloading modules
 
-# Add the project root to the Python path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
 from src.config import (
     get_latest_best_model_path,
     get_hourly_data_csv_path,
@@ -26,17 +23,57 @@ from src.config import (
 )
 import src.config # Import src.config as a module
 
-from src.data_processing import prepare_keras_input_data, add_features # Import add_features
-from src.model import build_lstm_model, load_stateful_weights_into_non_stateful_model # Import new functions
+from src.data_processing import prepare_keras_input_data, add_features
+from src.model import build_lstm_model, load_stateful_weights_into_non_stateful_model
+from src.data_utils import (
+    apply_standard_scaler,
+    create_sequences_for_stateless_lstm,
+)
 
-from src.train import create_sequences_for_stateless_lstm # Import the sequence creation function
+from typing import Optional, Tuple
 
-def evaluate_model_performance(model_path, validation_window_size=500, correction_window_size=100,
-                             frequency=FREQUENCY, tsteps=TSTEPS, n_features=None, # n_features will be passed dynamically
-                             lstm_units=None, n_lstm_layers=None, # Changed to None to accept dynamic values
-                             stateful=None, features_to_use=None, bias_correction_path=None):
-    """
-    Evaluates the performance of a trained LSTM model.
+...
+
+def evaluate_model_performance(
+    model_path: str,
+    validation_window_size: int = 500,
+    correction_window_size: int = 100,
+    frequency: str = FREQUENCY,
+    tsteps: int = TSTEPS,
+    n_features: Optional[int] = None,
+    lstm_units: Optional[int] = None,
+    n_lstm_layers: Optional[int] = None,
+    stateful: Optional[bool] = None,
+    features_to_use: Optional[list[str]] = None,
+    bias_correction_path: Optional[str] = None,
+) -> Tuple[float, float]:
+    """Evaluate a trained LSTM model on the most recent validation window.
+
+    Loads the trained *stateful* model from ``model_path``, creates a
+    non-stateful clone for inference, generates rolling-window predictions,
+    applies optional bias/amplitude correction, and computes error metrics.
+
+    Args:
+        model_path: Path to the saved Keras model (stateful).
+        validation_window_size: Number of most-recent hourly samples to use for
+            evaluation.
+        correction_window_size: Window length for rolling bias/amplitude
+            correction applied on the denormalized predictions.
+        frequency: Resampling frequency (e.g. ``"15min"``) for locating data
+            and scaler files.
+        tsteps: Number of timesteps per input sequence.
+        n_features: Number of input features used by the model (if known).
+        lstm_units: Number of LSTM units in each layer.
+        n_lstm_layers: Number of stacked LSTM layers.
+        stateful: Whether the original model was trained as stateful (kept for
+            completeness, not used directly here).
+        features_to_use: Feature names the model was trained on.
+        bias_correction_path: Optional path to a JSON file containing
+            precomputed bias-correction statistics.
+
+    Returns:
+        A tuple ``(mae, correlation)`` with the mean absolute error and Pearson
+        correlation between actual and predicted prices.
     """
     importlib.reload(src.config) # Ensure latest config is loaded
     if features_to_use is None:
@@ -117,11 +154,8 @@ def evaluate_model_performance(model_path, validation_window_size=500, correctio
 
     feature_cols = [col for col in df_eval_featured.columns if col != 'Time']
     
-    mean_vals = pd.Series(scaler_params['mean'])
-    std_vals = pd.Series(scaler_params['std'])
-    
-    df_eval_normalized = df_eval_featured.copy()
-    df_eval_normalized[feature_cols] = (df_eval_featured[feature_cols] - mean_vals[feature_cols]) / std_vals[feature_cols]
+    # Normalize evaluation window using the stored scaler parameters
+    df_eval_normalized = apply_standard_scaler(df_eval_featured, feature_cols, scaler_params)
     
     mean_open = scaler_params['mean']['Open']
     std_open = scaler_params['std']['Open']

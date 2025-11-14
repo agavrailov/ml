@@ -7,14 +7,11 @@ import tensorflow as tf
 from tensorflow import keras
 import keras_tuner as kt
 
-# Add project root to Python path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
 from src.config import (
     TRAINING_DATA_CSV, SCALER_PARAMS_JSON, TSTEPS, N_FEATURES,
     ROWS_AHEAD, TR_SPLIT, EPOCHS
 )
-from src.train import create_sequences_for_stateful_lstm, get_effective_data_length
+from src.data_utils import create_sequences_for_stateful_lstm, get_effective_data_length
 
 def build_tuned_model(hp):
     """

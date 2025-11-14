@@ -1,6 +1,5 @@
-import sys
 import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+import sys
 
 import pandas as pd
 import json
@@ -9,22 +8,29 @@ import numpy as np
 import subprocess # Added for running external scripts
 
 from src.config import (
-    PROCESSED_DATA_DIR, RAW_DATA_CSV, FREQUENCY, get_hourly_data_csv_path,
+    PROCESSED_DATA_DIR, RAW_DATA_CSV, FREQUENCY,
     FEATURES_TO_USE_OPTIONS
 )
 
 GAP_ANALYSIS_OUTPUT_JSON = os.path.join(PROCESSED_DATA_DIR, "missing_trading_days.json")
 
-def convert_minute_to_timeframe(input_csv_path, frequency, processed_data_dir=PROCESSED_DATA_DIR):
-    """
-    Converts minute-level OHLC data from a CSV file to a specified timeframe OHLC data.
+def convert_minute_to_timeframe(
+    input_csv_path: str,
+    frequency: str,
+    processed_data_dir: str = PROCESSED_DATA_DIR,
+) -> None:
+    """Resample minute-level OHLC data to a coarser timeframe and save as CSV.
 
     Args:
-        input_csv_path (str): Path to the input minute-level CSV file.
-        frequency (str): The resampling frequency (e.g., '60min', '30min').
-        processed_data_dir (str): The directory where processed data will be saved.
+        input_csv_path: Path to the input minute-level CSV file. Must contain a
+            ``"DateTime"`` column parseable as a datetime index.
+        frequency: Resampling rule (e.g. ``"60min"``, ``"30min"``) understood by
+            ``pandas.DataFrame.resample``.
+        processed_data_dir: Target directory where the resampled CSV will be
+            written.
     """
-    output_csv_path = get_hourly_data_csv_path(frequency, processed_data_dir)
+    # Build output path from the provided processed_data_dir to keep tests and runtime aligned
+    output_csv_path = os.path.join(processed_data_dir, f"nvda_{frequency}.csv")
     print(f"Converting minute data from {input_csv_path} to {frequency} frequency.")
     print(f"Output will be saved to {output_csv_path}")
     
@@ -62,9 +68,20 @@ def convert_minute_to_timeframe(input_csv_path, frequency, processed_data_dir=PR
     df_resampled.to_csv(output_csv_path, index=False)
     print(f"Successfully converted minute data to {frequency} and saved to {output_csv_path}")
 
-def add_features(df, features_to_generate):
-    """
-    Adds technical indicators and time-based features to the DataFrame based on the provided list.
+def add_features(df: pd.DataFrame, features_to_generate: list[str]) -> pd.DataFrame:
+    """Add technical indicators and time-based features to a price DataFrame.
+
+    The function operates in-place on ``df`` and returns the same DataFrame for
+    convenience.
+
+    Args:
+        df: Input DataFrame with at least ``"Time"`` and OHLC columns.
+        features_to_generate: Names of features to generate (subset of
+            ``["SMA_7", "SMA_21", "RSI", "Hour", "DayOfWeek"]``).
+
+    Returns:
+        The DataFrame with requested feature columns added and rows with NA
+        values from rolling operations dropped.
     """
     # Ensure 'Time' is a datetime object
     df['Time'] = pd.to_datetime(df['Time'])
@@ -93,19 +110,25 @@ def add_features(df, features_to_generate):
     
     return df
 
-def prepare_keras_input_data(input_hourly_csv_path, features_to_use):
-    """
-    Prepares data for Keras input by adding features and selecting only the specified ones.
-    Normalization is handled separately in the training script to prevent data leakage.
+def prepare_keras_input_data(
+    input_hourly_csv_path: str,
+    features_to_use: list[str],
+) -> tuple[pd.DataFrame, list[str]]:
+    """Prepare hourly OHLC data for Keras by engineering and selecting features.
+
+    Normalization is intentionally *not* performed here to avoid data leakage;
+    it is handled later in the training pipeline.
 
     Args:
-        input_hourly_csv_path (str): Path to the input hourly-level CSV file.
-        features_to_use (list): A list of feature names to be used by the model.
+        input_hourly_csv_path: Path to the hourly-level CSV file (as produced by
+            :func:`convert_minute_to_timeframe`).
+        features_to_use: Names of features to keep for model input (e.g.
+            ``["Open", "High", "Low", "Close", "SMA_7", "RSI", "Hour"]``).
 
     Returns:
-        tuple: A tuple containing:
-            - pd.DataFrame: DataFrame with selected features.
-            - list: List of selected feature column names.
+        A tuple ``(df_filtered, feature_cols)`` where ``df_filtered`` contains a
+        ``"Time"`` column and the selected features, and ``feature_cols`` is the
+        list of feature column names actually present.
     """
     df = pd.read_csv(input_hourly_csv_path)
 
@@ -127,7 +150,8 @@ def prepare_keras_input_data(input_hourly_csv_path, features_to_use):
 
 def clean_raw_minute_data(input_csv_path):
     """
-    Loads raw minute data, sorts it by DateTime, removes duplicates, and saves it back.
+    Loads raw minute data, ensures a ``DateTime`` column, sorts it, removes duplicates,
+    and saves it back.
 
     Args:
         input_csv_path (str): Path to the raw minute-level CSV file.
@@ -137,8 +161,19 @@ def clean_raw_minute_data(input_csv_path):
         return
 
     print(f"Cleaning raw minute data at {input_csv_path}...")
-    df = pd.read_csv(input_csv_path, parse_dates=['DateTime'])
-    
+    df = pd.read_csv(input_csv_path)
+
+    # Handle legacy files where the datetime column header is "index" rather than "DateTime".
+    if 'DateTime' not in df.columns:
+        if 'index' in df.columns:
+            print("Detected 'index' column, renaming to 'DateTime'.")
+            df.rename(columns={'index': 'DateTime'}, inplace=True)
+        else:
+            raise ValueError("Raw data CSV must contain a 'DateTime' or 'index' column.")
+
+    # Ensure DateTime is parsed as datetime dtype
+    df['DateTime'] = pd.to_datetime(df['DateTime'])
+
     # Sort by DateTime
     df.sort_values('DateTime', inplace=True)
     
@@ -152,23 +187,65 @@ def clean_raw_minute_data(input_csv_path):
     df.to_csv(input_csv_path, index=False)
     print(f"Raw minute data cleaned and saved to {input_csv_path}")
 
-def fill_gaps(df, identified_gaps):
-    """
-    Placeholder function to fill identified gaps in the raw minute data.
-    Currently, it does not perform any filling but serves as an integration point.
+def fill_gaps(df, identified_gaps, max_fill_hours: int = 48):
+    """Fill identified gaps in the raw minute data using a simple rule-based strategy.
+
+    Strategy:
+        * For each gap in ``identified_gaps`` whose duration is <= ``max_fill_hours``,
+          we synthesize missing 1-minute bars between the gap start and end times
+          and forward-fill the OHLC values.
+        * Larger gaps are left untouched (they may correspond to holidays or
+          extended outages) but are logged.
 
     Args:
-        df (pd.DataFrame): The raw minute-level DataFrame.
-        identified_gaps (list): A list of dictionaries, each describing a gap.
+        df: The raw minute-level DataFrame.
+        identified_gaps: A list of dictionaries with ``start``, ``end`` and
+            ``duration`` keys (as produced by ``analyze_gaps.py``).
+        max_fill_hours: Maximum gap duration (in hours) to fill.
 
     Returns:
-        pd.DataFrame: The DataFrame, potentially with gaps filled.
+        The DataFrame with small gaps filled and re-saved in chronological order.
     """
-    if identified_gaps:
-        print(f"Identified {len(identified_gaps)} gaps for potential filling. No filling performed yet.")
-        # Future implementation will go here based on user's chosen strategy
-    else:
+    if not identified_gaps:
         print("No gaps identified for filling.")
+        return df
+
+    df = df.sort_values("DateTime").copy()
+    df.set_index("DateTime", inplace=True)
+
+    for gap in identified_gaps:
+        try:
+            start = pd.to_datetime(gap["start"])
+            end = pd.to_datetime(gap["end"])
+            duration = pd.to_timedelta(gap["duration"])
+        except Exception as e:
+            print(f"Warning: could not parse gap entry {gap}: {e}")
+            continue
+
+        if duration > pd.Timedelta(hours=max_fill_hours):
+            print(f"Skipping gap from {start} to {end} (duration {duration}) – exceeds max_fill_hours={max_fill_hours}.")
+            continue
+
+        print(f"Filling gap from {start} to {end} (duration {duration}) via 1-minute forward fill.")
+
+        # Build a complete minute-level index for the gap window.
+        # We include both endpoints to avoid off-by-one issues, then rely on
+        # sorting and ffill to propagate prior values.
+        missing_index = pd.date_range(start=start, end=end, freq="1min")
+
+        # Union the existing index with the gap index and sort.
+        df = df.reindex(df.index.union(missing_index)).sort_index()
+        # Ensure the index retains the "DateTime" name so that reset_index()
+        # produces a "DateTime" column in the output CSV.
+        df.index.name = "DateTime"
+
+        # Forward-fill OHLC values across the gap. Volume/other columns, if any,
+        # are **not** filled here to avoid fabricating volume.
+        ohlc_cols = [c for c in ["Open", "High", "Low", "Close"] if c in df.columns]
+        if ohlc_cols:
+            df[ohlc_cols] = df[ohlc_cols].ffill()
+
+    df = df.reset_index()
     return df
 
 if __name__ == "__main__":

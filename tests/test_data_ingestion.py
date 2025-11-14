@@ -59,7 +59,8 @@ async def test_fetch_historical_data_nvda(mock_ib):
             await fetch_historical_data(
                 contract_details=NVDA_CONTRACT_DETAILS,
                 start_date=test_start_date,
-                end_date=test_end_date
+                end_date=test_end_date,
+                strict_range=True,
             )
 
             # Assertions

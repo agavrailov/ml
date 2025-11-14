@@ -6,9 +6,6 @@ import numpy as np
 import os
 import sys
 
-# Add the project root to the Python path to import src modules
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
 from src.predict import predict_future_prices
 from src.config import TSTEPS, N_FEATURES, get_active_model_path # Import get_active_model_path
 

@@ -1,6 +1,4 @@
-import sys
 import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import pandas as pd
 import numpy as np
@@ -8,9 +6,11 @@ import tensorflow as tf
 from tensorflow import keras
 import json
 import os
+from typing import Optional
 
 from src.model import build_lstm_model, load_stateful_weights_into_non_stateful_model
-from src.data_processing import add_features # Import add_features
+from src.data_processing import add_features  # Import add_features
+from src.data_utils import apply_standard_scaler
 from src.config import (
     TSTEPS, N_FEATURES, BATCH_SIZE, FREQUENCY,
     PROCESSED_DATA_DIR, get_scaler_params_json_path,
@@ -18,21 +18,40 @@ from src.config import (
     N_LSTM_LAYERS, STATEFUL, FEATURES_TO_USE_OPTIONS
 )
 
-def predict_future_prices(input_data_df, frequency=FREQUENCY, tsteps=TSTEPS, n_features=N_FEATURES,
-                          lstm_units=LSTM_UNITS, n_lstm_layers=N_LSTM_LAYERS,
-                          stateful=STATEFUL, optimizer_name='rmsprop', loss_function='mae',
-                          features_to_use=None):
-    """
-    Loads the latest trained LSTM model, prepares and normalizes input data,
-    makes predictions, and denormalizes the predictions using a non-stateful model.
+def predict_future_prices(
+    input_data_df: pd.DataFrame,
+    frequency: str = FREQUENCY,
+    tsteps: int = TSTEPS,
+    n_features: int = N_FEATURES,
+    lstm_units: int = LSTM_UNITS,
+    n_lstm_layers: int = N_LSTM_LAYERS,
+    stateful: bool = STATEFUL,
+    optimizer_name: str = "rmsprop",
+    loss_function: str = "mae",
+    features_to_use: Optional[list[str]] = None,
+) -> float:
+    """Predict a future price using the latest best LSTM model.
+
+    The function reuses the training-time scaler, rebuilds a non-stateful
+    version of the best stateful model, and returns a single-step price
+    prediction.
 
     Args:
-        input_data_df (pd.DataFrame): DataFrame containing the raw OHLC input data for prediction.
-                                      It must contain enough historical data to allow for feature
-                                      engineering and still provide `TSTEPS` data points.
+        input_data_df: Raw OHLC input data. Must contain enough history to
+            compute all engineered features and still provide ``tsteps`` rows.
+        frequency: Resampling frequency for which the model was trained.
+        tsteps: Number of timesteps in the model input.
+        n_features: Number of features expected by the model.
+        lstm_units: Number of LSTM units used by the model.
+        n_lstm_layers: Number of LSTM layers in the model.
+        stateful: Whether the original training model was stateful.
+        optimizer_name: Optimizer name used to compile the prediction model.
+        loss_function: Loss name used to compile the prediction model.
+        features_to_use: Features to engineer and feed to the model. If ``None``
+            the first entry from ``FEATURES_TO_USE_OPTIONS`` is used.
 
     Returns:
-        np.array: Denormalized predicted prices.
+        The denormalized single-step price prediction.
     """
     if features_to_use is None:
         features_to_use = FEATURES_TO_USE_OPTIONS[0] # Default to the first option if not provided
@@ -93,9 +112,10 @@ def predict_future_prices(input_data_df, frequency=FREQUENCY, tsteps=TSTEPS, n_f
     df_featured_input = df_featured_input.tail(tsteps)
 
     feature_cols = [col for col in df_featured_input.columns if col != 'Time']
-    
-    # Normalize the input features
-    input_normalized_features = (df_featured_input[feature_cols] - mean_vals[feature_cols]) / std_vals[feature_cols]
+
+    # Normalize the input features using the stored scaler
+    input_normalized_df = apply_standard_scaler(df_featured_input, feature_cols, scaler_params)
+    input_normalized_features = input_normalized_df[feature_cols]
 
     # Reshape for non-stateful LSTM: (1, TSTEPS, N_FEATURES)
     input_reshaped = input_normalized_features.values[np.newaxis, :, :]

@@ -1,6 +1,4 @@
-import sys
 import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import pandas as pd
 import numpy as np
@@ -11,7 +9,12 @@ from tensorflow.keras.callbacks import EarlyStopping # Added import
 from datetime import datetime
 
 from src.model import build_lstm_model
-from src.train import create_sequences_for_stateful_lstm, get_effective_data_length
+from src.data_utils import (
+    fit_standard_scaler,
+    apply_standard_scaler,
+    get_effective_data_length,
+    create_sequences_for_stateful_lstm,
+)
 from src.data_processing import convert_minute_to_hourly, prepare_keras_input_data
 from src.config import (
     TSTEPS, ROWS_AHEAD, TR_SPLIT, N_FEATURES, BATCH_SIZE,
@@ -92,25 +95,12 @@ def retrain_model(lstm_units=LSTM_UNITS, learning_rate=LEARNING_RATE, epochs=EPO
         df_train_raw = df_featured.iloc[i : i + train_window_size].copy()
         df_val_raw = df_featured.iloc[i + train_window_size : i + train_window_size + validation_window_size].copy()
 
-        # Calculate mean and standard deviation for normalization ONLY on current training data
-        mean_vals = df_train_raw[feature_cols].mean()
-        std_vals = df_train_raw[feature_cols].std()
-
-        # Handle cases where std_vals might be zero to avoid division by zero
-        std_vals = std_vals.replace(0, 1) # Replace 0 with 1 to prevent division by zero
-
-        # Normalize both current training and validation sets using the scaler fitted on current training data
-        df_train_normalized = df_train_raw.copy()
-        df_val_normalized = df_val_raw.copy()
-
-        df_train_normalized[feature_cols] = (df_train_raw[feature_cols] - mean_vals) / std_vals
-        df_val_normalized[feature_cols] = (df_val_raw[feature_cols] - mean_vals) / std_vals
+        # Fit scaler on current training window and normalize train/val
+        mean_vals, std_vals, scaler_params = fit_standard_scaler(df_train_raw, feature_cols)
+        df_train_normalized = apply_standard_scaler(df_train_raw, feature_cols, scaler_params)
+        df_val_normalized = apply_standard_scaler(df_val_raw, feature_cols, scaler_params)
 
         # Save scaler parameters (overwriting for each window, or save versioned if needed)
-        scaler_params = {
-            'mean': mean_vals.to_dict(),
-            'std': std_vals.to_dict()
-        }
         with open(SCALER_PARAMS_JSON, 'w') as f:
             json.dump(scaler_params, f, indent=4)
         print(f"Scaler parameters saved to {SCALER_PARAMS_JSON}")

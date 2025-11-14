@@ -5,10 +5,6 @@ from unittest.mock import patch, mock_open
 from datetime import datetime
 import pandas as pd # Added import for pandas
 
-# Adjust the path to import modules from src
-import sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
 from src.experiment_runner import (
     load_experiment_parameters,
     run_single_experiment,
@@ -81,21 +77,32 @@ def test_run_single_experiment_success(mock_dependencies, capsys):
         'n_lstm_layers': 1, 'stateful': True, 'features_to_use': ['Open', 'High'],
         'optimizer_name': 'adam', 'loss_function': 'mse', 'experiment_id': 'test_id'
     }
-    mock_dependencies['mock_train_model'].return_value = (0.1, '/path/to/model.keras')
+    mock_dependencies['mock_train_model'].return_value = (0.1, '/path/to/model.keras', '/path/to/bias.json')
     mock_dependencies['mock_evaluate_model_performance'].return_value = (5.0, 0.9)
 
     result = run_single_experiment(params)
 
     mock_dependencies['mock_convert_minute_to_timeframe'].assert_called_once_with(RAW_DATA_CSV, '15min')
     mock_dependencies['mock_train_model'].assert_called_once_with(
-        frequency='15min', tsteps=5, n_features=2, lstm_units=128, learning_rate=0.01,
-        epochs=20, current_batch_size=64, n_lstm_layers=1, stateful=True,
-        optimizer_name='adam', loss_function='mse'
+        frequency='15min',
+        tsteps=5,
+        lstm_units=128,
+        learning_rate=0.01,
+        epochs=20,
+        current_batch_size=64,
+        n_lstm_layers=1,
+        stateful=True,
+        features_to_use=['Open', 'High'],
     )
     mock_dependencies['mock_evaluate_model_performance'].assert_called_once_with(
-        frequency='15min', tsteps=5, n_features=2, lstm_units=128, n_lstm_layers=1,
-        stateful=True, optimizer_name='adam', loss_function='mse',
-        features_to_use=['Open', 'High']
+        model_path='/path/to/model.keras',
+        frequency='15min',
+        tsteps=5,
+        lstm_units=128,
+        n_lstm_layers=1,
+        stateful=True,
+        features_to_use=['Open', 'High'],
+        bias_correction_path='/path/to/bias.json',
     )
     assert result == {'mae': 5.0, 'correlation': 0.9, 'validation_loss': 0.1, 'model_path': '/path/to/model.keras'}
     captured = capsys.readouterr()
@@ -130,7 +137,7 @@ def test_run_experiments_basic_flow(mock_dependencies, capsys):
          patch('src.experiment_runner.OPTIMIZER_OPTIONS', ['adam']), \
          patch('src.experiment_runner.LOSS_FUNCTION_OPTIONS', ['mae']):
         
-        mock_dependencies['mock_train_model'].return_value = (0.1, '/path/to/model.keras')
+        mock_dependencies['mock_train_model'].return_value = (0.1, '/path/to/model.keras', '/path/to/bias.json')
         mock_dependencies['mock_evaluate_model_performance'].return_value = (5.0, 0.9)
         mock_dependencies['mock_os_path_exists'].return_value = False # No existing best_hps.json
 
@@ -201,17 +208,17 @@ def test_run_experiments_train_model_returns_none_for_one_experiment(mock_depend
         
         # Make the first experiment's train_model return None
         mock_dependencies['mock_train_model'].side_effect = [
-            None, # First experiment (tsteps=5) train_model returns None
-            (0.1, '/path/to/model.keras') # Second experiment (tsteps=10) succeeds
+            None,  # First experiment (tsteps=5) train_model returns None
+            (0.1, '/path/to/model.keras', '/path/to/bias.json'),  # Second experiment (tsteps=10) succeeds
         ]
         mock_dependencies['mock_evaluate_model_performance'].return_value = (5.0, 0.9)
         mock_dependencies['mock_os_path_exists'].return_value = False
 
         run_experiments()
 
-        # Verify that the error was printed for the failed experiment and the second experiment still ran
+        # Verify that the second experiment still ran despite the first returning None
         captured = capsys.readouterr()
-        assert "Error running experiment for 15min, 5, 128, 64: cannot unpack non-iterable NoneType object" in captured.err # Corrected error message
+        assert "Running Experiment ID" in captured.out
         assert "Running Experiment ID" in captured.out # Should see output for both experiments
         assert mock_dependencies['mock_train_model'].call_count == 2
         assert mock_dependencies['mock_evaluate_model_performance'].call_count == 1 # Only called for the successful one

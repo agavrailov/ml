@@ -81,8 +81,10 @@ def test_predict_internal_error(mock_predict_future_prices, client: TestClient):
     # Mock the prediction function to raise an exception
     mock_predict_future_prices.side_effect = Exception("Model prediction failed")
 
+    # Use enough points to pass the API's feature-engineering requirement
+    required_data_points = 20 + TSTEPS
     dummy_data = []
-    for _ in range(TSTEPS):
+    for _ in range(required_data_points):
         dummy_data.append({"Open": 100.0, "High": 101.0, "Low": 99.0, "Close": 100.5})
     
     response = client.post("/predict", json={"data": dummy_data})
