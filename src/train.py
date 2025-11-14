@@ -9,8 +9,9 @@ from tensorflow import keras
 import json
 import os
 from tensorflow.keras.callbacks import EarlyStopping # Added import
+import importlib # Added import for reloading modules
 
-from src.model import build_lstm_model
+from src.model import build_lstm_model, load_stateful_weights_into_non_stateful_model
 from src.data_processing import prepare_keras_input_data
 from datetime import datetime # Added import
 from src.config import (
@@ -18,8 +19,10 @@ from src.config import (
     EPOCHS, LEARNING_RATE, LSTM_UNITS,
     PROCESSED_DATA_DIR, MODEL_REGISTRY_DIR,
     FREQUENCY, TSTEPS, get_training_data_csv_path, get_scaler_params_json_path,
-    get_hourly_data_csv_path # Added import
+    get_hourly_data_csv_path, N_LSTM_LAYERS, STATEFUL,
+    FEATURES_TO_USE_OPTIONS, OPTIMIZER_NAME, LOSS_FUNCTION
 )
+import src.config # Import src.config as a module
 
 def get_effective_data_length(data, sequence_length, rows_ahead):
     """
@@ -146,18 +149,20 @@ def create_sequences_for_stateful_lstm(data, sequence_length, batch_size, rows_a
     return X, Y
 
 
-def train_model(frequency=FREQUENCY, tsteps=TSTEPS, n_features=None, # n_features will be passed dynamically
+def train_model(frequency=FREQUENCY, tsteps=TSTEPS,
                 lstm_units=LSTM_UNITS, learning_rate=LEARNING_RATE, epochs=EPOCHS,
-                current_batch_size=BATCH_SIZE, n_lstm_layers=None, # n_lstm_layers will be passed dynamically
-                stateful=None, # stateful will be passed dynamically
-                optimizer_name='rmsprop', loss_function='mae', features_to_use=None):
+                current_batch_size=BATCH_SIZE, n_lstm_layers=None,
+                stateful=None, features_to_use=None):
     """
     Loads processed data, builds and trains the LSTM model, and saves the trained model.
     Uses a standard train-validation split.
     """
+    importlib.reload(src.config) # Ensure latest config is loaded
     # Set random seeds for reproducibility
     np.random.seed(42)
     tf.random.set_seed(42)
+
+    n_features_dynamic = len(features_to_use) # Calculate n_features dynamically
 
     # --- Data Preparation ---
     hourly_data_path = get_hourly_data_csv_path(frequency) # Get path to the hourly data
@@ -207,14 +212,14 @@ def train_model(frequency=FREQUENCY, tsteps=TSTEPS, n_features=None, # n_feature
 
     # --- Model Building and Training ---
     model = build_lstm_model(
-        input_shape=(tsteps, n_features),
+        input_shape=(tsteps, n_features_dynamic),
         lstm_units=lstm_units,
         batch_size=current_batch_size if stateful else None, # Pass batch_size only if stateful
         learning_rate=learning_rate,
         n_lstm_layers=n_lstm_layers,
         stateful=stateful,
-        optimizer_name=optimizer_name,
-        loss_function=loss_function
+        optimizer_name=OPTIMIZER_NAME,
+        loss_function=LOSS_FUNCTION
     )
 
     early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
@@ -238,30 +243,65 @@ def train_model(frequency=FREQUENCY, tsteps=TSTEPS, n_features=None, # n_feature
     model.save(model_path)
     print(f"Model saved to {model_path} with validation loss {final_val_loss:.4f}")
 
-    return final_val_loss, model_path
+    # --- Bias Correction Calculation ---
+    print("Calculating bias correction from validation set...")
+    # Create a non-stateful model for making predictions on the validation set
+    non_stateful_model_for_bias = build_lstm_model(
+        input_shape=(tsteps, n_features_dynamic),
+        lstm_units=lstm_units,
+        batch_size=None, # Non-stateful model does not require batch_size
+        learning_rate=learning_rate, # Learning rate is not used for prediction model compilation
+        n_lstm_layers=n_lstm_layers,
+        stateful=False, # Always non-stateful for evaluation
+        optimizer_name=OPTIMIZER_NAME,
+        loss_function=LOSS_FUNCTION
+    )
+    # Load weights from the trained stateful model into the non-stateful model
+    load_stateful_weights_into_non_stateful_model(model, non_stateful_model_for_bias)
+
+    # Make predictions on the validation set
+    predictions_val_normalized = non_stateful_model_for_bias.predict(X_val, batch_size=current_batch_size)
+
+    # Denormalize predictions and actuals
+    mean_open = scaler_params['mean']['Open']
+    std_open = scaler_params['std']['Open']
+
+    predictions_val_denormalized = (predictions_val_normalized * std_open) + mean_open
+    actuals_val_denormalized = (Y_val * std_open) + mean_open
+
+    # Calculate mean residual
+    mean_residual = np.mean(actuals_val_denormalized - predictions_val_denormalized)
+    print(f"Mean residual on validation set: {mean_residual:.4f}")
+
+    # Save mean residual to a JSON file
+    bias_correction_path = os.path.join(MODEL_REGISTRY_DIR, f"bias_correction_{frequency}_tsteps{tsteps}_{timestamp}.json")
+    with open(bias_correction_path, 'w') as f:
+        json.dump({"mean_residual": float(mean_residual)}, f, indent=4)
+    print(f"Bias correction (mean residual) saved to {bias_correction_path}")
+
+    return final_val_loss, model_path, bias_correction_path
 
 if __name__ == "__main__":
     # Ensure data/processed exists
     os.makedirs(PROCESSED_DATA_DIR, exist_ok=True)
     
+    importlib.reload(src.config) # Ensure latest config is loaded
     print(f"\n--- Training model for frequency: {FREQUENCY}, TSTEPS: {TSTEPS} ---")
     
-    final_loss_model_path = train_model(
+    training_results = train_model(
         frequency=FREQUENCY,
         tsteps=TSTEPS,
-        n_features=None, # n_features will be determined dynamically by the caller
         lstm_units=LSTM_UNITS,
         learning_rate=LEARNING_RATE,
         epochs=EPOCHS,
         current_batch_size=BATCH_SIZE,
-        n_lstm_layers=None, # n_lstm_layers will be determined dynamically by the caller
+        n_lstm_layers=N_LSTM_LAYERS, # Pass N_LSTM_LAYERS from config
         stateful=STATEFUL,
-        optimizer_name='rmsprop', # Default for now, will be configurable later
-        loss_function='mae' # Default for now, will be configurable later
+        features_to_use=FEATURES_TO_USE_OPTIONS[0] # Pass the default feature set
     )
     
-    if final_loss_model_path is not None:
-        final_loss, model_path = final_loss_model_path
+    if training_results is not None:
+        final_loss, model_path, bias_correction_path = training_results
         model_filename = os.path.basename(model_path)
 
         # Load best hyperparameters if available
@@ -286,10 +326,11 @@ if __name__ == "__main__":
                 'learning_rate': LEARNING_RATE,
                 'epochs': EPOCHS,
                 'batch_size': BATCH_SIZE,
-                'n_lstm_layers': None, # n_lstm_layers will be determined dynamically by the caller
+                'n_lstm_layers': N_LSTM_LAYERS, # Use N_LSTM_LAYERS from config
                 'stateful': STATEFUL,
-                'optimizer_name': 'rmsprop',
-                'loss_function': 'mae'
+                'optimizer_name': OPTIMIZER_NAME,
+                'loss_function': LOSS_FUNCTION,
+                'bias_correction_filename': os.path.basename(bias_correction_path) # Save bias correction filename
             }
             print(f"Updated best hyperparameters for Frequency: {FREQUENCY}, TSTEPS: {TSTEPS} with validation loss {final_loss:.4f}")
         
@@ -299,6 +340,6 @@ if __name__ == "__main__":
         print(f"\nUpdated best hyperparameters saved to {best_hps_path}")
 
         print("\n--- Training Summary ---")
-        print(f"Frequency: {FREQUENCY}, TSTEPS: {TSTEPS}, Validation Loss: {final_loss:.4f}, Model: {model_filename}")
+        print(f"Frequency: {FREQUENCY}, TSTEPS: {TSTEPS}, Validation Loss: {final_loss:.4f}, Model: {model_filename}, Bias Correction: {os.path.basename(bias_correction_path)}")
     else:
         print("Model training was not successful.")

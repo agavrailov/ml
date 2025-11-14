@@ -6,18 +6,21 @@ from datetime import datetime, time
 
 # --- Model Hyperparameters ---
 # Default values for a single run
-FREQUENCY = '30min' # Resampling frequency for the data
-TSTEPS = 8 # Number of time steps to look back. Found by KerasTuner.
+FREQUENCY = '15min' # Resampling frequency for the data
+TSTEPS = 5 # Number of time steps to look back. Found by KerasTuner.
 ROWS_AHEAD = 1  # prediction Labels are n rows ahead of the current
 TR_SPLIT = 0.7   # part of data used for training
-BATCH_SIZE = 128 # Number of samples per gradient update. Found by KerasTuner.
+BATCH_SIZE = 64 # Number of samples per gradient update. Found by KerasTuner.
 EPOCHS = 20
 LEARNING_RATE = 0.01
-LSTM_UNITS = 128  # number of neurons in a LSTM layer. Found by KerasTuner.
+LSTM_UNITS = 32  # number of neurons in a LSTM layer. Found by KerasTuner.
 DROPOUT_RATE_1 = 0.1
 DROPOUT_RATE_2 = 0.1
 N_LSTM_LAYERS = 1 # Number of LSTM layers
 STATEFUL = True # Whether the LSTM model is stateful
+N_FEATURES = 7 # Number of features used in the model (Open, High, Low, Close, SMA_7, SMA_21, RSI)
+OPTIMIZER_NAME = 'rmsprop' # Default optimizer
+LOSS_FUNCTION = 'mse' # Default loss function
 
 # --- Hyperparameter Tuning Options ---
 RESAMPLE_FREQUENCIES = ['15min', '30min', '60min', '240min']
@@ -67,16 +70,21 @@ def get_latest_best_model_path(target_frequency=None, tsteps=None):
     """
     Finds the path to the model with the lowest validation loss for a given
     frequency and TSTEPS, or the overall best model, by consulting best_hyperparameters.json.
+    Returns a tuple (model_path, bias_correction_path, features_to_use_trained, lstm_units_trained, n_lstm_layers_trained).
     """
     best_hps_path = 'best_hyperparameters.json'
     if not os.path.exists(best_hps_path):
-        return None
+        return None, None, None, None, None
 
     with open(best_hps_path, 'r') as f:
         best_hps_data = json.load(f)
 
     best_loss = float('inf')
     best_model_filename = None
+    best_bias_correction_filename = None
+    features_to_use_trained = None
+    lstm_units_trained = None
+    n_lstm_layers_trained = None
     
     for freq, tsteps_data in best_hps_data.items():
         if target_frequency and freq != target_frequency:
@@ -88,11 +96,21 @@ def get_latest_best_model_path(target_frequency=None, tsteps=None):
             
             if metrics['validation_loss'] < best_loss:
                 best_loss = metrics['validation_loss']
-                best_model_filename = metrics['model_filename'] # Assuming filename is stored here
+                best_model_filename = metrics['model_filename']
+                best_bias_correction_filename = metrics.get('bias_correction_filename')
+                features_to_use_trained = metrics.get('features_to_use')
+                lstm_units_trained = metrics.get('lstm_units')
+                n_lstm_layers_trained = metrics.get('n_lstm_layers')
     
+    model_path = None
+    bias_correction_path = None
+
     if best_model_filename:
-        return os.path.join(MODEL_REGISTRY_DIR, best_model_filename)
-    return None
+        model_path = os.path.join(MODEL_REGISTRY_DIR, best_model_filename)
+    if best_bias_correction_filename:
+        bias_correction_path = os.path.join(MODEL_REGISTRY_DIR, best_bias_correction_filename)
+
+    return model_path, bias_correction_path, features_to_use_trained, lstm_units_trained, n_lstm_layers_trained
 
 # --- Data Ingestion Configuration ---
 TWS_HOST = '127.0.0.1'

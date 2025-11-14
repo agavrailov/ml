@@ -10,21 +10,8 @@ def build_lstm_model(input_shape, lstm_units, batch_size, learning_rate,
     """
     Builds and compiles a Keras LSTM model, configurable for stateful/non-stateful
     and multiple LSTM layers.
-
-    Args:
-        input_shape (tuple): The shape of the input data (timesteps, features).
-        lstm_units (int): Number of neurons in each LSTM layer.
-        batch_size (int): The batch size for training (required for stateful model).
-                          Can be None for non-stateful models.
-        learning_rate (float): The learning rate for the optimizer.
-        n_lstm_layers (int): Number of LSTM layers to stack.
-        stateful (bool): Whether the LSTM layers should be stateful.
-        optimizer_name (str): Name of the optimizer (e.g., 'rmsprop', 'adam').
-        loss_function (str): Name of the loss function (e.g., 'mae', 'mse').
-
-    Returns:
-        keras.Model: A compiled Keras LSTM model.
     """
+    print(f"DEBUG: build_lstm_model received input_shape: {input_shape}")
     if stateful:
         inputs = keras.Input(batch_shape=(batch_size, input_shape[0], input_shape[1]), dtype=tf.float32)
     else:
