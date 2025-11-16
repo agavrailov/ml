@@ -59,8 +59,8 @@ ml_lstm/
 │   └── processed/          # Processed data ready for modeling (e.g., training_data.csv)
 ├── notebooks/              # Jupyter notebooks for EDA and experimentation
 ├── src/
-│   ├── data_ingestion.py   # Fetches raw minute-level data from TWS
-│   ├── data_updater.py     # Orchestrates continuous data updates and gap filling
+│   ├── data_ingestion.py   # Historical TWS ingestion CLI and wrapper around the ingestion core
+│   ├── daily_data_agent.py # Orchestrates daily ingestion, gap handling, curation, and feature generation
 │   ├── data_processing.py  # Logic for data loading, conversion, and normalization
 │   ├── model.py            # LSTM model definition
 │   ├── train.py            # Script for model training
@@ -78,18 +78,24 @@ ml_lstm/
 
 The project now includes an automated data ingestion and update pipeline. This process connects to Interactive Brokers (TWS/Gateway) to fetch minute-level data for NVDA, handles initial historical data fetching, continuous updates, and gap filling.
 
-To run the data ingestion and update process:
+The recommended daily entrypoint is:
 
 ```bash
-# On Windows:
+python src/daily_data_agent.py
+```
+
+On Windows, you can also use the helper batch script:
+
+```bash
 .\update_data.bat
 ```
-This script will:
+
+With the current implementation, these will:
 *   Connect to IB TWS/Gateway.
 *   Fetch new minute-level data for NVDA from the last recorded timestamp up to the current time.
 *   Identify and fill any historical gaps within market hours (excluding weekends and holidays).
 *   Sort and deduplicate the entire raw dataset (`data/raw/nvda_minute.csv`).
-*   Then, it will proceed to process this raw data into hourly format and add features.
+*   Convert raw/curated minute data into hourly format and add features under `data/processed/`.
 
 ### 2. Data Preparation
 
@@ -152,24 +158,24 @@ The data flow in the refactored Python-based project is designed to be clear, mo
     *   **Data Cleaning/Formatting:** The fetched bars are converted into a Pandas DataFrame, sorted by date, and columns are renamed to `DateTime`, `Open`, `High`, `Low`, `Close`. The `DateTime` column is formatted to `YYYY-MM-DDTHH:%M`.
     *   **Data Storage:** The processed DataFrame is then saved to `RAW_DATA_CSV` (`data/raw/nvda_minute.csv`). If the file already exists, new data is appended without writing the header again.
     *   **Disconnection:** The script attempts to disconnect from TWS/IB Gateway.
-*   **Execution:** The script can be executed directly using `python src/data_ingestion.py` for initial full fetches, but is primarily called by `src/data_updater.py` for continuous operations.
+*   **Execution:** The script can be executed directly using `python -m src.data_ingestion` for initial full fetches, but for day-to-day operations you should prefer the daily pipeline agent described below.
 
-## 1.5. Continuous Data Update and Gap Filling (`src/data_updater.py`)
+## 1.5. Daily Data Pipeline and Gap Filling (`src/daily_data_agent.py`)
 
-*   **Purpose:** The `src/data_updater.py` script orchestrates the continuous updating and gap-filling of the `data/raw/nvda_minute.csv` dataset. It ensures the dataset remains current, complete, and free of gaps within market hours.
+*   **Purpose:** The `src/daily_data_agent.py` module orchestrates daily ingestion, gap analysis/filling, curated-minute snapshotting, and resampling/feature engineering so that `data/raw/` and `data/processed/` stay in sync.
 *   **Key Components:**
-    *   **`src/data_ingestion.py`:** Utilizes the `fetch_historical_data` function to retrieve new and missing data.
-    *   **`src/data_processing.py`:** Employs the `clean_raw_minute_data` function for final sorting and deduplication.
-    *   **`exchange_calendars` library:** Used to accurately identify market trading days and holidays for gap analysis.
-    *   **`src/config.py`:** Provides market-specific parameters like `MARKET_OPEN_TIME`, `MARKET_CLOSE_TIME`, `MARKET_TIMEZONE`, and `EXCHANGE_CALENDAR_NAME`.
-*   **Process Flow:**
-    *   **Load Existing Data:** Reads the current `data/raw/nvda_minute.csv` to establish the existing data range.
-    *   **Fetch Recent Data:** Calls `fetch_historical_data` to retrieve any new minute-level data from the last recorded timestamp in the file up to the current moment.
-    *   **Identify Gaps:** Iterates through the entire historical range, considering market trading days and hours (excluding weekends and holidays), to pinpoint any missing minute bars.
-    *   **Fill Gaps:** For each identified gap, it makes targeted calls to `fetch_historical_data` to retrieve the missing data. These requests are also parallelized.
-    *   **Merge and Clean:** After all new and missing data is fetched, the entire dataset is reloaded, merged, and then passed to `clean_raw_minute_data` for a final sort and deduplication, ensuring data integrity.
-    *   **Save:** The fully updated, sorted, and deduplicated dataset is saved back to `data/raw/nvda_minute.csv`.
-*   **Execution:** This script is designed to be run periodically (e.g., via a scheduled task or cron job) using `python src/data_updater.py`, typically orchestrated by `update_data.bat`.
+    *   **`src/ingestion/tws_historical.py`:** Implements the IB/TWS historical ingestion core, used by the agent to pull new minute data.
+    *   **`src/ingestion/curated_minute.py`:** Provides `run_transform_minute_bars` and the curated-minute CSV snapshot.
+    *   **`src/data_processing.py`:** Provides `clean_raw_minute_data`, `convert_minute_to_timeframe`, `prepare_keras_input_data`, and `fill_gaps`.
+    *   **`analyze_gaps.py`:** Standalone script invoked by the agent to detect long weekday gaps in raw minute data.
+    *   **`src/config.py`:** Provides paths, IB connection settings, and market parameters.
+*   **Process Flow (high level):**
+    *   **Ingest New Data:** Calls the ingestion core to append minute-level NVDA data since a configured start date into `data/raw/nvda_minute.csv`.
+    *   **Clean & Deduplicate:** Runs `clean_raw_minute_data` on the raw CSV.
+    *   **Gap Analysis & Filling:** Executes `analyze_gaps.py` to produce a gaps JSON, then applies `fill_gaps` to synthesize small missing intervals via forward fill.
+    *   **Curated-Minute Snapshot:** Calls `run_transform_minute_bars` to write a curated-minute CSV under `data/processed/`.
+    *   **Resample & Add Features:** Resamples curated minutes to the configured hourly frequency and engineers features for training.
+*   **Execution:** This module is designed to be run periodically (e.g., via Task Scheduler or cron) using `python src/daily_data_agent.py`. It is also a good target for Windows helper scripts like `update_data.bat`.
 
 ## 2. Minute-to-Hourly Conversion (`src/data_processing.py`):
 

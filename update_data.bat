@@ -7,12 +7,8 @@ REM Activate the Python virtual environment
 echo Activating virtual environment...
 call .\venv\Scripts\activate
 
-REM Run the data updater script
-echo Running data updater...
-python src/data_updater.py
-
-REM Run the data processing script
-echo Running data processing...
-python src/data_processing.py
+REM Run the daily data pipeline agent (ingestion, cleaning, gaps, curation, features)
+echo Running daily data pipeline agent...
+python src/daily_data_agent.py
 
 echo Data update and processing complete.

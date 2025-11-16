@@ -71,7 +71,7 @@ Several scripts manage ingestion of NVDA minute-level data from Interactive Brok
 - One-off IB ingestion of NVDA minute data (uses IB connection settings from `src/config.py`):
 
   ```bash
-  python src/data_ingestion.py
+  python -m src.data_ingestion --symbol NVDA --start 2024-01-01 --end 2024-02-01
   ```
 
 - Daily data pipeline agent that chains ingestion, cleaning, gap analysis/filling, and resampling/feature engineering:
@@ -82,19 +82,13 @@ Several scripts manage ingestion of NVDA minute-level data from Interactive Brok
 
   Add `--skip-ingestion` for dry runs that operate only on existing raw data.
 
-- Alternative historical data updater (more focused on incremental update & cleanup):
-
-  ```bash
-  python src/data_updater.py
-  ```
-
-- Windows helper script that runs the data updater and then hourly processing:
+- Windows helper script that runs the daily pipeline:
 
   ```bat
   update_data.bat
   ```
 
-  This calls `python src/data_updater.py` and `python src/data_processing.py` in sequence.
+  This calls `python src/daily_data_agent.py` using the active virtual environment.
 
 ### Training, experiments, and evaluation
 
@@ -234,50 +228,55 @@ When changing directory layout, hyperparameters, or IB settings, update `src/con
 
 ### Data ingestion and raw data management
 
-#### `src/data_ingestion.py`
+#### `src/ingestion/` and `src/data_ingestion.py`
 
-This module handles asynchronous ingestion of historical data from IB/TWS into `RAW_DATA_CSV` (default `data/raw/nvda_minute.csv`). Key pieces:
+The TWS/IB ingestion core lives under the `src/ingestion/` package:
 
-- Uses `ib_insync` and IB’s `reqHistoricalDataAsync` to fetch OHLC bars.
-- `_get_latest_timestamp_from_csv(...)` reads the last `DateTime` from the existing CSV to resume from where the previous run left off.
-- `fetch_historical_data(...)`:
-  - Connects to TWS using `TWS_HOST`, `TWS_PORT`, `TWS_CLIENT_ID` and builds a `Stock`/`Forex`/`CFD`/`Future` contract based on `NVDA_CONTRACT_DETAILS`.
-  - Computes an effective concurrency level (`effective_concurrency`) based on IB pacing rules and `TWS_MAX_CONCURRENT_REQUESTS`.
-  - Walks backwards in daily chunks from `end_date` to `start_date` (or to the last CSV timestamp if `strict_range=False`), requesting 1-day windows and aggregating them in batches before writing to CSV.
-  - Writes a canonical `DateTime,Open,High,Low,Close` CSV, ensuring chronological order and limited concurrency.
+- `src/ingestion/tws_historical.py` implements the asynchronous ingestion of historical data from IB/TWS into `RAW_DATA_CSV` (default `data/raw/nvda_minute.csv`). Key pieces:
+  - Uses `ib_insync` and IB’s `reqHistoricalDataAsync` to fetch OHLC bars.
+  - `_get_latest_timestamp_from_csv(...)` reads the last `DateTime` from the existing CSV to resume from where the previous run left off.
+  - `fetch_historical_data(...)`:
+    - Connects to TWS using `TWS_HOST`, `TWS_PORT`, `TWS_CLIENT_ID` and builds a `Stock`/`Forex`/`CFD`/`Future` contract based on `NVDA_CONTRACT_DETAILS`.
+    - Computes an effective concurrency level (`effective_concurrency`) based on IB pacing rules and `TWS_MAX_CONCURRENT_REQUESTS`.
+    - Walks backwards in daily chunks from `end_date` to `start_date` (or to the last CSV timestamp if `strict_range=False`), requesting 1-day windows and aggregating them in batches before writing to CSV.
+    - Writes a canonical `DateTime,Open,High,Low,Close` CSV, ensuring chronological order and limited concurrency.
+  - `trigger_historical_ingestion(...)` is a small convenience wrapper around `fetch_historical_data` that is suitable for CLI usage and orchestration.
 
-This module is heavily exercised by `tests/test_data_ingestion.py`, which mocks IB and `pandas` utilities to assert call patterns and CSV writes.
+- `src/ingestion/curated_minute.py` defines the curated-minute layer:
+  - `CURATED_MINUTE_PATH` (currently `data/processed/nvda_minute_curated.csv`) is a snapshot of cleaned, gap-handled minute data.
+  - `run_transform_minute_bars("NVDA")` cleans `RAW_DATA_CSV` (via `clean_raw_minute_data(...)`) and writes canonical `DateTime,Open,High,Low,Close` columns to `CURATED_MINUTE_PATH`.
+  - `get_raw_bars(...)` and `get_curated_bars(...)` are small helpers that load and optionally time-filter these CSVs.
 
-#### `src/data_updater.py`
+- `src/data_ingestion.py` is now a thin wrapper around this core, re-exporting `_get_latest_timestamp_from_csv`, `fetch_historical_data`, and `trigger_historical_ingestion` so existing imports and the `python src/data_ingestion.py` CLI keep working.
 
-`update_historical_data()` orchestrates an incremental historical update:
+`tests/test_data_ingestion.py` targets the ingestion core by patching `IB` and `util.df` in `src.ingestion.tws_historical` while still importing `fetch_historical_data` from `src.data_ingestion`.
 
-- Loads existing `RAW_DATA_CSV` into a time-indexed DataFrame, deduplicating by `DateTime`.
-- Uses `_get_latest_timestamp_from_csv(...)` to determine the new fetch start time.
-- Calls `fetch_historical_data(...)` to append new minute bars up to `now`.
-- After fetching, reloads the full dataset and performs a final sort/deduplication via `clean_raw_minute_data(...)` from `src.data_processing`.
-- Contains (currently commented-out) logic for detailed exchange-calendar-based gap filling using `exchange_calendars` and market hours from `src.config`.
+#### Daily pipeline vs. one-off ingestion
 
-`update_data.bat` is built around this script, followed by a processing step.
+The preferred operational entrypoint for keeping data up to date is `src/daily_data_agent.py`, which wraps the ingestion core, gap analysis/filling, curated-minute generation, and resampling/feature engineering into one sequence.
+
+`update_data.bat` is a Windows helper script that activates the virtual environment and runs `python src/daily_data_agent.py`.
 
 #### `src/daily_data_agent.py`
 
-This module is the high-level “daily pipeline agent” that ties multiple tools together:
+This module is the high-level “daily pipeline agent” that ties multiple tools together and now orchestrates the entire raw → curated-minute → hourly flow:
 
 - `run_gap_analysis()` shell-executes `analyze_gaps.py` on `RAW_DATA_CSV`, writing gap metadata to `GAP_ANALYSIS_OUTPUT_JSON` (under `PROCESSED_DATA_DIR`).
 - `smart_fill_gaps()` reloads the raw CSV, applies `fill_gaps(...)` from `src.data_processing` using gap metadata, and writes a gap-filled CSV back.
-- `ingest_new_data()` wraps `fetch_historical_data(...)` to pull new minute data since a default start date.
+- `ingest_new_data()` wraps the ingestion core (`fetch_historical_data(...)` from `src.ingestion`) to pull new minute data since a default start date into `RAW_DATA_CSV`.
+- `run_transform_minute_bars("NVDA")` (imported from `src.ingestion`) creates a curated-minute snapshot at `CURATED_MINUTE_PATH` from the cleaned, gap-handled raw data.
 - `resample_and_add_features()`:
   - Ensures `PROCESSED_DATA_DIR` exists.
-  - Calls `convert_minute_to_timeframe(...)` to resample minute NVDA data to the configured `FREQUENCY` (e.g. `15min`, `60min`).
+  - Calls `convert_minute_to_timeframe(CURATED_MINUTE_PATH, FREQUENCY, PROCESSED_DATA_DIR)` to resample curated minute NVDA data to the configured `FREQUENCY` (e.g. `15min`, `60min`).
   - Uses `FEATURES_TO_USE_OPTIONS[0]` and `prepare_keras_input_data(...)` to engineer features for the configured frequency.
 - `run_daily_pipeline(skip_ingestion=False)` wires everything into one sequence:
   1. Optionally ingest new raw data from IB.
   2. Clean and deduplicate raw minute data.
   3. Run gap analysis and fill small weekday gaps.
-  4. Resample and engineer features for training.
+  4. Create a curated-minute snapshot via `run_transform_minute_bars`.
+  5. Resample curated minutes to hourly and engineer features for training.
 
-This is the best entry point for a once-per-day maintenance job.
+This is the best entry point for a once-per-day maintenance job: it leaves you with both up-to-date curated-minute data and hourly feature-ready CSVs under `data/processed/`.
 
 ---
 

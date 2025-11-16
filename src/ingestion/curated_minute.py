@@ -98,3 +98,36 @@ def get_curated_bars(symbol: str, start: Optional[datetime] = None, end: Optiona
     """
     # symbol is accepted for future use; we only support NVDA today.
     return _load_bars(CURATED_MINUTE_PATH, start, end)
+
+
+def main() -> None:
+    """CLI entrypoint for curated-minute transform.
+
+    Usage (from repo root):
+
+        python -m src.ingestion.curated_minute --symbol NVDA
+
+    The symbol argument is currently accepted for future compatibility but only
+    NVDA is supported.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "Run the raw→curated minute-bar transform. This cleans RAW_DATA_CSV "
+            "and writes a curated-minute snapshot under PROCESSED_DATA_DIR."
+        )
+    )
+    parser.add_argument(
+        "--symbol",
+        default="NVDA",
+        help="Symbol to transform (currently NVDA-only).",
+    )
+
+    args = parser.parse_args()
+    path = run_transform_minute_bars(args.symbol)
+    print(f"Curated minute data written to {path}")
+
+
+if __name__ == "__main__":
+    main()

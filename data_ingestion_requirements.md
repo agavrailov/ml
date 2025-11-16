@@ -141,19 +141,23 @@ Re-running the transform for the same symbol/date(s) must either:
 **FR-9: Historical ingestion CLI**  
 Provide a CLI entrypoint that can be invoked from the repo root, e.g.:
 
-- `python -m src.data_ingestion_cli trigger-historical --symbol NVDA --start 2024-01-01 --end 2024-02-01`
+- `python -m src.data_ingestion --symbol NVDA --start 2024-01-01 --end 2024-02-01`
 
 For v1, this can be a simple `if __name__ == "__main__"` block or a small `click`/`argparse`-based CLI. It should:
 
 - Accept `symbol`, `start`, `end`, and optional `bar_size` parameters.
 - Call `trigger_historical_ingestion` (or equivalent) under the hood.
 
+_In this repo, this is implemented by the `__main__` handler in `src/data_ingestion.py`, which wraps `trigger_historical_ingestion(...)` via an `argparse` CLI._
+
 **FR-10: Transform CLI**  
 Provide a CLI entrypoint for transforming raw to curated bars, e.g.:
 
-- `python -m src.data_transform_cli run-minute-transform --symbol NVDA`
+- `python -m src.ingestion.curated_minute --symbol NVDA`
 
-This can be invoked directly or from existing scripts like `daily_data_agent` or `data_updater`.
+This can be invoked directly or from existing scripts like `daily_data_agent`.
+
+_In this repo, this is implemented by the `__main__` handler in `src/ingestion/curated_minute.py`, which calls `run_transform_minute_bars(...)` via an `argparse` CLI._
 
 ### 2.4 Programmatic Interfaces for Internal Use
 
@@ -208,8 +212,8 @@ Existing scripts should continue to function after the refactor, either by:
 
 Priority is:
 
-- `src/data_ingestion.py` (likely becomes a thin wrapper over the refactored ingestion logic).
-- `src/daily_data_agent.py` and `src/data_updater.py` (orchestrate ingestion and processing).
+- `src/data_ingestion.py` (thin wrapper over the refactored ingestion logic and historical ingestion CLI).
+- `src/daily_data_agent.py` (orchestrates ingestion, gap handling, curated-minute generation, and resampling/feature engineering).
 
 
 ## 4. Testing Requirements (Repo-Specific)
