@@ -1,252 +1,40 @@
-import sys
-import os
-import pandas as pd
-from ib_insync import IB, Stock, util, Forex, CFD, Contract, Future
-from datetime import datetime, timedelta
-import asyncio
+"""Backwards-compatible CLI and wrapper for TWS historical ingestion.
 
-# Maximum simultaneous historical data requests as per IB docs.
-# See: "The maximum number of simultaneous open historical data requests from the API is 50."
-_IB_HIST_MAX_SIMULT_REQUESTS = 50
+The core ingestion logic now lives in :mod:`src.ingestion.tws_historical`.
+This module is kept as a thin wrapper to preserve existing imports and
+command-line usage.
+"""
 
-# Bar sizes considered "small" for pacing purposes (30 seconds or less).
-_SMALL_BAR_SIZES = {
-    "1 secs",
-    "2 secs",
-    "3 secs",
-    "5 secs",
-    "10 secs",
-    "15 secs",
-    "30 secs",
-}
+from datetime import datetime
 
-def _get_latest_timestamp_from_csv(file_path):
-    """
-    Reads the latest DateTime from the CSV file.
-    Returns None if the file does not exist or is empty.
-    """
-    if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
-        return None
-    
-    try:
-        # Read only the last line to get the latest timestamp efficiently
-        with open(file_path, 'rb') as f:
-            f.seek(-2, os.SEEK_END) # Jump to the second last byte
-            while f.read(1) != b'\n': # Until newline is found
-                f.seek(-2, os.SEEK_CUR) # Jump back two bytes
-            last_line = f.readline().decode().strip()
-        
-        print(f"DEBUG: Last line read from {file_path}: '{last_line}'")
-        # Parse the DateTime from the last line
-        latest_dt_str = last_line.split(',')[0]
-        print(f"DEBUG: Extracted DateTime string: '{latest_dt_str}'")
-        return datetime.strptime(latest_dt_str, '%Y-%m-%d %H:%M:%S')
-    except Exception as e:
-        print(f"Error reading latest timestamp from {file_path}: {e}")
-        return None
+from src.ingestion.tws_historical import (  # type: ignore
+    _get_latest_timestamp_from_csv,
+    fetch_historical_data,
+    trigger_historical_ingestion,
+)
+from src.config import NVDA_CONTRACT_DETAILS  # type: ignore
 
-# Add the project root to the Python path to import src modules
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.config import RAW_DATA_CSV, TWS_HOST, TWS_PORT, TWS_CLIENT_ID, NVDA_CONTRACT_DETAILS, TWS_MAX_CONCURRENT_REQUESTS, DATA_BATCH_SAVE_SIZE
+__all__ = [
+    "_get_latest_timestamp_from_csv",
+    "fetch_historical_data",
+    "trigger_historical_ingestion",
+]
 
-async def _fetch_single_day_data(ib, contract, end_date_str, barSizeSetting, semaphore):
-    """Helper function to fetch data for a single day with rate limiting and return as DataFrame.
-
-    Pacing considerations:
-        * IB limits simultaneous historical requests to 50.
-        * For small bar sizes (<= 30 seconds), additional pacing rules apply
-          (e.g. no more than 6 requests for the same contract within 2 seconds).
-
-    We rely on a shared semaphore to cap concurrent requests below IB's hard
-    limit and keep effective concurrency modest for small bars.
-    """
-    async with semaphore:
-        print(f"Requesting data ending {end_date_str} for duration '1 D'...")
-        bars = await ib.reqHistoricalDataAsync(
-            contract,
-            endDateTime=end_date_str,
-            durationStr='1 D',
-            barSizeSetting=barSizeSetting,
-            whatToShow='TRADES',
-            useRTH=False,
-            formatDate=1
-        )
-        if bars:
-            print(f"Fetched {len(bars)} bars ending {end_date_str}.")
-            df = util.df(bars)
-            # Rename columns to match expected format (DateTime, Open, High, Low, Close)
-            df = df[['date', 'open', 'high', 'low', 'close']]
-            df.columns = ['DateTime', 'Open', 'High', 'Low', 'Close']
-            # Ensure DateTime is in the correct format
-            df['DateTime'] = df['DateTime'].dt.strftime('%Y-%m-%d %H:%M:%S')
-            return df
-        else:
-            print(f"No bars received for period ending {end_date_str}.")
-            return pd.DataFrame() # Return empty DataFrame if no bars
-
-async def fetch_historical_data(
-    contract_details: dict,
-    end_date: datetime,
-    start_date: datetime,
-    barSizeSetting: str = "1 min",
-    file_path: str = RAW_DATA_CSV,
-    strict_range: bool = False,
-) -> None:
-    """Fetch historical data from IB and append it to a CSV file.
-
-    Data is requested in daily chunks, optionally respecting existing data in
-    ``file_path`` to avoid re-downloading overlapping periods.
-
-    Args:
-        contract_details: Contract description (symbol, secType, exchange, currency).
-        end_date: End of the requested period (exclusive).
-        start_date: Start of the requested period if no prior data exists, or
-            when ``strict_range=True``.
-        barSizeSetting: IB bar size (e.g. ``"1 min"``, ``"5 mins"``, ``"1 hour"``).
-        file_path: CSV path where fetched data will be appended.
-        strict_range: When ``True``, ignore existing CSV contents and always use
-            ``start_date``/``end_date`` as the effective range.
-    """
-    ib = IB()
-    
-    try:
-        await ib.connectAsync(TWS_HOST, TWS_PORT, TWS_CLIENT_ID)
-        print(f"Connected to IB TWS/Gateway on {TWS_HOST}:{TWS_PORT} with Client ID {TWS_CLIENT_ID}")
-
-        # Create contract based on secType
-        sec_type = contract_details.get('secType', 'STK')
-        if sec_type == 'STK':
-            contract = Stock(
-                symbol=contract_details['symbol'],
-                exchange=contract_details['exchange'],
-                currency=contract_details['currency']
-            )
-        elif sec_type == 'CASH':
-            contract = Forex(
-                pair=f"{contract_details['symbol']}{contract_details['currency']}"
-            )
-        elif sec_type == 'CFD':
-            contract = CFD(
-                symbol=contract_details['symbol'],
-                exchange=contract_details['exchange'],
-                currency=contract_details['currency']
-            )
-        elif sec_type == 'FUT':
-            contract = Future(
-                symbol=contract_details['symbol'],
-                lastTradeDateOrContractMonth=contract_details.get('lastTradeDateOrContractMonth'),
-                exchange=contract_details['exchange'],
-                currency=contract_details['currency']
-            )
-        else:
-            raise ValueError(f"Unsupported security type: {sec_type}")
-        
-        # Ensure the contract details are resolved
-        print(f"Qualifying contract: {contract.symbol}...")
-        await ib.qualifyContractsAsync(contract)
-
-        # Determine the actual start date for fetching
-        actual_fetch_start_date = start_date
-        if not strict_range:
-            latest_timestamp_in_file = _get_latest_timestamp_from_csv(file_path)
-            if latest_timestamp_in_file:
-                # Start fetching from 1 minute after the latest timestamp in the file
-                actual_fetch_start_date = latest_timestamp_in_file + timedelta(minutes=1)
-                print(f"Latest data in file is {latest_timestamp_in_file}. Fetching new data from {actual_fetch_start_date}.")
-            else:
-                print(f"No existing data found in {file_path}. Fetching from initial start date {start_date}.")
-        else:
-            print(f"Strict range fetching: from {start_date} to {end_date}.")
-
-        if actual_fetch_start_date >= end_date:
-            print("Data is already up to date for the specified range. No new data to fetch.")
-            return
-
-        print(f"Fetching historical data for {contract.symbol}/{contract.currency} from {actual_fetch_start_date.strftime('%Y%m%d %H:%M:%S')} to {end_date.strftime('%Y%m%d %H:%M:%S')}...")
-
-        # Determine effective concurrency based on IB pacing guidance.
-        # - Hard cap at 50 simultaneous historical requests.
-        # - For small bars (<= 30 secs) we keep concurrency very low to avoid
-        #   6-requests-in-2-seconds pacing violations.
-        if barSizeSetting in _SMALL_BAR_SIZES:
-            effective_concurrency = min(TWS_MAX_CONCURRENT_REQUESTS, 2, _IB_HIST_MAX_SIMULT_REQUESTS)
-        else:
-            # For barSize >= 1 min, IB has lifted the hard pacing limits but
-            # still implements soft throttling. We cap by both user config and
-            # the documented 50-request ceiling.
-            effective_concurrency = min(TWS_MAX_CONCURRENT_REQUESTS, _IB_HIST_MAX_SIMULT_REQUESTS)
-
-        if effective_concurrency <= 0:
-            raise ValueError("TWS_MAX_CONCURRENT_REQUESTS must be >= 1")
-
-        print(f"Using effective_concurrency={effective_concurrency} (configured={TWS_MAX_CONCURRENT_REQUESTS}, barSize='{barSizeSetting}')")
-
-        # Generate all daily end dates for requests in reverse chronological order
-        request_dates = []
-        current_date = end_date
-        while current_date > actual_fetch_start_date:
-            request_dates.append(current_date)
-            current_date -= timedelta(days=1)
-        
-        # Create a semaphore to limit concurrent requests according to
-        # effective pacing-aware concurrency.
-        semaphore = asyncio.Semaphore(effective_concurrency)
-        
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        file_exists = os.path.exists(file_path)
-        total_bars_fetched = 0
-        
-        # Process requests in batches for saving
-        for i in range(0, len(request_dates), DATA_BATCH_SAVE_SIZE):
-            batch_dates = request_dates[i:i + DATA_BATCH_SAVE_SIZE]
-            
-            tasks = []
-            for req_date in batch_dates:
-                end_date_str = req_date.strftime('%Y%m%d %H:%M:%S')
-                tasks.append(_fetch_single_day_data(ib, contract, end_date_str, barSizeSetting, semaphore))
-            
-            # Run tasks concurrently for the current batch
-            results_batch = await asyncio.gather(*tasks)
-            
-            # Concatenate all DataFrames in the batch
-            dfs_to_append = [df for df in results_batch if not df.empty]
-            if dfs_to_append:
-                combined_df_batch = pd.concat(dfs_to_append)
-                combined_df_batch.sort_values('DateTime', inplace=True) # Ensure chronological order
-                
-                combined_df_batch.to_csv(file_path, mode='a', header=not file_exists, index=False)
-                file_exists = True
-                total_bars_fetched += len(combined_df_batch)
-                print(f"Appended {len(combined_df_batch)} bars (batch {i//DATA_BATCH_SAVE_SIZE + 1}) to {file_path}")
-
-        if total_bars_fetched == 0:
-            print("No historical data received for the entire period.")
-            return
-
-        print(f"Successfully fetched a total of {total_bars_fetched} bars and saved to {file_path}")
-
-    except Exception as e:
-        print(f"An error occurred: {e}")
-    finally:
-        if ib and hasattr(ib, 'disconnect') and callable(ib.disconnect):
-            try:
-                await ib.disconnect()
-                print("Disconnected from IB TWS/Gateway.")
-            except TypeError:
-                print("Warning: TypeError encountered during IB TWS/Gateway disconnection. Connection might already be closed.")
-        else:
-            print("Could not disconnect from IB TWS/Gateway (ib object or disconnect method not available).")
 
 if __name__ == "__main__":
-    print("Running TWS data ingestion for NVDA...")
-    
-    # Define the date range for data fetching (January 1, 2024, until now)
-    end_date = datetime.now()
-    default_start_date = datetime(2024, 1, 1) # Default for standalone execution
+    # Preserve the previous behavior: run a historical ingestion for NVDA from
+    # 2024-01-01 until now into the default RAW_DATA_CSV.
+    print("Running TWS data ingestion for NVDA via trigger_historical_ingestion()...")
 
-    asyncio.run(fetch_historical_data(
-        contract_details=NVDA_CONTRACT_DETAILS,
-        end_date=end_date,
-        start_date=default_start_date
-    ))
+    end_date = datetime.now()
+    default_start_date = datetime(2024, 1, 1)
+
+    # Use the new high-level API; this currently still delegates to the same
+    # underlying implementation as before, but is a stable hook for future
+    # refactors.
+    trigger_historical_ingestion(
+        symbols=[NVDA_CONTRACT_DETAILS["symbol"]],
+        start=default_start_date,
+        end=end_date,
+    )

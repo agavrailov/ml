@@ -12,7 +12,11 @@ from src.config import (
     FREQUENCY,
     NVDA_CONTRACT_DETAILS,
 )
-from src.data_ingestion import fetch_historical_data
+from src.ingestion import (
+    fetch_historical_data,
+    CURATED_MINUTE_PATH,
+    run_transform_minute_bars,
+)
 from src.data_processing import (
     clean_raw_minute_data,
     convert_minute_to_timeframe,
@@ -126,11 +130,11 @@ def smart_fill_gaps() -> None:
 
 
 def resample_and_add_features() -> None:
-    """Convert minute data to hourly and add features for FREQUENCY."""
+    """Convert curated minute data to hourly and add features for FREQUENCY."""
     os.makedirs(PROCESSED_DATA_DIR, exist_ok=True)
 
-    print(f"[agent] Converting minute data to {FREQUENCY} and saving to processed dir.")
-    convert_minute_to_timeframe(RAW_DATA_CSV, FREQUENCY, PROCESSED_DATA_DIR)
+    print(f"[agent] Converting curated minute data to {FREQUENCY} and saving to processed dir.")
+    convert_minute_to_timeframe(CURATED_MINUTE_PATH, FREQUENCY, PROCESSED_DATA_DIR)
 
     from src.config import FEATURES_TO_USE_OPTIONS, get_hourly_data_csv_path
 
@@ -175,7 +179,11 @@ def run_daily_pipeline(skip_ingestion: bool = False) -> None:
     print("[agent] Analyzing and filling gaps...")
     smart_fill_gaps()
 
-    # 4) Resample to hourly and engineer features
+    # 4) Create curated-minute snapshot from cleaned, gap-filled raw data
+    print("[agent] Creating curated-minute snapshot...")
+    run_transform_minute_bars("NVDA")
+
+    # 5) Resample to hourly and engineer features
     resample_and_add_features()
 
     print("[agent] --- Daily Data Pipeline Agent completed ---")
