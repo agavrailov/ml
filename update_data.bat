@@ -9,6 +9,6 @@ call .\venv\Scripts\activate
 
 REM Run the daily data pipeline agent (ingestion, cleaning, gaps, curation, features)
 echo Running daily data pipeline agent...
-python src/daily_data_agent.py
+python -m src.daily_data_agent
 
 echo Data update and processing complete.

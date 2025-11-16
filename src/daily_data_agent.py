@@ -108,23 +108,104 @@ async def ingest_new_data() -> None:
     )
 
 
-def smart_fill_gaps() -> None:
-    """Apply gap analysis + fill_gaps on RAW_DATA_CSV.
+async def _backfill_gaps_from_tws(gaps: list[dict]) -> None:
+    """Attempt to backfill each identified gap using TWS historical data.
 
-    This wires the "gap agent" into the daily data pipeline agent.
+    For each gap, we request historical minute bars from IB/TWS using the
+    ingestion core (`fetch_historical_data`) with `strict_range=True` so that
+    only the missing window is fetched. Any failures are logged by the
+    underlying ingestion code.
+    """
+    if not gaps:
+        return
+
+    print(f"[agent] Attempting TWS backfill for {len(gaps)} gaps...")
+
+    for gap in gaps:
+        try:
+            start = pd.to_datetime(gap["start"])
+            end = pd.to_datetime(gap["end"])
+        except Exception as e:
+            print(f"[agent] Warning: could not parse gap entry {gap}: {e}")
+            continue
+
+        # Guard against obviously invalid ranges.
+        if start >= end:
+            print(f"[agent] Skipping gap with non-positive range: {gap}")
+            continue
+
+        print(
+            f"[agent] TWS backfill for gap from {start} to {end} "
+            f"(duration {pd.to_timedelta(gap.get('duration', 'unknown'))})."
+        )
+
+        await fetch_historical_data(
+            contract_details=NVDA_CONTRACT_DETAILS,
+            end_date=end,
+            start_date=start,
+            file_path=RAW_DATA_CSV,
+            strict_range=True,
+        )
+
+
+def smart_fill_gaps() -> None:
+    """Apply TWS-based backfill + forward-fill gap handling on RAW_DATA_CSV.
+
+    Strategy:
+        1. Run `analyze_gaps.py` to detect long weekday gaps.
+        2. For each gap, attempt to backfill from TWS using historical
+           ingestion with `strict_range=True`.
+        3. Re-run gap analysis; any remaining gaps are assumed to be genuine
+           upstream holes and are filled via `fill_gaps` (forward-fill).
     """
     if not os.path.exists(RAW_DATA_CSV):
         print(f"[agent] RAW_DATA_CSV not found at {RAW_DATA_CSV}; skipping gap filling.")
         return
 
+    # 1) Initial gap detection.
     gaps = run_gap_analysis()
+    if not gaps:
+        print("[agent] No long weekday gaps detected; skipping backfill/fill.")
+        return
 
     if not os.path.exists(RAW_DATA_CSV):
         print(f"[agent] RAW_DATA_CSV not found at {RAW_DATA_CSV} after gap analysis; skipping.")
         return
 
+    # 2) Attempt TWS backfill for identified gaps.
+    try:
+        asyncio.run(_backfill_gaps_from_tws(gaps))
+    except RuntimeError as e:
+        # In case we're already inside an event loop (unlikely here), just log.
+        print(f"[agent] Warning: could not run TWS backfill coroutine: {e}")
+
+    # 3) Re-run gap analysis to see what remains after TWS backfill.
+    remaining_gaps = run_gap_analysis()
+
+    initial_gap_count = len(gaps)
+    remaining_gap_count = len(remaining_gaps)
+    tws_fixed_count = max(initial_gap_count - remaining_gap_count, 0)
+
+    print(
+        "[agent] Gap summary: total_detected={initial}, "
+        "fixed_by_tws={fixed}, forward_filled={ff}".format(
+            initial=initial_gap_count,
+            fixed=tws_fixed_count,
+            ff=remaining_gap_count,
+        )
+    )
+
+    if not remaining_gaps:
+        print("[agent] No remaining long weekday gaps after TWS backfill; skipping forward-fill.")
+        return
+
+    # 4) Forward-fill remaining gaps as a fallback.
+    if not os.path.exists(RAW_DATA_CSV):
+        print(f"[agent] RAW_DATA_CSV not found at {RAW_DATA_CSV} before forward-fill; skipping.")
+        return
+
     df = pd.read_csv(RAW_DATA_CSV, parse_dates=["DateTime"])
-    df_filled = fill_gaps(df, gaps)
+    df_filled = fill_gaps(df, remaining_gaps)
     df_filled.to_csv(RAW_DATA_CSV, index=False)
     print("[agent] Saved gap-filled raw data back to RAW_DATA_CSV.")
 

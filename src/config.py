@@ -110,7 +110,7 @@ class IbConfig:
     """IB/TWS connection and data ingestion settings."""
 
     host: str = field(default_factory=lambda: os.getenv("TWS_HOST", "127.0.0.1"))
-    port: int = int(os.getenv("TWS_PORT", "7497"))
+    port: int = int(os.getenv("TWS_PORT", "7496"))
     client_id: int = int(os.getenv("TWS_CLIENT_ID", "1"))
     max_concurrent_requests: int = 50
     data_batch_save_size: int = 7

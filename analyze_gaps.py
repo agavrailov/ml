@@ -9,10 +9,19 @@ def analyze_gaps(file_path, output_json_path):
         df = pd.read_csv(file_path, parse_dates=['DateTime'])
     except Exception as e:
         print(f"Error reading CSV: {e}")
+        # On read error, clear any existing gap JSON so stale gaps are not reused.
+        try:
+            with open(output_json_path, "w") as f:
+                json.dump([], f, indent=4)
+        except Exception:
+            pass
         return
 
     if df.empty:
         print("DataFrame is empty, no gaps to analyze.")
+        # Overwrite any existing output with an empty list to avoid stale gaps.
+        with open(output_json_path, "w") as f:
+            json.dump([], f, indent=4)
         return
 
     df.sort_values('DateTime', inplace=True)
@@ -48,6 +57,9 @@ def analyze_gaps(file_path, output_json_path):
 
     if not missing_trading_day_gaps:
         print("No potentially missing trading days (gaps > 9 hours during weekdays) found in the data.")
+        # Ensure the JSON file does not retain stale gaps from previous runs.
+        with open(output_json_path, 'w') as f:
+            json.dump([], f, indent=4)
     else:
         print(f"Found {len(missing_trading_day_gaps)} potentially missing trading days (gaps > 9 hours during weekdays). Details saved to {output_json_path}")
         
