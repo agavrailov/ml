@@ -74,6 +74,12 @@ def train_model(
 
     df_featured, feature_cols = prepare_keras_input_data(hourly_data_path, features_to_use)
 
+    # Restrict training data to records from 2023-01-01 onwards.
+    # Adjust this cutoff when you want to change the training window.
+    df_featured["Time"] = pd.to_datetime(df_featured["Time"])
+    cutoff_date = pd.Timestamp("2023-01-01")
+    df_featured = df_featured[df_featured["Time"] >= cutoff_date].copy()
+
     # Split data into training and validation sets
     split_index = int(len(df_featured) * TR_SPLIT)
     df_train_raw = df_featured.iloc[:split_index].copy()
@@ -195,8 +201,16 @@ if __name__ == "__main__":
         best_hps_overall = {}
         best_hps_path = 'best_hyperparameters.json'
         if os.path.exists(best_hps_path):
-            with open(best_hps_path, 'r') as f:
-                best_hps_overall = json.load(f)
+            try:
+                with open(best_hps_path, 'r') as f:
+                    content = f.read().strip()
+                    if content:
+                        best_hps_overall = json.loads(content)
+                    else:
+                        best_hps_overall = {}
+            except json.JSONDecodeError:
+                # If file is corrupt/partial, ignore and start fresh
+                best_hps_overall = {}
         else:
             best_hps_overall = {}
 

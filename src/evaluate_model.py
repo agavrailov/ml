@@ -140,10 +140,13 @@ def evaluate_model_performance(
     # --- 2. Filter and Prepare Data ---
     df_full_featured, _ = prepare_keras_input_data(hourly_data_csv, features_to_use) # Pass features_to_use
 
-    if len(df_full_featured) < validation_window_size:
-        print(f"Warning: Not enough data ({len(df_full_featured)} rows) for the specified validation window size ({validation_window_size}). Using all available data.")
-        validation_window_size = len(df_full_featured)
+    # Use the last 20% of the available data as the validation/evaluation window.
+    total_rows = len(df_full_featured)
+    if total_rows == 0:
+        print("Error: No data available in hourly feature set for evaluation.")
+        return
 
+    validation_window_size = max(1, int(total_rows * 0.2))
     df_eval_featured = df_full_featured.iloc[-validation_window_size:].copy()
 
     if len(df_eval_featured) < tsteps + ROWS_AHEAD:

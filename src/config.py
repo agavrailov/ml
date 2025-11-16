@@ -170,8 +170,16 @@ def load_tuned_hyperparameters(
     if not os.path.exists(best_hps_path):
         return {}
 
-    with open(best_hps_path, "r") as f:
-        best_hps_data = json.load(f)
+    try:
+        with open(best_hps_path, "r") as f:
+            # Handle empty or invalid JSON by falling back to defaults
+            content = f.read().strip()
+            if not content:
+                return {}
+            best_hps_data = json.loads(content)
+    except json.JSONDecodeError:
+        # If the file is corrupted or partially written, ignore it and use defaults
+        return {}
 
     freq_block = best_hps_data.get(frequency, {})
     return freq_block.get(str(tsteps), {})
