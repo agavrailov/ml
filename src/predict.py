@@ -1,6 +1,7 @@
 import os
 import json
-from typing import Optional
+from dataclasses import dataclass
+from typing import Optional, List
 
 # Silence most TensorFlow C++ and Python-level logs (info/warning)
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")  # 0=all,1=filter INFO,2=filter WARNING,3=filter ERROR
@@ -32,6 +33,128 @@ from src.config import (
     FEATURES_TO_USE_OPTIONS,
 )
 
+
+@dataclass
+class PredictionContext:
+    """Reusable context for batched LSTM predictions.
+
+    Holds the non-stateful prediction model, scaler parameters, and feature
+    metadata so we can run many predictions without rebuilding the model.
+    """
+
+    model: keras.Model
+    scaler_params: dict
+    mean_vals: pd.Series
+    std_vals: pd.Series
+    features_to_use: List[str]
+    tsteps: int
+
+
+def build_prediction_context(
+    frequency: str,
+    tsteps: int,
+) -> PredictionContext:
+    """Build and return a PredictionContext for a given (frequency, tsteps)."""
+
+    (
+        model_path,
+        _bias_correction_path,
+        features_to_use_trained,
+        lstm_units_trained,
+        n_lstm_layers_trained,
+    ) = get_latest_best_model_path(target_frequency=frequency, tsteps=tsteps)
+
+    if not model_path or not os.path.exists(model_path):
+        raise FileNotFoundError(
+            f"No best model found for frequency {frequency} and TSTEPS {tsteps}. "
+            "Please train a model first."
+        )
+
+    stateful_model = keras.models.load_model(model_path)
+
+    best_hps: dict = {}
+    best_hps_path = "best_hyperparameters.json"
+    if os.path.exists(best_hps_path):
+        try:
+            with open(best_hps_path, 'r') as f:
+                content = f.read().strip()
+                if content:
+                    best_hps_data = json.loads(content)
+                    if frequency in best_hps_data and str(tsteps) in best_hps_data[frequency]:
+                        best_hps = best_hps_data[frequency][str(tsteps)]
+        except json.JSONDecodeError:
+            best_hps = {}
+
+    lstm_units = best_hps.get("lstm_units", lstm_units_trained or LSTM_UNITS)
+    n_lstm_layers = best_hps.get("n_lstm_layers", n_lstm_layers_trained or N_LSTM_LAYERS)
+    optimizer_name = best_hps.get("optimizer_name", "rmsprop")
+    loss_function = best_hps.get("loss_function", "mae")
+
+    if features_to_use_trained:
+        features_to_use = features_to_use_trained
+    else:
+        features_to_use = FEATURES_TO_USE_OPTIONS[0]
+
+    n_features = len(features_to_use)
+    prediction_model = build_lstm_model(
+        input_shape=(tsteps, n_features),
+        lstm_units=lstm_units,
+        batch_size=None,
+        learning_rate=0.001,
+        n_lstm_layers=n_lstm_layers,
+        stateful=False,
+        optimizer_name=optimizer_name,
+        loss_function=loss_function,
+    )
+    load_stateful_weights_into_non_stateful_model(stateful_model, prediction_model)
+
+    scaler_params_path = get_scaler_params_json_path(frequency)
+    if not os.path.exists(scaler_params_path):
+        raise FileNotFoundError(f"Scaler parameters not found at {scaler_params_path}.")
+
+    with open(scaler_params_path, "r") as f:
+        scaler_params = json.load(f)
+    mean_vals = pd.Series(scaler_params["mean"])
+    std_vals = pd.Series(scaler_params["std"])
+
+    return PredictionContext(
+        model=prediction_model,
+        scaler_params=scaler_params,
+        mean_vals=mean_vals,
+        std_vals=std_vals,
+        features_to_use=features_to_use,
+        tsteps=tsteps,
+    )
+
+
+def predict_sequence_batch(
+    ctx: PredictionContext,
+    df_featured: pd.DataFrame,
+) -> np.ndarray:
+    """Vectorized prediction over all valid sliding windows.
+
+    Returns an array of normalized predictions aligned to the *end* of each
+    window. If there are N rows and tsteps=T, the result has length
+    max(N - T + 1, 0).
+    """
+
+    feature_cols = [c for c in df_featured.columns if c != "Time"]
+    values = df_featured[feature_cols].to_numpy(dtype=np.float32)
+    n = len(values)
+    tsteps = ctx.tsteps
+    if n < tsteps:
+        return np.array([], dtype=np.float32)
+
+    n_windows = n - tsteps + 1
+    X = np.stack(
+        [values[i : i + tsteps] for i in range(n_windows)],
+        axis=0,
+    )
+
+    preds = ctx.model.predict(X, batch_size=256, verbose=0)
+    return preds.reshape(-1)
+
+
 def predict_future_prices(
     input_data_df: pd.DataFrame,
     frequency: str = FREQUENCY,
@@ -46,9 +169,11 @@ def predict_future_prices(
 ) -> float:
     """Predict a future price using the latest best LSTM model.
 
-    The function reuses the training-time scaler, rebuilds a non-stateful
-    version of the best stateful model, and returns a single-step price
-    prediction.
+    This convenience wrapper now uses :class:`PredictionContext` and
+    :func:`predict_sequence_batch` under the hood. It builds a context for the
+    requested (frequency, tsteps), runs feature engineering + scaling on the
+    input data, and returns a single-step price prediction for the *last*
+    available window.
 
     Args:
         input_data_df: Raw OHLC input data. Must contain enough history to
@@ -68,98 +193,34 @@ def predict_future_prices(
         The denormalized single-step price prediction.
     """
     if features_to_use is None:
-        features_to_use = FEATURES_TO_USE_OPTIONS[0] # Default to the first option if not provided
+        features_to_use = FEATURES_TO_USE_OPTIONS[0]  # Default feature set if not provided
 
-    # Get the path to the best model for the current frequency and TSTEPS.
-    (
-        model_path,
-        _bias_correction_path,
-        features_to_use_trained,
-        lstm_units_trained,
-        n_lstm_layers_trained,
-    ) = get_latest_best_model_path(target_frequency=frequency, tsteps=tsteps)
+    # Build a reusable prediction context (model + scaler + feature metadata).
+    ctx = build_prediction_context(frequency=frequency, tsteps=tsteps)
 
-    if not model_path or not os.path.exists(model_path):
-        raise FileNotFoundError(
-            f"No best model found for frequency {frequency} and TSTEPS {tsteps}. "
-            "Please train a model first."
-        )
-
-    stateful_model = keras.models.load_model(model_path)
-
-    # Load best hyperparameters to get the correct lstm_units, n_lstm_layers, etc.
-    best_hps = {}
-    best_hps_path = "best_hyperparameters.json"
-    if os.path.exists(best_hps_path):
-        try:
-            with open(best_hps_path, 'r') as f:
-                content = f.read().strip()
-                if content:
-                    best_hps_data = json.loads(content)
-                    if frequency in best_hps_data and str(tsteps) in best_hps_data[frequency]:
-                        best_hps = best_hps_data[frequency][str(tsteps)]
-        except json.JSONDecodeError:
-            # If the file exists but is empty or malformed, fall back to
-            # training-time defaults without failing prediction.
-            best_hps = {}
-
-    # Prefer tuned/trained hyperparameters when available.
-    lstm_units = best_hps.get("lstm_units", lstm_units_trained or LSTM_UNITS)
-    n_lstm_layers = best_hps.get("n_lstm_layers", n_lstm_layers_trained or N_LSTM_LAYERS)
-    optimizer_name = best_hps.get("optimizer_name", "rmsprop")
-    loss_function = best_hps.get("loss_function", "mae")
-
-    # Prefer the features recorded with the best model if not explicitly given.
-    if features_to_use is None and features_to_use_trained:
-        features_to_use = features_to_use_trained
-
-    # Build a non-stateful model for prediction and transfer weights
-    prediction_model = build_lstm_model(
-        input_shape=(tsteps, n_features),
-        lstm_units=lstm_units,
-        batch_size=None, # Non-stateful model does not require batch_size
-        learning_rate=0.001, # Learning rate is not used for prediction model compilation
-        n_lstm_layers=n_lstm_layers,
-        stateful=False, # Always non-stateful for prediction
-        optimizer_name=optimizer_name,
-        loss_function=loss_function
-    )
-    load_stateful_weights_into_non_stateful_model(stateful_model, prediction_model)
-
-    # Load scaler parameters for the current frequency.
-    scaler_params_path = get_scaler_params_json_path(frequency)
-    if not os.path.exists(scaler_params_path):
-        raise FileNotFoundError(f"Scaler parameters not found at {scaler_params_path}.")
-    
-    with open(scaler_params_path, "r") as f:
-        scaler_params = json.load(f)
-    mean_vals = pd.Series(scaler_params["mean"])
-    std_vals = pd.Series(scaler_params["std"])
-
-    # Prepare input data
+    # Prepare input data and features.
     input_data_df_copy = input_data_df.copy()
-    df_featured_input = add_features(input_data_df_copy, features_to_use) # Pass features_to_use
+    df_featured_input = add_features(input_data_df_copy, ctx.features_to_use)
 
     if len(df_featured_input) < tsteps:
         raise ValueError(f"Not enough data after feature engineering to form {tsteps} timesteps.")
-    
+
+    # Keep only the last tsteps rows for a single-window prediction.
     df_featured_input = df_featured_input.tail(tsteps)
 
+    # Normalize using the stored scaler.
     feature_cols = [col for col in df_featured_input.columns if col != 'Time']
-
-    # Normalize the input features using the stored scaler
-    input_normalized_df = apply_standard_scaler(df_featured_input, feature_cols, scaler_params)
+    input_normalized_df = apply_standard_scaler(df_featured_input, feature_cols, ctx.scaler_params)
     input_normalized_features = input_normalized_df[feature_cols]
 
-    # Reshape for non-stateful LSTM: (1, TSTEPS, N_FEATURES)
+    # Shape (1, TSTEPS, N_FEATURES)
     input_reshaped = input_normalized_features.values[np.newaxis, :, :]
 
-    # Make prediction (silent)
-    predictions_normalized = prediction_model.predict(input_reshaped, verbose=0)
+    predictions_normalized = ctx.model.predict(input_reshaped, verbose=0)
     single_prediction_normalized = predictions_normalized[0, 0]
 
-    # Denormalize prediction
-    denormalized_prediction = single_prediction_normalized * std_vals['Open'] + mean_vals['Open']
+    # Denormalize prediction using the stored scaler (Open as target).
+    denormalized_prediction = single_prediction_normalized * ctx.std_vals['Open'] + ctx.mean_vals['Open']
 
     return denormalized_prediction
 

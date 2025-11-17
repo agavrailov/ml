@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Callable, List, Optional
 
 import pandas as pd
+import numpy as np
 
 from src.trading_strategy import StrategyConfig, StrategyState, TradePlan, compute_tp_sl_and_size
 
@@ -179,7 +180,7 @@ def run_backtest(
             # Decision is made at bar i using bar i's Close. Entry happens at
             # bar i+1 Open to avoid the unrealistic assumption that we can
             # always fill at the same bar's Close.
-            predicted_price = prediction_provider(i, row)
+            predicted_price = float(prediction_provider(i, row))
 
             decision_price = float(row["Close"])
 
@@ -195,15 +196,23 @@ def run_backtest(
             else:
                 atr_value = float(cfg.fixed_atr)
 
-            # If ATR or sigma are non-positive/NaN (e.g. warmup period), skip
-            # opening new trades for this bar to avoid unstable sizing.
+            # If any of the core decision inputs are NaN or non-positive where
+            # positivity is required (ATR, sigma), skip opening a new trade for
+            # this bar. This prevents NaNs from propagating into position sizing
+            # and PnL.
+            if not np.isfinite(predicted_price) or not np.isfinite(decision_price):
+                equity_curve.append(equity)
+                continue
+            if not (np.isfinite(model_sigma) and np.isfinite(atr_value)):
+                equity_curve.append(equity)
+                continue
             if not (model_sigma > 0 and atr_value > 0):
                 equity_curve.append(equity)
                 continue
 
             state = StrategyState(
                 current_price=decision_price,
-                predicted_price=float(predicted_price),
+                predicted_price=predicted_price,
                 model_error_sigma=model_sigma,
                 atr=atr_value,
                 account_equity=float(equity),

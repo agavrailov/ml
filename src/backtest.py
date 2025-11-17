@@ -22,7 +22,12 @@ import pandas as pd
 from src.backtest_engine import BacktestConfig, BacktestResult, PredictionProvider, run_backtest
 from src.config import FREQUENCY, TSTEPS, get_hourly_data_csv_path
 from src.trading_strategy import StrategyConfig
-from src.predict import predict_future_prices
+from src.predict import (
+    build_prediction_context,
+    predict_sequence_batch,
+)
+from src.data_processing import add_features
+from src.data_utils import apply_standard_scaler
 
 PREDICTIONS_DIR = "backtests"
 
@@ -73,36 +78,133 @@ def _make_naive_prediction_provider(offset_multiple: float, atr_like: float) -> 
 def _make_model_prediction_provider(data: pd.DataFrame, frequency: str) -> PredictionProvider:
     """Return a prediction provider using the LSTM model.
 
-    For now this calls ``predict_future_prices`` in a sliding-window fashion,
-    computing a single prediction for each bar once enough history is
-    available. This is slower than a fully vectorized approach but keeps the
-    implementation simple and faithful to the online usage.
+    This implementation builds a reusable prediction context (model + scaler +
+    feature metadata), performs feature engineering over the entire dataset
+    once, and then runs batched predictions over all sliding windows.
+
+    Predictions are aligned to the *end* of each TSTEPS window and then
+    denormalized back to price space. We also checkpoint the final per-bar
+    predictions to CSV so they can be reused or inspected later.
     """
 
-    preds: list[float] = []
     n = len(data)
     if n == 0:
         return lambda i, row: float(row["Close"])  # pragma: no cover - defensive
 
-    # Emit a simple progress indicator while generating model-based predictions,
-    # since this can be relatively slow for large datasets.
-    progress_step = max(n // 1000, 1)  # ~0.1% increments
+    os.makedirs(PREDICTIONS_DIR, exist_ok=True)
+    checkpoint_path = os.path.join(
+        PREDICTIONS_DIR,
+        f"nvda_{frequency}_model_predictions_checkpoint.csv",
+    )
 
-    for i in range(n):
-        if i % progress_step == 0:
-            pct = (i / n) * 100.0
-            print(f"Preparing model predictions: {pct:5.1f}% ({i}/{n} bars)", flush=True)
-
-        window = data.iloc[: i + 1]
+    # If a full-length checkpoint exists, load and reuse it.
+    if os.path.exists(checkpoint_path):
         try:
-            p = float(predict_future_prices(window, frequency=frequency))
+            checkpoint_df = pd.read_csv(checkpoint_path)
+            if "predicted_price" in checkpoint_df.columns and len(checkpoint_df) >= n:
+                series = checkpoint_df["predicted_price"].iloc[:n].to_numpy(dtype=float)
+                print(
+                    f"Loaded {len(series)} model predictions from checkpoint at {checkpoint_path}",
+                    flush=True,
+                )
+
+                def provider(i: int, row: pd.Series) -> float:  # noqa: ARG001
+                    return float(series[i])
+
+                return provider
         except Exception:
-            # Not enough history yet or model/scaler issues – treat as no signal.
-            p = float(window["Close"].iloc[-1])
-        preds.append(p)
+            # Ignore corrupted/partial checkpoints and fall back to fresh computation.
+            pass
+
+    # Build prediction context: model + scaler + feature metadata.
+    print("Building prediction context and running batched model predictions...", flush=True)
+    ctx = build_prediction_context(frequency=frequency, tsteps=TSTEPS)
+
+    df = data.copy()
+    if "Time" in df.columns:
+        df["Time"] = pd.to_datetime(df["Time"])
+
+    # Feature engineering over the entire dataset.
+    df_featured = add_features(df, ctx.features_to_use)
+
+    # Normalize using the stored scaler.
+    feature_cols = [c for c in df_featured.columns if c != "Time"]
+    df_normalized = apply_standard_scaler(df_featured, feature_cols, ctx.scaler_params)
+
+    # Batched predictions over all sliding windows (on feature-engineered data).
+    preds_normalized = predict_sequence_batch(ctx, df_normalized)
+
+    # Align predictions to the feature-engineered DataFrame first. For M rows and
+    # T steps, we have len(preds_normalized) = M - T + 1 predictions,
+    # corresponding to feature rows indices [T-1, T, ..., M-1]. Prepend NaNs for
+    # the warmup period on the FEATURED data.
+    m = len(df_featured)
+    preds_feat_full = np.full(shape=(m,), fill_value=np.nan, dtype=np.float32)
+    if len(preds_normalized) > 0:
+        preds_feat_full[ctx.tsteps - 1 : ctx.tsteps - 1 + len(preds_normalized)] = preds_normalized
+
+    # Denormalize using the stored scaler (Open as target) on the FEATURED data.
+    denorm_feat = preds_feat_full * ctx.std_vals["Open"] + ctx.mean_vals["Open"]
+
+    # Now align predictions back to the ORIGINAL raw data length n by joining on
+    # Time when available. This accounts for any rows dropped during feature
+    # engineering (e.g. due to rolling windows).
+    if "Time" in df.columns and "Time" in df_featured.columns:
+        preds_df = pd.DataFrame({
+            "Time": df_featured["Time"].reset_index(drop=True),
+            "predicted_price": denorm_feat,
+        })
+        merged = pd.merge(
+            df[["Time"]].reset_index(drop=True),
+            preds_df,
+            on="Time",
+            how="left",
+        )
+        denorm_full = merged["predicted_price"].to_numpy(dtype=np.float32)
+        times_full = merged["Time"]
+    else:
+        # Positional fallback: if lengths match, use directly; otherwise pad or
+        # truncate to match the raw data length.
+        if m >= n:
+            denorm_full = denorm_feat[:n]
+        else:
+            pad = np.full(shape=(n - m,), fill_value=np.nan, dtype=np.float32)
+            denorm_full = np.concatenate([pad, denorm_feat])
+        times_full = df["Time"] if "Time" in df.columns else pd.Series([pd.NaT] * n)
+
+    # As a final safeguard, ensure prediction and time arrays match the raw data length.
+    if len(denorm_full) < n:
+        pad_len = n - len(denorm_full)
+        denorm_full = np.concatenate([
+            denorm_full,
+            np.full(shape=(pad_len,), fill_value=np.nan, dtype=np.float32),
+        ])
+    elif len(denorm_full) > n:
+        denorm_full = denorm_full[:n]
+
+    if len(times_full) < n:
+        # Pad missing times with NaT at the end.
+        pad_len = n - len(times_full)
+        times_full = pd.concat([times_full, pd.Series([pd.NaT] * pad_len)], ignore_index=True)
+    elif len(times_full) > n:
+        times_full = times_full.iloc[:n]
+
+    # Write a single checkpoint CSV with per-bar predictions aligned to raw data.
+    checkpoint_df = pd.DataFrame({
+        "Time": times_full,
+        "predicted_price": denorm_full,
+    })
+    checkpoint_df.to_csv(checkpoint_path, index=False)
+    print(f"Wrote model prediction checkpoint to {checkpoint_path}", flush=True)
 
     def provider(i: int, row: pd.Series) -> float:  # noqa: ARG001
-        return float(preds[i])
+        if i < 0 or i >= len(denorm_full):
+            return float(row["Close"])
+        val = denorm_full[i]
+        if np.isnan(val):
+            # Warmup zone or missing alignment: fall back to Close.
+            return float(row["Close"])
+        return float(val)
 
     return provider
 

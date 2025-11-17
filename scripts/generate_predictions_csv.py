@@ -22,18 +22,25 @@ import os
 from typing import Optional
 
 import pandas as pd
+import numpy as np
 from tqdm import tqdm
 
 from src.config import get_hourly_data_csv_path, TSTEPS
-from src.predict import predict_future_prices
+from src.predict import build_prediction_context, predict_sequence_batch
+from src.data_processing import add_features
+from src.data_utils import apply_standard_scaler
 
-
-def generate_predictions_for_csv(
+ndef generate_predictions_for_csv(
     frequency: str,
     output_path: str,
     max_rows: Optional[int] = None,
 ) -> None:
-    """Generate per-bar predictions for the given frequency and write to CSV."""
+    """Generate per-bar predictions for the given frequency and write to CSV.
+
+    This implementation reuses the shared :class:`PredictionContext` and
+    :func:`predict_sequence_batch` helpers so that the LSTM model and scaler
+    are built once and predictions are computed in a single batched call.
+    """
 
     source_path = get_hourly_data_csv_path(frequency)
     if not os.path.exists(source_path):
@@ -51,41 +58,52 @@ def generate_predictions_for_csv(
     if max_rows is not None and max_rows > 0:
         df = df.tail(max_rows)
 
-    preds = []
-    times = []
-
-    # Minimum rows needed so that feature engineering + TSTEPS window works.
-    # This mirrors the logic in src.predict.__main__ (21-day SMA → 20 extra rows).
-    min_rows_for_features = 20 + TSTEPS
-
     print(f"Generating predictions for {len(df)} bars from {source_path}...")
 
-    for i in tqdm(range(len(df)), desc="predict", unit="bar"):
-        window = df.iloc[: i + 1].copy()
-        # Ensure Time is present and properly typed
-        if "Time" in window.columns:
-            window["Time"] = pd.to_datetime(window["Time"])
+    # Ensure Time is typed as datetime.
+    df["Time"] = pd.to_datetime(df["Time"])
 
-        # Warmup: before we have enough rows for full feature engineering,
-        # fall back to Close as a neutral prediction.
-        if len(window) < min_rows_for_features:
-            p = float(window["Close"].iloc[-1])
-        else:
-            try:
-                p = float(predict_future_prices(window, frequency=frequency))
-            except ValueError as e:
-                msg = str(e)
-                # Allow only the explicit "not enough data after feature
-                # engineering" error to degrade to Close; surface everything
-                # else so issues with the model/scaler aren't hidden.
-                if "Not enough data after feature engineering" in msg:
-                    p = float(window["Close"].iloc[-1])
-                else:
-                    raise
-        preds.append(p)
-        times.append(window["Time"].iloc[-1])
+    # Build a reusable prediction context for this (frequency, TSTEPS).
+    ctx = build_prediction_context(frequency=frequency, tsteps=TSTEPS)
 
-    out_df = pd.DataFrame({"Time": times, "predicted_price": preds})
+    # Feature engineering over the entire dataset.
+    df_featured = add_features(df.copy(), ctx.features_to_use)
+
+    # Normalize using the stored scaler.
+    feature_cols = [c for c in df_featured.columns if c != "Time"]
+    df_normalized = apply_standard_scaler(df_featured, feature_cols, ctx.scaler_params)
+
+    # Batched predictions over all sliding windows.
+    preds_normalized = predict_sequence_batch(ctx, df_normalized)
+
+    # Align predictions to the feature-engineered DataFrame.
+    m = len(df_featured)
+    preds_feat_full = np.full(shape=(m,), fill_value=np.nan, dtype=np.float32)
+    if len(preds_normalized) > 0:
+        preds_feat_full[ctx.tsteps - 1 : ctx.tsteps - 1 + len(preds_normalized)] = preds_normalized
+
+    # Denormalize using the stored scaler (Open as target).
+    denorm_feat = preds_feat_full * ctx.std_vals["Open"] + ctx.mean_vals["Open"]
+
+    # Align predictions back to the original raw data via Time. This accounts
+    # for any rows dropped during feature engineering (rolling windows).
+    preds_df = pd.DataFrame({
+        "Time": df_featured["Time"].reset_index(drop=True),
+        "predicted_price": denorm_feat,
+    })
+    merged = pd.merge(
+        df[["Time"]].reset_index(drop=True),
+        preds_df,
+        on="Time",
+        how="left",
+    )
+
+    out_df = merged[["Time", "predicted_price"]].copy()
+
+    # tqdm for user feedback, iterating only to show progress, not to compute.
+    for _ in tqdm(range(len(out_df)), desc="predict", unit="bar"):
+        pass
+
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     out_df.to_csv(output_path, index=False)
     print(f"Wrote predictions for {len(out_df)} bars to {output_path}")
