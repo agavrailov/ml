@@ -12,10 +12,18 @@ from src.model import build_lstm_model, load_stateful_weights_into_non_stateful_
 from src.data_processing import add_features  # Import add_features
 from src.data_utils import apply_standard_scaler
 from src.config import (
-    TSTEPS, N_FEATURES, BATCH_SIZE, FREQUENCY,
-    PROCESSED_DATA_DIR, get_scaler_params_json_path,
-    LSTM_UNITS, LEARNING_RATE, get_latest_best_model_path,
-    N_LSTM_LAYERS, STATEFUL, FEATURES_TO_USE_OPTIONS
+    TSTEPS,
+    N_FEATURES,
+    BATCH_SIZE,
+    FREQUENCY,
+    PROCESSED_DATA_DIR,
+    get_scaler_params_json_path,
+    LSTM_UNITS,
+    LEARNING_RATE,
+    get_latest_best_model_path,
+    N_LSTM_LAYERS,
+    STATEFUL,
+    FEATURES_TO_USE_OPTIONS,
 )
 
 def predict_future_prices(
@@ -56,27 +64,42 @@ def predict_future_prices(
     if features_to_use is None:
         features_to_use = FEATURES_TO_USE_OPTIONS[0] # Default to the first option if not provided
 
-    # Get the path to the best model for the current FREQUENCY and TSTEPS
-    active_model_path = get_latest_best_model_path(target_frequency=frequency, tsteps=tsteps)
-    if not active_model_path or not os.path.exists(active_model_path):
-        raise FileNotFoundError(f"No best model found for frequency {frequency} and TSTEPS {tsteps}. Please train a model first.")
+    # Get the path to the best model for the current frequency and TSTEPS.
+    (
+        model_path,
+        _bias_correction_path,
+        features_to_use_trained,
+        lstm_units_trained,
+        n_lstm_layers_trained,
+    ) = get_latest_best_model_path(target_frequency=frequency, tsteps=tsteps)
 
-    print(f"Loading stateful model from: {active_model_path}")
-    stateful_model = keras.models.load_model(active_model_path)
+    if not model_path or not os.path.exists(model_path):
+        raise FileNotFoundError(
+            f"No best model found for frequency {frequency} and TSTEPS {tsteps}. "
+            "Please train a model first."
+        )
+
+    print(f"Loading stateful model from: {model_path}")
+    stateful_model = keras.models.load_model(model_path)
 
     # Load best hyperparameters to get the correct lstm_units, n_lstm_layers, etc.
     best_hps = {}
-    best_hps_path = 'best_hyperparameters.json'
+    best_hps_path = "best_hyperparameters.json"
     if os.path.exists(best_hps_path):
         with open(best_hps_path, 'r') as f:
             best_hps_data = json.load(f)
             if frequency in best_hps_data and str(tsteps) in best_hps_data[frequency]:
                 best_hps = best_hps_data[frequency][str(tsteps)]
     
-    lstm_units = best_hps.get('lstm_units', LSTM_UNITS)
-    n_lstm_layers = best_hps.get('n_lstm_layers', N_LSTM_LAYERS)
-    optimizer_name = best_hps.get('optimizer_name', 'rmsprop')
-    loss_function = best_hps.get('loss_function', 'mae')
+    # Prefer tuned/trained hyperparameters when available.
+    lstm_units = best_hps.get("lstm_units", lstm_units_trained or LSTM_UNITS)
+    n_lstm_layers = best_hps.get("n_lstm_layers", n_lstm_layers_trained or N_LSTM_LAYERS)
+    optimizer_name = best_hps.get("optimizer_name", "rmsprop")
+    loss_function = best_hps.get("loss_function", "mae")
+
+    # Prefer the features recorded with the best model if not explicitly given.
+    if features_to_use is None and features_to_use_trained:
+        features_to_use = features_to_use_trained
 
     # Build a non-stateful model for prediction and transfer weights
     print("Creating non-stateful model for prediction and transferring weights...")
@@ -92,19 +115,19 @@ def predict_future_prices(
     )
     load_stateful_weights_into_non_stateful_model(stateful_model, prediction_model)
 
-    # Load scaler parameters for the current FREQUENCY
-    scaler_params_path = get_scaler_params_json_path()
+    # Load scaler parameters for the current frequency.
+    scaler_params_path = get_scaler_params_json_path(frequency)
     if not os.path.exists(scaler_params_path):
         raise FileNotFoundError(f"Scaler parameters not found at {scaler_params_path}.")
     
-    with open(scaler_params_path, 'r') as f:
+    with open(scaler_params_path, "r") as f:
         scaler_params = json.load(f)
-    mean_vals = pd.Series(scaler_params['mean'])
-    std_vals = pd.Series(scaler_params['std'])
+    mean_vals = pd.Series(scaler_params["mean"])
+    std_vals = pd.Series(scaler_params["std"])
 
     # Prepare input data
     input_data_df_copy = input_data_df.copy()
-    df_featured_input, _ = add_features(input_data_df_copy, features_to_use) # Pass features_to_use
+    df_featured_input = add_features(input_data_df_copy, features_to_use) # Pass features_to_use
 
     if len(df_featured_input) < tsteps:
         raise ValueError(f"Not enough data after feature engineering to form {tsteps} timesteps.")
