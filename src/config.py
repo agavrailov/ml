@@ -288,8 +288,16 @@ def get_latest_best_model_path(target_frequency=None, tsteps=None):
     if not os.path.exists(best_hps_path):
         return None, None, None, None, None
 
+    # Handle empty or malformed JSON defensively so prediction code can
+    # fall back to training defaults.
     with open(best_hps_path, 'r') as f:
-        best_hps_data = json.load(f)
+        content = f.read().strip()
+        if not content:
+            return None, None, None, None, None
+        try:
+            best_hps_data = json.loads(content)
+        except json.JSONDecodeError:
+            return None, None, None, None, None
 
     best_loss = float('inf')
     best_model_filename = None
