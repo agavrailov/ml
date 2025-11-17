@@ -175,24 +175,31 @@ def train_model(
     return final_val_loss, model_path, bias_correction_path
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Train LSTM model for a given frequency and TSTEPS.")
+    parser.add_argument("--frequency", type=str, default=FREQUENCY, help="Resample frequency, e.g. 15min, 30min, 60min")
+    parser.add_argument("--tsteps", type=int, default=TSTEPS, help="Number of time steps (sequence length)")
+    args = parser.parse_args()
+
     # Ensure data/processed exists
     os.makedirs(PROCESSED_DATA_DIR, exist_ok=True)
-    
-    importlib.reload(src.config) # Ensure latest config is loaded
-    print(f"\n--- Training model for frequency: {FREQUENCY}, TSTEPS: {TSTEPS} ---")
-    
+
+    importlib.reload(src.config)  # Ensure latest config is loaded
+    print(f"\n--- Training model for frequency: {args.frequency}, TSTEPS: {args.tsteps} ---")
+
     training_results = train_model(
-        frequency=FREQUENCY,
-        tsteps=TSTEPS,
+        frequency=args.frequency,
+        tsteps=args.tsteps,
         lstm_units=LSTM_UNITS,
         learning_rate=LEARNING_RATE,
         epochs=EPOCHS,
         current_batch_size=BATCH_SIZE,
-        n_lstm_layers=N_LSTM_LAYERS, # Pass N_LSTM_LAYERS from config
+        n_lstm_layers=N_LSTM_LAYERS,  # Pass N_LSTM_LAYERS from config
         stateful=STATEFUL,
-        features_to_use=FEATURES_TO_USE_OPTIONS[0] # Pass the default feature set
+        features_to_use=FEATURES_TO_USE_OPTIONS[0],  # Pass the default feature set
     )
-    
+
     if training_results is not None:
         final_loss, model_path, bias_correction_path = training_results
         model_filename = os.path.basename(model_path)
@@ -214,33 +221,43 @@ if __name__ == "__main__":
         else:
             best_hps_overall = {}
 
-        if FREQUENCY not in best_hps_overall:
-            best_hps_overall[FREQUENCY] = {}
+        freq_key = args.frequency
+        tsteps_key = str(args.tsteps)
 
-        if str(TSTEPS) not in best_hps_overall[FREQUENCY] or \
-           final_loss < best_hps_overall[FREQUENCY][str(TSTEPS)].get('validation_loss', float('inf')):
-            
-            best_hps_overall[FREQUENCY][str(TSTEPS)] = {
+        if freq_key not in best_hps_overall:
+            best_hps_overall[freq_key] = {}
+
+        if tsteps_key not in best_hps_overall[freq_key] or \
+           final_loss < best_hps_overall[freq_key][tsteps_key].get('validation_loss', float('inf')):
+
+            best_hps_overall[freq_key][tsteps_key] = {
                 'validation_loss': final_loss,
                 'model_filename': model_filename,
                 'lstm_units': LSTM_UNITS,
                 'learning_rate': LEARNING_RATE,
                 'epochs': EPOCHS,
                 'batch_size': BATCH_SIZE,
-                'n_lstm_layers': N_LSTM_LAYERS, # Use N_LSTM_LAYERS from config
+                'n_lstm_layers': N_LSTM_LAYERS,  # Use N_LSTM_LAYERS from config
                 'stateful': STATEFUL,
                 'optimizer_name': OPTIMIZER_NAME,
                 'loss_function': LOSS_FUNCTION,
-                'bias_correction_filename': os.path.basename(bias_correction_path) # Save bias correction filename
+                'bias_correction_filename': os.path.basename(bias_correction_path),  # Save bias correction filename
             }
-            print(f"Updated best hyperparameters for Frequency: {FREQUENCY}, TSTEPS: {TSTEPS} with validation loss {final_loss:.4f}")
-        
+            print(
+                f"Updated best hyperparameters for Frequency: {freq_key}, "
+                f"TSTEPS: {tsteps_key} with validation loss {final_loss:.4f}"
+            )
+
         # Save the updated best_hyperparameters.json
         with open(best_hps_path, 'w') as f:
             json.dump(best_hps_overall, f, indent=4)
         print(f"\nUpdated best hyperparameters saved to {best_hps_path}")
 
         print("\n--- Training Summary ---")
-        print(f"Frequency: {FREQUENCY}, TSTEPS: {TSTEPS}, Validation Loss: {final_loss:.4f}, Model: {model_filename}, Bias Correction: {os.path.basename(bias_correction_path)}")
+        print(
+            f"Frequency: {freq_key}, TSTEPS: {tsteps_key}, "
+            f"Validation Loss: {final_loss:.4f}, Model: {model_filename}, "
+            f"Bias Correction: {os.path.basename(bias_correction_path)}"
+        )
     else:
         print("Model training was not successful.")

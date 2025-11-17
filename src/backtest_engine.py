@@ -95,6 +95,8 @@ def run_backtest(
     data: pd.DataFrame,
     prediction_provider: PredictionProvider,
     cfg: BacktestConfig,
+    atr_series: Optional[pd.Series] = None,
+    model_error_sigma_series: Optional[pd.Series] = None,
 ) -> BacktestResult:
     """Run a simple long-only backtest over `data`.
 
@@ -129,9 +131,18 @@ def run_backtest(
     # - Make decisions on bar i using bar i's Close (no look-ahead).
     # - Open positions at the *next* bar's Open (i+1).
     # - Evaluate TP/SL on bars after entry (i+1, i+2, ...).
-    for i in range(n):
-        row = data.iloc[i]
+    #
+    # For long runs, emit a lightweight textual progress indicator roughly
+    # every 0.1% of bars so the CLI shows that work is progressing.
+    progress_step = max(n // 1000, 1)  # 1000 steps ≈ 0.1% increments
 
+    for i in range(n):
+        if i % progress_step == 0:
+            pct = (i / n) * 100.0
+            # Print on a new line so progress is clearly visible in all terminals.
+            print(f"Backtest progress: {pct:5.1f}% ({i}/{n} bars)", flush=True)
+
+        row = data.iloc[i]
         # 1) If there is an open position, check for exits on this bar.
         if position is not None:
             high = float(row["High"])
@@ -171,11 +182,30 @@ def run_backtest(
             predicted_price = prediction_provider(i, row)
 
             decision_price = float(row["Close"])
+
+            # Resolve per-bar risk inputs. If per-bar series are provided,
+            # prefer them; otherwise fall back to the scalar config values.
+            if model_error_sigma_series is not None:
+                model_sigma = float(model_error_sigma_series.iloc[i])
+            else:
+                model_sigma = float(cfg.model_error_sigma)
+
+            if atr_series is not None:
+                atr_value = float(atr_series.iloc[i])
+            else:
+                atr_value = float(cfg.fixed_atr)
+
+            # If ATR or sigma are non-positive/NaN (e.g. warmup period), skip
+            # opening new trades for this bar to avoid unstable sizing.
+            if not (model_sigma > 0 and atr_value > 0):
+                equity_curve.append(equity)
+                continue
+
             state = StrategyState(
                 current_price=decision_price,
                 predicted_price=float(predicted_price),
-                model_error_sigma=float(cfg.model_error_sigma),
-                atr=float(cfg.fixed_atr),
+                model_error_sigma=model_sigma,
+                atr=atr_value,
                 account_equity=float(equity),
                 has_open_position=False,
             )

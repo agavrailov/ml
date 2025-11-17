@@ -34,7 +34,6 @@ def build_lstm_model(
     Returns:
         A compiled Keras ``Model`` ready for training or inference.
     """
-    print(f"DEBUG: build_lstm_model received input_shape: {input_shape}")
 
     # --- Input configuration ---
     # For stateful=True, we must fix the batch dimension at build time and then
@@ -99,10 +98,9 @@ def load_stateful_weights_into_non_stateful_model(
     """
     # Get weights from the stateful model
     stateful_weights = stateful_model.get_weights()
-    
+
     # Set weights to the non-stateful model
     non_stateful_model.set_weights(stateful_weights)
-    print("Weights successfully transferred from stateful to non-stateful model.")
 
 if __name__ == "__main__":
     # Example usage and basic test

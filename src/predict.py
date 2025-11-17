@@ -1,12 +1,18 @@
 import os
+import json
+from typing import Optional
+
+# Silence most TensorFlow C++ and Python-level logs (info/warning)
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")  # 0=all,1=filter INFO,2=filter WARNING,3=filter ERROR
 
 import pandas as pd
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras
-import json
-import os
-from typing import Optional
+import logging
+
+# Reduce Python-level TF logging (e.g. retracing warnings)
+tf.get_logger().setLevel(logging.ERROR)
 
 from src.model import build_lstm_model, load_stateful_weights_into_non_stateful_model
 from src.data_processing import add_features  # Import add_features
@@ -79,18 +85,24 @@ def predict_future_prices(
             "Please train a model first."
         )
 
-    print(f"Loading stateful model from: {model_path}")
     stateful_model = keras.models.load_model(model_path)
 
     # Load best hyperparameters to get the correct lstm_units, n_lstm_layers, etc.
     best_hps = {}
     best_hps_path = "best_hyperparameters.json"
     if os.path.exists(best_hps_path):
-        with open(best_hps_path, 'r') as f:
-            best_hps_data = json.load(f)
-            if frequency in best_hps_data and str(tsteps) in best_hps_data[frequency]:
-                best_hps = best_hps_data[frequency][str(tsteps)]
-    
+        try:
+            with open(best_hps_path, 'r') as f:
+                content = f.read().strip()
+                if content:
+                    best_hps_data = json.loads(content)
+                    if frequency in best_hps_data and str(tsteps) in best_hps_data[frequency]:
+                        best_hps = best_hps_data[frequency][str(tsteps)]
+        except json.JSONDecodeError:
+            # If the file exists but is empty or malformed, fall back to
+            # training-time defaults without failing prediction.
+            best_hps = {}
+
     # Prefer tuned/trained hyperparameters when available.
     lstm_units = best_hps.get("lstm_units", lstm_units_trained or LSTM_UNITS)
     n_lstm_layers = best_hps.get("n_lstm_layers", n_lstm_layers_trained or N_LSTM_LAYERS)
@@ -102,8 +114,7 @@ def predict_future_prices(
         features_to_use = features_to_use_trained
 
     # Build a non-stateful model for prediction and transfer weights
-    print("Creating non-stateful model for prediction and transferring weights...")
-    prediction_model = build_lstm_model( # Changed to build_lstm_model
+    prediction_model = build_lstm_model(
         input_shape=(tsteps, n_features),
         lstm_units=lstm_units,
         batch_size=None, # Non-stateful model does not require batch_size
@@ -143,8 +154,8 @@ def predict_future_prices(
     # Reshape for non-stateful LSTM: (1, TSTEPS, N_FEATURES)
     input_reshaped = input_normalized_features.values[np.newaxis, :, :]
 
-    # Make prediction
-    predictions_normalized = prediction_model.predict(input_reshaped)
+    # Make prediction (silent)
+    predictions_normalized = prediction_model.predict(input_reshaped, verbose=0)
     single_prediction_normalized = predictions_normalized[0, 0]
 
     # Denormalize prediction
