@@ -506,3 +506,39 @@ The `tests/` directory offers concrete examples of expected behavior and usage p
 - `tests/test_api.py` documents the API contract: required payload shape, error messages for insufficient length or malformed inputs, and handling of internal errors in `predict_future_prices`.
 
 When changing public APIs, data shapes, or training/evaluation semantics, consult and update the corresponding tests to keep the behavior aligned with these expectations.
+
+---
+
+## Trading system & backtesting (roadmap)
+
+A trading system for this repository is planned as a **separate layer** on top of the existing prediction API and data pipeline. The goal is to turn price predictions into executable trading strategies that can be validated thoroughly in backtests before any live or semi-live trading.
+
+High-level phases:
+
+1. **Phase 0 – Offline backtesting (local, no AWS)**
+   - Build a simple backtesting engine that consumes:
+     - Historical OHLCV from `data/processed/nvda_*.csv`.
+     - Model predictions via `src.predict.predict_future_prices` or saved predictions.
+   - Implement one or two basic strategies (e.g., long/flat based on predicted next-bar return, with fixed stop loss / take profit).
+   - CLI (to be implemented) should allow running many parameterized backtests and writing PnL/metrics to a results file.
+
+2. **Phase 1 – Local paper trading (no AWS, broker-simulated)**
+   - Use live or near-live data from IB/TWS, but keep all order execution simulated locally.
+   - Reuse the same strategy and risk rules as in Phase 0; reuse the backtester components for intraday evaluation.
+
+3. **Phase 2 – Optional AWS-based components**
+   - Once strategies pass backtesting and paper-trading criteria, introduce AWS services for:
+     - Hosting the prediction API (e.g., containerized FastAPI on ECS/Fargate or similar).
+     - Running scheduled or event-driven strategy evaluation jobs.
+     - Persisting trades, signals, and performance metrics in a managed database.
+   - Live trading integration with a broker should remain behind clear feature flags and be guarded by risk limits.
+
+Design documentation for the trading system lives under:
+
+- `docs/trading system/trading_system_requirements.md`
+- `docs/trading system/trading_system_hld.md`
+- `docs/trading system/trading_system_test_strategy.md`
+- `docs/trading system/trading_system_runbook.md`
+- `docs/trading system/trading_system_migration_plan.md`
+
+These documents mirror the structure of the data ingestion docs and should be kept in sync with any future trading-related code you add (backtesting engine, strategy modules, broker adapters, AWS deployment scripts).
