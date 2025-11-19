@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 
 import argparse
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -248,7 +249,8 @@ def _make_csv_prediction_provider(preds_df: pd.DataFrame, data: pd.DataFrame) ->
             on="Time",
             how="left",
         )
-        series = merged["predicted_price"].fillna(method="ffill").fillna(method="bfill").to_numpy()
+        # Use forward/backward fill methods compatible with newer pandas versions.
+        series = merged["predicted_price"].ffill().bfill().to_numpy()
     else:
         # Positional fallback.
         series = preds_df["predicted_price"].to_numpy()
@@ -556,7 +558,15 @@ def _plot_price_and_equity_with_trades(
         ax_price.legend(lines_p + lines_e, labels_p + labels_e, loc="upper left")
 
     fig.tight_layout()
-    plt.show()
+
+    # Save the figure to backtests/ so it can be inspected later without
+    # blocking CLI scripts or tests with an interactive window.
+    out_dir = Path(PREDICTIONS_DIR)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"backtest_price_equity_trades_{symbol.lower()}.png"
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"Saved backtest plot to {out_path}", flush=True)
 
 
 def main() -> None:

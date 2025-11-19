@@ -65,13 +65,23 @@ class PathsConfig:
     def scaler_params_json(self, frequency: str) -> str:
         return os.path.join(self.processed_data_dir, f"scaler_params_{frequency}.json")
 
+    def predictions_csv(self, symbol: str, frequency: str) -> str:
+        return os.path.join(BASE_DIR, "backtests", f"{symbol.lower()}_{frequency}_predictions.csv")
+
+    def trades_csv(self, symbol: str, frequency: str) -> str:
+        return os.path.join(BASE_DIR, "backtests", f"{symbol.lower()}_{frequency}_trades.csv")
+
+    def equity_csv(self, symbol: str, frequency: str) -> str:
+        return os.path.join(BASE_DIR, "backtests", f"{symbol.lower()}_{frequency}_equity.csv")
+
+
 
 @dataclass(frozen=True)
 class TrainingConfig:
     """Model and training hyperparameters (single-run defaults + search spaces)."""
 
     # Default values for a single run
-    frequency: str = "60min"
+    frequency: str = "15min"
     tsteps: int = 5
     rows_ahead: int = 1
     tr_split: float = 0.7
@@ -269,6 +279,18 @@ def get_scaler_params_json_path(frequency, processed_data_dir=PROCESSED_DATA_DIR
     """Generates the path for the scaler parameters JSON based on the given frequency."""
     return PATHS.scaler_params_json(frequency)
 
+def get_predictions_csv_path(symbol: str, frequency: str) -> str:
+    """Path for predictions CSV in the backtests directory."""
+    return PATHS.predictions_csv(symbol, frequency)
+
+def get_trades_csv_path(symbol: str, frequency: str) -> str:
+    """Path for trades CSV in the backtests directory."""
+    return PATHS.trades_csv(symbol, frequency)
+
+def get_equity_csv_path(symbol: str, frequency: str) -> str:
+    """Path for equity CSV in the backtests directory."""
+    return PATHS.equity_csv(symbol, frequency)
+
 def get_active_model_path():
     """
     Reads the path of the currently active model from a file.
@@ -279,12 +301,17 @@ def get_active_model_path():
     return None
 
 def get_latest_best_model_path(target_frequency=None, tsteps=None):
+    """Resolve the best model for a given (frequency, tsteps).
+
+    This consults ``best_hyperparameters.json`` **in the project root** (``BASE_DIR``)
+    instead of the current working directory, so it behaves consistently when
+    called from scripts, CLIs, or notebooks located in subdirectories.
+
+    Returns a tuple ``(model_path, bias_correction_path, features_to_use_trained,
+    lstm_units_trained, n_lstm_layers_trained)``. Any element can be ``None``
+    if the corresponding information is not available.
     """
-    Finds the path to the model with the lowest validation loss for a given
-    frequency and TSTEPS, or the overall best model, by consulting best_hyperparameters.json.
-    Returns a tuple (model_path, bias_correction_path, features_to_use_trained, lstm_units_trained, n_lstm_layers_trained).
-    """
-    best_hps_path = 'best_hyperparameters.json'
+    best_hps_path = os.path.join(BASE_DIR, 'best_hyperparameters.json')
     if not os.path.exists(best_hps_path):
         return None, None, None, None, None
 

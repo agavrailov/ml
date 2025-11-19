@@ -13,9 +13,12 @@ Usage (from repo root):
         --trades backtests/nvda_60min_trades.csv \
         --price-csv data/processed/nvda_60min.csv
 
-The script will pop up a matplotlib figure with:
+The script will generate a matplotlib figure with:
 - Top: equity curve over time.
 - Bottom: trade count per month (entry density).
+
+The figure is saved to ``backtests/backtest_diagnostics.png`` so that it can be
+opened later without blocking the CLI or tests.
 """
 from __future__ import annotations
 
@@ -74,17 +77,16 @@ def plot_equity_and_trade_density(
     fig.autofmt_xdate()
     plt.tight_layout()
 
-    # Save diagnostics figure under backtests/
-    out_dir = Path("backtests")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / "backtest_diagnostics.png"
-    fig.savefig(out_path, dpi=150)
-    print(f"Saved diagnostics plot to {out_path}")
-
-    plt.show()
-
-
-def main() -> None:
+    # Save diagnostics figure under backtests/ (non-blocking for scripts/tests).\r
+    out_dir = Path("backtests")\r
+    out_dir.mkdir(parents=True, exist_ok=True)\r
+    out_path = out_dir / "backtest_diagnostics.png"\r
+    fig.savefig(out_path, dpi=150)\r
+    plt.close(fig)\r
+    print(f"Saved diagnostics plot to {out_path}")\r
+\r
+\r
+def main() -> None:\r
     parser = argparse.ArgumentParser(description="Plot equity and trade density for a backtest.")
     parser.add_argument("--equity", required=True, help="Path to equity CSV (from src.backtest).")
     parser.add_argument("--trades", required=True, help="Path to trades CSV (from src.backtest).")
