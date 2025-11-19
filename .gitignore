@@ -17,3 +17,5 @@ src/models/
 src/__pycache__/
 .venv
 notebooks/.ipynb_checkpoints
+backtests/backtest_price_equity_trades_nvda.png
+scripts/.ipynb_checkpoints

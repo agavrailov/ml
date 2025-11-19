@@ -144,11 +144,42 @@ class MarketConfig:
     exchange_calendar_name: str = "XNYS"  # New York Stock Exchange
 
 
+@dataclass(frozen=True)
+class StrategyDefaultsConfig:
+    """Defaults for trading strategy and backtest/paper-trade settings.
+
+    Keeping these in one place avoids duplicating magic numbers in
+    backtest/paper-trade code and makes it clear which knobs define the
+    baseline trading behavior.
+    """
+
+    # Core risk and reward parameters
+    risk_per_trade_pct: float = 0.02  # 1% of equity per trade
+    reward_risk_ratio: float = 2.5
+
+    # Noise / filter parameters
+    # How much of the model residual sigma_err we subtract from the predicted move.
+    k_sigma_err: float = 0.5
+    # Minimum TP distance as a multiple of ATR.
+    k_atr_min_tp: float = 2
+
+    # Position sizing constraints
+    min_position_size: float = 1.0
+
+    # Execution / cost model
+    commission_per_unit_per_leg: float = 0.005
+    min_commission_per_order: float = 1.0
+
+    # Account / session defaults
+    initial_equity: float = 10_000.0
+
+
 # Instantiate structured configs
 PATHS = PathsConfig()
 TRAINING = TrainingConfig()
 IB = IbConfig()
 MARKET = MarketConfig()
+STRATEGY_DEFAULTS = StrategyDefaultsConfig()
 
 
 # ---------------------------
@@ -258,6 +289,16 @@ STATEFUL_OPTIONS = TRAINING.stateful_options
 OPTIMIZER_OPTIONS = TRAINING.optimizer_options
 LOSS_FUNCTION_OPTIONS = TRAINING.loss_function_options
 FEATURES_TO_USE_OPTIONS = TRAINING.features_to_use_options
+
+# Strategy / trading defaults (backwards-compatible flat aliases)
+RISK_PER_TRADE_PCT = STRATEGY_DEFAULTS.risk_per_trade_pct
+REWARD_RISK_RATIO = STRATEGY_DEFAULTS.reward_risk_ratio
+K_SIGMA_ERR = STRATEGY_DEFAULTS.k_sigma_err
+K_ATR_MIN_TP = STRATEGY_DEFAULTS.k_atr_min_tp
+MIN_POSITION_SIZE = STRATEGY_DEFAULTS.min_position_size
+COMMISSION_PER_UNIT_PER_LEG = STRATEGY_DEFAULTS.commission_per_unit_per_leg
+MIN_COMMISSION_PER_ORDER = STRATEGY_DEFAULTS.min_commission_per_order
+INITIAL_EQUITY = STRATEGY_DEFAULTS.initial_equity
 
 # Paths
 RAW_DATA_DIR = PATHS.raw_data_dir

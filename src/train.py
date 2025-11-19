@@ -124,7 +124,7 @@ def train_model(
               validation_data=(X_val, Y_val),
               callbacks=[early_stopping],
               shuffle=False,
-              verbose=1)
+              verbose=2)
     print(f"Model training finished for {frequency} with TSTEPS={tsteps}.")
 
     final_val_loss = min(history.history['val_loss'])

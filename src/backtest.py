@@ -21,7 +21,17 @@ import numpy as np
 import pandas as pd
 
 from src.backtest_engine import BacktestConfig, BacktestResult, PredictionProvider, run_backtest
-from src.config import FREQUENCY, TSTEPS, get_hourly_data_csv_path
+from src.config import (
+    FREQUENCY,
+    RISK_PER_TRADE_PCT,
+    REWARD_RISK_RATIO,
+    K_SIGMA_ERR,
+    K_ATR_MIN_TP,
+    INITIAL_EQUITY,
+    COMMISSION_PER_UNIT_PER_LEG,
+    MIN_COMMISSION_PER_ORDER,
+    get_hourly_data_csv_path,
+)
 from src.trading_strategy import StrategyConfig
 from src.predict import (
     build_prediction_context,
@@ -269,11 +279,11 @@ def _make_csv_prediction_provider(preds_df: pd.DataFrame, data: pd.DataFrame) ->
 
 def run_backtest_on_dataframe(
     data: pd.DataFrame,
-    initial_equity: float = 10_000.0,
+    initial_equity: float = INITIAL_EQUITY,
     frequency: Optional[str] = None,
     prediction_mode: str = "naive",
-    commission_per_unit_per_leg: float = 0.005,
-    min_commission_per_order: float = 1.0,
+    commission_per_unit_per_leg: float | None = None,
+    min_commission_per_order: float | None = None,
     predictions_csv: Optional[str] = None,
 ) -> BacktestResult:
     """Run a backtest on an in-memory DataFrame using default settings.
@@ -289,15 +299,13 @@ def run_backtest_on_dataframe(
     # a single global scalar.
     atr_series = _compute_atr_series(data, window=14)
 
-    # Strategy defaults tuned to be more permissive with realistic noise:
-    # - Risk 1% of equity per trade
-    # - Require predicted move to clear only 0.75 * sigma_err
-    # - Require TP at least 0.5 * ATR away
+    # Strategy defaults come from STRATEGY_DEFAULTS so that risk and noise
+    # parameters are centralized in config.py.
     strat_cfg = StrategyConfig(
-        risk_per_trade_pct=0.01,   # 1% of equity per trade
-        reward_risk_ratio=2.0,
-        k_sigma_err=0.0,           # ignore model error margin for now
-        k_atr_min_tp=0.25,         # require TP only 0.25 * ATR away
+        risk_per_trade_pct=RISK_PER_TRADE_PCT,
+        reward_risk_ratio=REWARD_RISK_RATIO,
+        k_sigma_err=K_SIGMA_ERR,
+        k_atr_min_tp=K_ATR_MIN_TP,
     )
 
     # Use the mean ATR as a scalar proxy for backwards compatibility, but
@@ -309,8 +317,12 @@ def run_backtest_on_dataframe(
         strategy_config=strat_cfg,
         model_error_sigma=atr_like,  # placeholder until real residuals are wired
         fixed_atr=atr_like,
-        commission_per_unit_per_leg=commission_per_unit_per_leg,
-        min_commission_per_order=min_commission_per_order,
+        commission_per_unit_per_leg=commission_per_unit_per_leg
+        if commission_per_unit_per_leg is not None
+        else COMMISSION_PER_UNIT_PER_LEG,
+        min_commission_per_order=min_commission_per_order
+        if min_commission_per_order is not None
+        else MIN_COMMISSION_PER_ORDER,
     )
 
     if prediction_mode == "naive":

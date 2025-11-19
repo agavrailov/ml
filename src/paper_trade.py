@@ -19,9 +19,24 @@ import numpy as np
 import pandas as pd
 
 from src.backtest_engine import BacktestConfig, BacktestResult, Position, Trade
-from src.config import FREQUENCY, get_hourly_data_csv_path
+from src.config import (
+    FREQUENCY,
+    RISK_PER_TRADE_PCT,
+    REWARD_RISK_RATIO,
+    K_SIGMA_ERR,
+    K_ATR_MIN_TP,
+    INITIAL_EQUITY,
+    COMMISSION_PER_UNIT_PER_LEG,
+    MIN_COMMISSION_PER_ORDER,
+    get_hourly_data_csv_path,
+)
 from src.trading_strategy import StrategyConfig, StrategyState, TradePlan, compute_tp_sl_and_size
-from src.backtest import _estimate_atr_like, _load_predictions_csv, _make_csv_prediction_provider
+from src.backtest import (
+    _estimate_atr_like,
+    _load_predictions_csv,
+    _make_csv_prediction_provider,
+    _plot_price_and_equity_with_trades,
+)
 
 
 @dataclass
@@ -32,16 +47,18 @@ class PaperTradingConfig:
     independently (e.g. add logging destinations, real-time feed settings).
     """
 
-    initial_equity: float = 10_000.0
+    initial_equity: float = INITIAL_EQUITY
     frequency: str = FREQUENCY
-    commission_per_unit_per_leg: float = 0.005
-    min_commission_per_order: float = 1.0
+    commission_per_unit_per_leg: float = COMMISSION_PER_UNIT_PER_LEG
+    min_commission_per_order: float = MIN_COMMISSION_PER_ORDER
 
-    # Strategy-specific parameters; kept flat for easier CLI mapping.
-    risk_per_trade_pct: float = 0.01
-    reward_risk_ratio: float = 2.0
-    k_sigma_err: float = 1.0
-    k_atr_min_tp: float = 0.5
+    # Strategy-specific parameters; kept flat for easier CLI mapping. Defaults
+    # come from STRATEGY_DEFAULTS in config.py so they stay in sync with
+    # backtest defaults, but can still be overridden per paper-trading run.
+    risk_per_trade_pct: float = RISK_PER_TRADE_PCT
+    reward_risk_ratio: float = REWARD_RISK_RATIO
+    k_sigma_err: float = K_SIGMA_ERR
+    k_atr_min_tp: float = K_ATR_MIN_TP
 
 
 @dataclass
@@ -262,6 +279,12 @@ def main() -> None:
     print(f"Initial equity: {initial_equity:.2f}")
     print(f"Final equity:   {result.final_equity:.2f}")
     print(f"Trades:         {len(result.trades)}")
+
+    # Optional visualization: reuse the backtest helper to save a price +
+    # equity + trades diagram under backtests/. This uses matplotlib if
+    # available and otherwise no-ops with a message, so it is safe for CLI
+    # usage and tests.
+    _plot_price_and_equity_with_trades(data, result, symbol="NVDA")
 
 
 if __name__ == "__main__":  # pragma: no cover
