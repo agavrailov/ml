@@ -51,7 +51,7 @@ def run_gap_analysis() -> list[dict]:
     This function acts as the "gap analysis tool" for the daily agent.
     """
     analyze_gaps_script_path = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "..", "analyze_gaps.py")
+        os.path.join(os.path.dirname(__file__), "analyze_gaps.py")
     )
 
     cmd = [sys.executable, analyze_gaps_script_path, RAW_DATA_CSV, GAP_ANALYSIS_OUTPUT_JSON]

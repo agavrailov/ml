@@ -15,3 +15,5 @@ data/processed/*.json
 src/data/
 src/models/
 src/__pycache__/
+.venv
+notebooks/.ipynb_checkpoints

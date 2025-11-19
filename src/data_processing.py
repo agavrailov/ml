@@ -258,12 +258,14 @@ if __name__ == "__main__":
     # --- New: Analyze and potentially fill gaps ---
     print("Analyzing gaps in raw data...")
     # Run analyze_gaps.py as a subprocess
-    analyze_gaps_script_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'analyze_gaps.py'))
+    analyze_gaps_script_path = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), 'analyze_gaps.py')
+    )
     command = [
-        sys.executable, # Use the current python interpreter
+        sys.executable,  # Use the current python interpreter
         analyze_gaps_script_path,
         RAW_DATA_CSV,
-        GAP_ANALYSIS_OUTPUT_JSON
+        GAP_ANALYSIS_OUTPUT_JSON,
     ]
     
     identified_gaps = []

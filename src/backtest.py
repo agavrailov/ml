@@ -61,6 +61,19 @@ def _compute_atr_series(data: pd.DataFrame, window: int = 14) -> pd.Series:
     return atr
 
 
+def _estimate_atr_like(data: pd.DataFrame, window: int = 14) -> float:
+    """Estimate a single ATR-like scalar for sizing and risk.
+
+    This computes a rolling ATR via :func:`_compute_atr_series` and returns the
+    mean of the non-NaN values. If no finite values are available (e.g. too few
+    bars), it falls back to ``1.0`` to avoid division-by-zero.
+    """
+
+    atr_series = _compute_atr_series(data, window=window)
+    cleaned = atr_series.dropna()
+    return float(cleaned.mean()) if not cleaned.empty else 1.0
+
+
 def _make_naive_prediction_provider(offset_multiple: float, atr_like: float) -> PredictionProvider:
     """Return a simple prediction provider for experimentation.
 
@@ -216,7 +229,7 @@ def _load_predictions_csv(csv_path: str) -> pd.DataFrame:
     - ``Time``: timestamp matching the OHLC data.
     - ``predicted_price``: model-predicted price for the target horizon.
     """
-    df = pd.read_csv(csv_path)
+    df = pd.read_csv(os.path.normpath(csv_path))
     if "predicted_price" not in df.columns:
         raise ValueError(f"Predictions CSV {csv_path} must contain 'predicted_price' column.")
     return df
@@ -424,6 +437,128 @@ def _compute_backtest_metrics(
     }
 
 
+def _plot_price_and_equity_with_trades(
+    data: pd.DataFrame,
+    result: BacktestResult,
+    symbol: str = "NVDA",
+) -> None:
+    """Visualize NVDA price, equity curve, and trades on a single figure.
+
+    - Price (Close) on the primary y-axis.
+    - Equity curve on a secondary y-axis (different scale).
+    - Buy and sell points marked with different icons and connected by a thin line.
+
+    This is intended for interactive inspection after each CLI backtest run.
+    It is safe to call even when matplotlib is not installed (no-op with a message).
+    """
+
+    try:
+        import matplotlib.pyplot as plt  # type: ignore[import-not-found]
+    except Exception:  # pragma: no cover - optional dependency
+        print("matplotlib is not available; skipping backtest plot.", flush=True)
+        return
+
+    if data.empty or not result.equity_curve:
+        return
+
+    # X-axis: prefer explicit timestamps if present, otherwise use bar indices.
+    if "Time" in data.columns:
+        try:
+            times = pd.to_datetime(data["Time"])  # type: ignore[assignment]
+        except Exception:  # pragma: no cover - defensive
+            times = pd.RangeIndex(len(data))
+    else:
+        times = pd.RangeIndex(len(data))
+
+    prices = data["Close"].astype(float)
+    equity = pd.Series(result.equity_curve, dtype=float)
+
+    # Ensure alignment between equity curve and price/time vectors.
+    n = min(len(prices), len(equity))
+    prices = prices.iloc[:n]
+    equity = equity.iloc[:n]
+    if hasattr(times, "iloc"):
+        times = times.iloc[:n]
+    else:
+        times = times[:n]
+
+    fig, ax_price = plt.subplots(figsize=(12, 6))
+    ax_equity = ax_price.twinx()
+
+    # Plot NVDA price.
+    ax_price.plot(times, prices, color="tab:blue", label=f"{symbol} Close")
+    ax_price.set_ylabel(f"{symbol} price", color="tab:blue")
+    ax_price.tick_params(axis="y", labelcolor="tab:blue")
+
+    # Plot equity curve on secondary axis.
+    ax_equity.plot(times, equity, color="tab:orange", label="Equity")
+    ax_equity.set_ylabel("Equity", color="tab:orange")
+    ax_equity.tick_params(axis="y", labelcolor="tab:orange")
+
+    # Mark trades: buys with green upward triangles, sells with red downward triangles,
+    # connecting each entry/exit pair with a thin gray line.
+    buy_labeled = False
+    sell_labeled = False
+    for t in result.trades:
+        # Guard against out-of-range indices.
+        if not (0 <= t.entry_index < len(prices) and 0 <= t.exit_index < len(prices)):
+            continue
+
+        if hasattr(times, "iloc"):
+            t_entry = times.iloc[t.entry_index]
+            t_exit = times.iloc[t.exit_index]
+        else:  # pragma: no cover - fallback for non-Index-like sequences
+            t_entry = times[t.entry_index]
+            t_exit = times[t.exit_index]
+
+        # Entry marker (buy).
+        ax_price.scatter(
+            t_entry,
+            t.entry_price,
+            marker="^",
+            color="green",
+            s=40,
+            zorder=5,
+            label="Buy" if not buy_labeled else None,
+        )
+        buy_labeled = True
+
+        # Exit marker (sell).
+        ax_price.scatter(
+            t_exit,
+            t.exit_price,
+            marker="v",
+            color="red",
+            s=40,
+            zorder=5,
+            label="Sell" if not sell_labeled else None,
+        )
+        sell_labeled = True
+
+        # Thin line connecting entry and exit.
+        ax_price.plot(
+            [t_entry, t_exit],
+            [t.entry_price, t.exit_price],
+            color="gray",
+            linewidth=0.8,
+            alpha=0.7,
+            zorder=4,
+        )
+
+    ax_price.set_xlabel("Time" if "Time" in data.columns else "Bar index")
+    ax_price.grid(True, alpha=0.3)
+    ax_price.set_title(f"{symbol} price and equity curve with trades")
+
+    # Combined legend from both axes.
+    lines_p, labels_p = ax_price.get_legend_handles_labels()
+    lines_e, labels_e = ax_equity.get_legend_handles_labels()
+    if lines_p or lines_e:
+        ax_price.legend(lines_p + lines_e, labels_p + labels_e, loc="upper left")
+
+    fig.tight_layout()
+    plt.show()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run a simple LSTM-based trading backtest.")
     parser.add_argument(
@@ -595,6 +730,10 @@ def main() -> None:
             "equity": result.equity_curve,
         })
         equity_df.to_csv(args.export_equity_csv, index=False)
+
+    # Interactive visualization: NVDA price + equity curve + trades.
+    # This will no-op (with a message) if matplotlib is not installed.
+    _plot_price_and_equity_with_trades(data, result, symbol="NVDA")
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -71,7 +71,7 @@ class TrainingConfig:
     """Model and training hyperparameters (single-run defaults + search spaces)."""
 
     # Default values for a single run
-    frequency: str = "15min"
+    frequency: str = "60min"
     tsteps: int = 5
     rows_ahead: int = 1
     tr_split: float = 0.7

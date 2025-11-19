@@ -20,6 +20,8 @@ The script will pop up a matplotlib figure with:
 from __future__ import annotations
 
 import argparse
+import os
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -71,6 +73,14 @@ def plot_equity_and_trade_density(
 
     fig.autofmt_xdate()
     plt.tight_layout()
+
+    # Save diagnostics figure under backtests/
+    out_dir = Path("backtests")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "backtest_diagnostics.png"
+    fig.savefig(out_path, dpi=150)
+    print(f"Saved diagnostics plot to {out_path}")
+
     plt.show()
 
 

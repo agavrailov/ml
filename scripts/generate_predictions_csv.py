@@ -1,8 +1,8 @@
-"""Generate per-bar LSTM predictions for NVDA hourly data.
+"""Generate per-bar LSTM predictions for NVDA data.
 
-This script loads `data/processed/nvda_<frequency>.csv`, runs the
-existing `predict_future_prices` function in a sliding-window fashion,
-and writes a predictions CSV with columns:
+This script loads `data/processed/nvda_<frequency>.csv`, runs the existing
+LSTM prediction pipeline in a sliding-window fashion, and writes a
+predictions CSV with columns:
 
 - Time
 - predicted_price
@@ -13,7 +13,7 @@ Usage (from repo root):
         --output backtests/nvda_60min_predictions.csv
 
 This CSV can then be consumed by `src.backtest.py` with
-`--prediction-mode=csv --predictions-csv <path>`.
+`--prediction-mode=csv --predictions-csv <path>` or by `src.paper_trade.py`.
 """
 from __future__ import annotations
 
@@ -21,16 +21,17 @@ import argparse
 import os
 from typing import Optional
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 from tqdm import tqdm
 
-from src.config import get_hourly_data_csv_path, TSTEPS
-from src.predict import build_prediction_context, predict_sequence_batch
+from src import config as config_mod
 from src.data_processing import add_features
 from src.data_utils import apply_standard_scaler
+from src.predict import build_prediction_context, predict_sequence_batch
 
-ndef generate_predictions_for_csv(
+
+def generate_predictions_for_csv(
     frequency: str,
     output_path: str,
     max_rows: Optional[int] = None,
@@ -42,7 +43,7 @@ from src.data_utils import apply_standard_scaler
     are built once and predictions are computed in a single batched call.
     """
 
-    source_path = get_hourly_data_csv_path(frequency)
+    source_path = config_mod.get_hourly_data_csv_path(frequency)
     if not os.path.exists(source_path):
         raise FileNotFoundError(
             f"Source OHLC CSV not found at {source_path}. "
@@ -64,7 +65,7 @@ from src.data_utils import apply_standard_scaler
     df["Time"] = pd.to_datetime(df["Time"])
 
     # Build a reusable prediction context for this (frequency, TSTEPS).
-    ctx = build_prediction_context(frequency=frequency, tsteps=TSTEPS)
+    ctx = build_prediction_context(frequency=frequency, tsteps=config_mod.TSTEPS)
 
     # Feature engineering over the entire dataset.
     df_featured = add_features(df.copy(), ctx.features_to_use)
@@ -87,10 +88,12 @@ from src.data_utils import apply_standard_scaler
 
     # Align predictions back to the original raw data via Time. This accounts
     # for any rows dropped during feature engineering (rolling windows).
-    preds_df = pd.DataFrame({
-        "Time": df_featured["Time"].reset_index(drop=True),
-        "predicted_price": denorm_feat,
-    })
+    preds_df = pd.DataFrame(
+        {
+            "Time": df_featured["Time"].reset_index(drop=True),
+            "predicted_price": denorm_feat,
+        }
+    )
     merged = pd.merge(
         df[["Time"]].reset_index(drop=True),
         preds_df,

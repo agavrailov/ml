@@ -133,16 +133,10 @@ def run_backtest(
     # - Open positions at the *next* bar's Open (i+1).
     # - Evaluate TP/SL on bars after entry (i+1, i+2, ...).
     #
-    # For long runs, emit a lightweight textual progress indicator roughly
-    # every 0.1% of bars so the CLI shows that work is progressing.
-    progress_step = max(n // 1000, 1)  # 1000 steps ≈ 0.1% increments
-
+    # Iterate over all bars without emitting progress to stdout. Progress
+    # printing was removed to avoid flooding logs during large grid runs or
+    # test suites; if needed it can be reintroduced behind an explicit flag.
     for i in range(n):
-        if i % progress_step == 0:
-            pct = (i / n) * 100.0
-            # Print on a new line so progress is clearly visible in all terminals.
-            print(f"Backtest progress: {pct:5.1f}% ({i}/{n} bars)", flush=True)
-
         row = data.iloc[i]
         # 1) If there is an open position, check for exits on this bar.
         if position is not None:
@@ -206,7 +200,9 @@ def run_backtest(
             if not (np.isfinite(model_sigma) and np.isfinite(atr_value)):
                 equity_curve.append(equity)
                 continue
-            if not (model_sigma > 0 and atr_value > 0):
+            # Allow model_sigma == 0.0 to represent "no model error margin" but
+            # still require a strictly positive ATR value for sizing.
+            if not (atr_value > 0):
                 equity_curve.append(equity)
                 continue
 

@@ -21,7 +21,7 @@ import pandas as pd
 from src.backtest_engine import BacktestConfig, BacktestResult, Position, Trade
 from src.config import FREQUENCY, get_hourly_data_csv_path
 from src.trading_strategy import StrategyConfig, StrategyState, TradePlan, compute_tp_sl_and_size
-from src.backtest import _estimate_atr_like, _make_naive_prediction_provider
+from src.backtest import _estimate_atr_like, _load_predictions_csv, _make_csv_prediction_provider
 
 
 @dataclass
@@ -77,6 +77,7 @@ def _build_backtest_config(cfg: PaperTradingConfig, atr_like: float) -> Backtest
 def run_paper_trading_over_dataframe(
     data: pd.DataFrame,
     cfg: Optional[PaperTradingConfig] = None,
+    predictions_csv: Optional[str] = None,
 ) -> BacktestResult:
     """Simulate a paper-trading session over a historical DataFrame.
 
@@ -94,9 +95,13 @@ def run_paper_trading_over_dataframe(
     atr_like = _estimate_atr_like(data)
     bt_cfg = _build_backtest_config(cfg, atr_like=atr_like)
 
-    # Use the same naive prediction provider for now; this can be swapped for
-    # a model-based provider once your online prediction path is in place.
-    provider = _make_naive_prediction_provider(offset_multiple=2.0, atr_like=atr_like)
+    if predictions_csv is None:
+        raise ValueError(
+            "run_paper_trading_over_dataframe requires predictions_csv path for CSV-based predictions",
+        )
+
+    preds_df = _load_predictions_csv(predictions_csv)
+    provider = _make_csv_prediction_provider(preds_df, data)
 
     # Internal state mirrors the backtest engine.
     state = PaperTradingState(
@@ -221,6 +226,16 @@ def main() -> None:
             "file under data/processed/ for the chosen frequency is used."
         ),
     )
+    parser.add_argument(
+        "--predictions-csv",
+        type=str,
+        default="data/processed/predictions.csv",
+        help=(
+            "Path to a per-bar predictions CSV with at least 'predicted_price' "
+            "(and optionally 'Time') columns. Used as the prediction source for "
+            "paper trading."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -231,7 +246,7 @@ def main() -> None:
     data = pd.read_csv(csv_path)
 
     cfg = PaperTradingConfig(initial_equity=initial_equity, frequency=freq)
-    result = run_paper_trading_over_dataframe(data, cfg=cfg)
+    result = run_paper_trading_over_dataframe(data, cfg=cfg, predictions_csv=args.predictions_csv)
 
     print("[paper] Session summary")
     print(f"Frequency:      {freq}")
