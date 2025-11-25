@@ -66,57 +66,69 @@ def compute_tp_sl_and_size(state: StrategyState, cfg: StrategyConfig) -> Optiona
     Returns a TradePlan if all entry conditions are satisfied; otherwise
     returns None to indicate "no trade".
 
-    Logic follows `trading_system_strategy.md`:
-    - Require predicted_move > 0.
-    - Define usable_move = predicted_move - k_sigma_err * sigma_err and
-      require it to be positive and sufficiently large compared to ATR.
-    - Set tp_dist = usable_move and sl_dist = tp_dist / reward_risk_ratio.
-    - Size the position so that max_risk_notional = risk_per_trade_pct * equity.
+    This version reasons *primarily in returns* rather than absolute price
+    distances so that the logic is approximately scale-invariant:
+
+    - predicted_return = (P_pred / P0) - 1
+    - sigma_return     = model_error_sigma / P0
+    - atr_return       = ATR / P0
+
+    We then apply the same structure as the original strategy, but in return
+    space, and finally map TP/SL back to absolute prices.
     """
 
     # Do not open new positions if one is already open.
     if state.has_open_position:
         return None
 
-    # 1) Basic directional check.
-    predicted_move = state.predicted_price - state.current_price
-    if predicted_move <= 0:
+    # Guard against nonsensical prices.
+    if state.current_price <= 0:
         return None
 
-    # 2) Error-adjusted usable move.
-    usable_move = predicted_move - cfg.k_sigma_err * state.model_error_sigma
-    if usable_move <= 0:
+    price = float(state.current_price)
+
+    # 1) Basic directional check, in return space.
+    predicted_return = (state.predicted_price / price) - 1.0
+    if predicted_return <= 0.0:
         return None
 
-    # 3) ATR-based filter: avoid trading on noise.
-    min_tp_dist_atr = cfg.k_atr_min_tp * state.atr
-    if usable_move < min_tp_dist_atr:
+    sigma_return = state.model_error_sigma / price if price > 0.0 else 0.0
+    atr_return = state.atr / price if price > 0.0 else 0.0
+
+    # 2) Error-adjusted usable move (in returns).
+    usable_return = predicted_return - cfg.k_sigma_err * sigma_return
+    if usable_return <= 0.0:
         return None
 
-    # 4) Define TP distance from usable move.
-    tp_dist = usable_move
-    if tp_dist <= 0:
+    # 3) ATR-based filter: avoid trading on noise (also in returns).
+    min_tp_return = cfg.k_atr_min_tp * atr_return
+    if usable_return < min_tp_return:
         return None
 
-    tp_price = state.current_price + tp_dist
+    # 4) Define TP distance from usable move and convert back to price.
+    tp_dist = usable_return * price
+    if tp_dist <= 0.0:
+        return None
+
+    tp_price = price + tp_dist
 
     # 5) Define SL from reward:risk ratio.
-    if cfg.reward_risk_ratio <= 0:
+    if cfg.reward_risk_ratio <= 0.0:
         return None
 
     stop_dist = tp_dist / cfg.reward_risk_ratio
-    if stop_dist <= 0:
+    if stop_dist <= 0.0:
         return None
 
-    sl_price = state.current_price - stop_dist
+    sl_price = price - stop_dist
 
     # 6) Position sizing based on capital at risk.
     max_risk_notional = cfg.risk_per_trade_pct * state.account_equity
-    if max_risk_notional <= 0:
+    if max_risk_notional <= 0.0:
         return None
 
     risk_per_unit = stop_dist  # long-only approximation
-    if risk_per_unit <= 0:
+    if risk_per_unit <= 0.0:
         return None
 
     size = max_risk_notional / risk_per_unit

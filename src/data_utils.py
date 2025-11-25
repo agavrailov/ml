@@ -46,6 +46,25 @@ def apply_standard_scaler(
     return df_norm
 
 
+def compute_log_return_labels(prices: np.ndarray, rows_ahead: int) -> np.ndarray:
+    """Compute forward log-return labels for a 1D price series.
+
+    For each index ``t`` where ``t + rows_ahead`` exists, we define::
+
+        r_t = log(price_{t+rows_ahead}) - log(price_t)
+
+    The last ``rows_ahead`` positions are set to ``NaN`` because they lack a
+    future price. The returned array has the same length as ``prices``.
+    """
+    prices = np.asarray(prices, dtype=float)
+
+    log_returns = np.full_like(prices, np.nan, dtype=float)
+    if rows_ahead < len(prices):
+        log_returns[:-rows_ahead] = np.log(prices[rows_ahead:]) - np.log(prices[:-rows_ahead])
+
+    return log_returns
+
+
 def get_effective_data_length(
     data: pd.DataFrame,
     sequence_length: int,

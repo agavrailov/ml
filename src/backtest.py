@@ -176,19 +176,24 @@ def _make_model_prediction_provider(data: pd.DataFrame, frequency: str) -> Predi
     df_normalized = apply_standard_scaler(df_featured, feature_cols, ctx.scaler_params)
 
     # Batched predictions over all sliding windows (on feature-engineered data).
-    preds_normalized = predict_sequence_batch(ctx, df_normalized)
+    # The model outputs forward log-return predictions on Open prices.
+    preds_log = predict_sequence_batch(ctx, df_normalized)
 
-    # Align predictions to the feature-engineered DataFrame first. For M rows and
-    # T steps, we have len(preds_normalized) = M - T + 1 predictions,
+    # Align log-return predictions to the feature-engineered DataFrame first. For
+    # M rows and T steps, we have len(preds_log) = M - T + 1 predictions,
     # corresponding to feature rows indices [T-1, T, ..., M-1]. Prepend NaNs for
     # the warmup period on the FEATURED data.
     m = len(df_featured)
-    preds_feat_full = np.full(shape=(m,), fill_value=np.nan, dtype=np.float32)
-    if len(preds_normalized) > 0:
-        preds_feat_full[ctx.tsteps - 1 : ctx.tsteps - 1 + len(preds_normalized)] = preds_normalized
+    preds_log_full = np.full(shape=(m,), fill_value=np.nan, dtype=np.float32)
+    if len(preds_log) > 0:
+        preds_log_full[ctx.tsteps - 1 : ctx.tsteps - 1 + len(preds_log)] = preds_log
 
-    # Denormalize using the stored scaler (Open as target) on the FEATURED data.
-    denorm_feat = preds_feat_full * ctx.std_vals["Open"] + ctx.mean_vals["Open"]
+    # Map log returns back to prices using the raw Open series from the
+    # feature-engineered DataFrame.
+    base_open = df_featured["Open"].to_numpy(dtype=float)
+    denorm_feat = np.full_like(preds_log_full, np.nan, dtype=np.float32)
+    mask = np.isfinite(preds_log_full) & np.isfinite(base_open)
+    denorm_feat[mask] = base_open[mask] * np.exp(preds_log_full[mask])
 
     # Now align predictions back to the ORIGINAL raw data length n by joining on
     # Time when available. This accounts for any rows dropped during feature
@@ -233,20 +238,11 @@ def _make_model_prediction_provider(data: pd.DataFrame, frequency: str) -> Predi
     elif len(times_full) > n:
         times_full = times_full.iloc[:n]
 
-    # Apply rolling bias-correction layer when we have a trained bias file and
-    # sufficient data for recent-window re-estimation.
+    # Apply a rolling bias-correction layer in price space. For log-return
+    # models we avoid mixing units and therefore ignore any global
+    # ``mean_residual`` computed during training (which is in log-return
+    # space). The correction below relies purely on local price residuals.
     mean_residual = 0.0
-    try:
-        model_path, bias_correction_path, _, _, _ = get_latest_best_model_path(
-            target_frequency=frequency,
-            tsteps=TSTEPS,
-        )
-        if bias_correction_path and os.path.exists(bias_correction_path):
-            with open(bias_correction_path, "r") as f:
-                bias_data = json.load(f)
-            mean_residual = float(bias_data.get("mean_residual", 0.0))
-    except Exception:
-        mean_residual = 0.0
 
     usable_len = max(0, n - ROWS_AHEAD)
     if usable_len > 0:

@@ -159,9 +159,9 @@ class StrategyDefaultsConfig:
 
     # Noise / filter parameters
     # How much of the model residual sigma_err we subtract from the predicted move.
-    k_sigma_err: float = 0.1
+    k_sigma_err: float = 3
     # Minimum TP distance as a multiple of ATR.
-    k_atr_min_tp: float = 1
+    k_atr_min_tp: float = 10
 
     # Position sizing constraints
     min_position_size: float = 1.0

@@ -169,11 +169,13 @@ def predict_future_prices(
 ) -> float:
     """Predict a future price using the latest best LSTM model.
 
-    This convenience wrapper now uses :class:`PredictionContext` and
-    :func:`predict_sequence_batch` under the hood. It builds a context for the
-    requested (frequency, tsteps), runs feature engineering + scaling on the
-    input data, and returns a single-step price prediction for the *last*
-    available window.
+    The underlying LSTM is trained to predict *forward log returns* on Open
+    prices rather than absolute prices. This wrapper runs feature engineering +
+    scaling on the input data, obtains a single-step log-return prediction for
+    the last available window, and maps it back to a price using the most
+    recent Open price:
+
+        price_pred = Open_t * exp(r_t_pred).
 
     Args:
         input_data_df: Raw OHLC input data. Must contain enough history to
@@ -216,13 +218,15 @@ def predict_future_prices(
     # Shape (1, TSTEPS, N_FEATURES)
     input_reshaped = input_normalized_features.values[np.newaxis, :, :]
 
-    predictions_normalized = ctx.model.predict(input_reshaped, verbose=0)
-    single_prediction_normalized = predictions_normalized[0, 0]
+    # Model outputs a log-return prediction for the horizon defined by ROWS_AHEAD.
+    predictions_log = ctx.model.predict(input_reshaped, verbose=0)
+    single_log_return = float(predictions_log[0, 0])
 
-    # Denormalize prediction using the stored scaler (Open as target).
-    denormalized_prediction = single_prediction_normalized * ctx.std_vals['Open'] + ctx.mean_vals['Open']
+    # Map log-return back to a price using the last raw Open price.
+    base_open = float(df_featured_input['Open'].iloc[-1])
+    predicted_price = base_open * float(np.exp(single_log_return))
 
-    return denormalized_prediction
+    return predicted_price
 
 if __name__ == "__main__":
     # Example usage for prediction

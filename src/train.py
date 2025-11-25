@@ -15,6 +15,7 @@ from src.data_utils import (
     apply_standard_scaler,
     get_effective_data_length,
     create_sequences_for_stateful_lstm,
+    compute_log_return_labels,
 )
 from src.config import (
     ROWS_AHEAD, TR_SPLIT, BATCH_SIZE,
@@ -96,12 +97,81 @@ def train_model(
     df_train_normalized = apply_standard_scaler(df_train_raw, feature_cols, scaler_params)
     df_val_normalized = apply_standard_scaler(df_val_raw, feature_cols, scaler_params)
     
-    X_train, Y_train = create_sequences_for_stateful_lstm(df_train_normalized, tsteps, current_batch_size, ROWS_AHEAD)
-    X_val, Y_val = create_sequences_for_stateful_lstm(df_val_normalized, tsteps, current_batch_size, ROWS_AHEAD)
+    # Create input sequences from normalized features. We will override the
+    # price targets with log-return targets computed from the *raw* Open
+    # prices to make the label distribution more stationary.
+    X_train, _ = create_sequences_for_stateful_lstm(
+        df_train_normalized,
+        tsteps,
+        current_batch_size,
+        ROWS_AHEAD,
+    )
+    X_val, _ = create_sequences_for_stateful_lstm(
+        df_val_normalized,
+        tsteps,
+        current_batch_size,
+        ROWS_AHEAD,
+    )
 
     if X_train.shape[0] == 0 or X_val.shape[0] == 0:
-        print(f"Warning: Not enough data to create sequences for training or validation for {frequency} with TSTEPS={tsteps}. Skipping training.")
+        print(
+            f"Warning: Not enough data to create sequences for training or validation "
+            f"for {frequency} with TSTEPS={tsteps}. Skipping training."
+        )
         return None
+
+    # --- Log-return targets (gains) ---
+    # For each window ending at time index ``t`` with horizon ``ROWS_AHEAD``, we
+    # define the target as the forward log return on raw Open prices::
+    #
+    #     r_t = log(Open_{t+ROWS_AHEAD}) - log(Open_t)
+    #
+    # We then align one target per input window.
+    def _make_log_return_targets(df_raw: pd.DataFrame, num_sequences: int) -> np.ndarray:
+        prices = df_raw["Open"].to_numpy(dtype=float)
+        log_returns = compute_log_return_labels(prices, rows_ahead=ROWS_AHEAD)
+
+        n = len(log_returns)
+        if n == 0:
+            return np.zeros((0, 1), dtype=float)
+
+        # Valid indices are those where we have a future price.
+        valid_len = max(0, n - ROWS_AHEAD)
+        if valid_len <= 0:
+            return np.zeros((0, 1), dtype=float)
+
+        # Number of possible sliding windows before batch truncation.
+        total_sequences = max(0, valid_len - tsteps + 1)
+        if total_sequences <= 0:
+            return np.zeros((0, 1), dtype=float)
+
+        effective_sequences = min(num_sequences, total_sequences)
+        targets = []
+        for i in range(effective_sequences):
+            t_end = i + tsteps - 1
+            targets.append(log_returns[t_end])
+
+        y_arr = np.asarray(targets, dtype=float)
+        if y_arr.ndim == 1:
+            y_arr = y_arr.reshape(-1, 1)
+        return y_arr
+
+    Y_train = _make_log_return_targets(df_train_raw, num_sequences=X_train.shape[0])
+    Y_val = _make_log_return_targets(df_val_raw, num_sequences=X_val.shape[0])
+
+    if Y_train.shape[0] == 0 or Y_val.shape[0] == 0:
+        print(
+            f"Warning: Not enough data to create log-return targets for training or "
+            f"validation for {frequency} with TSTEPS={tsteps}. Skipping training."
+        )
+        return None
+
+    # Truncate X so that the number of input windows matches the number of
+    # log-return targets.
+    if X_train.shape[0] > Y_train.shape[0]:
+        X_train = X_train[: Y_train.shape[0]]
+    if X_val.shape[0] > Y_val.shape[0]:
+        X_val = X_val[: Y_val.shape[0]]
 
     # --- Model Building and Training ---
     model = build_lstm_model(
@@ -152,19 +222,15 @@ def train_model(
     # Load weights from the trained stateful model into the non-stateful model
     load_stateful_weights_into_non_stateful_model(model, non_stateful_model_for_bias)
 
-    # Make predictions on the validation set
-    predictions_val_normalized = non_stateful_model_for_bias.predict(X_val, batch_size=current_batch_size)
+    # Make predictions on the validation set in log-return space
+    predictions_val_log = non_stateful_model_for_bias.predict(X_val, batch_size=current_batch_size)
 
-    # Denormalize predictions and actuals
-    mean_open = scaler_params['mean']['Open']
-    std_open = scaler_params['std']['Open']
+    # Ensure shapes are compatible
+    predictions_val_log = predictions_val_log.reshape(Y_val.shape)
 
-    predictions_val_denormalized = (predictions_val_normalized * std_open) + mean_open
-    actuals_val_denormalized = (Y_val * std_open) + mean_open
-
-    # Calculate mean residual
-    mean_residual = np.mean(actuals_val_denormalized - predictions_val_denormalized)
-    print(f"Mean residual on validation set: {mean_residual:.4f}")
+    # Calculate mean residual in log-return space
+    mean_residual = float(np.mean(Y_val - predictions_val_log))
+    print(f"Mean residual on validation set (log returns): {mean_residual:.6f}")
 
     # Save mean residual to a JSON file
     bias_correction_path = os.path.join(MODEL_REGISTRY_DIR, f"bias_correction_{frequency}_tsteps{tsteps}_{timestamp}.json")

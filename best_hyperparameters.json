@@ -1,0 +1,17 @@
+{
+    "15min": {
+        "5": {
+            "validation_loss": 2.5137531338259578e-05,
+            "model_filename": "my_lstm_model_15min_tsteps5_20251125_142920.keras",
+            "lstm_units": 32,
+            "learning_rate": 0.01,
+            "epochs": 20,
+            "batch_size": 64,
+            "n_lstm_layers": 1,
+            "stateful": true,
+            "optimizer_name": "rmsprop",
+            "loss_function": "mse",
+            "bias_correction_filename": "bias_correction_15min_tsteps5_20251125_142920.json"
+        }
+    }
+}

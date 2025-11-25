@@ -74,17 +74,22 @@ def generate_predictions_for_csv(
     feature_cols = [c for c in df_featured.columns if c != "Time"]
     df_normalized = apply_standard_scaler(df_featured, feature_cols, ctx.scaler_params)
 
-    # Batched predictions over all sliding windows.
-    preds_normalized = predict_sequence_batch(ctx, df_normalized)
+    # Batched predictions over all sliding windows. The model outputs
+    # forward log-return predictions (on Open prices).
+    preds_log = predict_sequence_batch(ctx, df_normalized)
 
-    # Align predictions to the feature-engineered DataFrame.
+    # Align log-return predictions to the feature-engineered DataFrame.
     m = len(df_featured)
-    preds_feat_full = np.full(shape=(m,), fill_value=np.nan, dtype=np.float32)
-    if len(preds_normalized) > 0:
-        preds_feat_full[ctx.tsteps - 1 : ctx.tsteps - 1 + len(preds_normalized)] = preds_normalized
+    preds_log_full = np.full(shape=(m,), fill_value=np.nan, dtype=np.float32)
+    if len(preds_log) > 0:
+        preds_log_full[ctx.tsteps - 1 : ctx.tsteps - 1 + len(preds_log)] = preds_log
 
-    # Denormalize using the stored scaler (Open as target).
-    denorm_feat = preds_feat_full * ctx.std_vals["Open"] + ctx.mean_vals["Open"]
+    # Map log returns back to prices using the raw Open series from the
+    # feature-engineered DataFrame.
+    base_open = df_featured["Open"].to_numpy(dtype=float)
+    denorm_feat = np.full_like(preds_log_full, np.nan, dtype=np.float32)
+    mask = np.isfinite(preds_log_full) & np.isfinite(base_open)
+    denorm_feat[mask] = base_open[mask] * np.exp(preds_log_full[mask])
 
     # Align predictions back to the original raw data via Time. This accounts
     # for any rows dropped during feature engineering (rolling windows).

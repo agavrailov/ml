@@ -139,7 +139,7 @@ def evaluate_model_performance(
         scaler_params = json.load(f)
     
     # --- 2. Filter and Prepare Data ---
-    df_full_featured, _ = prepare_keras_input_data(hourly_data_csv, features_to_use) # Pass features_to_use
+    df_full_featured, _ = prepare_keras_input_data(hourly_data_csv, features_to_use)  # Pass features_to_use
 
     # Use the last 20% of the available data as the validation/evaluation window.
     total_rows = len(df_full_featured)
@@ -151,93 +151,156 @@ def evaluate_model_performance(
     df_eval_featured = df_full_featured.iloc[-validation_window_size:].copy()
 
     if len(df_eval_featured) < tsteps + ROWS_AHEAD:
-        print(f"Error: Not enough data in the evaluation window ({len(df_eval_featured)} rows) to generate a prediction.")
+        print(
+            f"Error: Not enough data in the evaluation window ({len(df_eval_featured)} rows) "
+            "to generate a prediction."
+        )
         return
-        
+
     print(f"Evaluating on {len(df_eval_featured)} data points from the last validation window.")
 
-    feature_cols = [col for col in df_eval_featured.columns if col != 'Time']
-    
+    feature_cols = [col for col in df_eval_featured.columns if col != "Time"]
+
     # Normalize evaluation window using the stored scaler parameters
     df_eval_normalized = apply_standard_scaler(df_eval_featured, feature_cols, scaler_params)
-    
-    mean_open = scaler_params['mean']['Open']
-    std_open = scaler_params['std']['Open']
 
-    # --- 3. Generate Predictions using Sequence Method ---
-    print("Generating predictions using sequence method...")
-    
-    # Create sequences from the normalized evaluation data
-    X_eval, Y_eval_normalized = create_sequences_for_stateless_lstm(df_eval_normalized, tsteps, ROWS_AHEAD)
+    # --- 3. Generate Predictions using Sequence Method (log returns) ---
+    print("Generating predictions using sequence method (log returns)...")
+
+    # Create input sequences from the normalized evaluation data. We ignore the
+    # price labels returned by this helper and instead construct log-return
+    # targets from the raw Open prices.
+    X_eval, _ = create_sequences_for_stateless_lstm(df_eval_normalized, tsteps, ROWS_AHEAD)
 
     if X_eval.shape[0] == 0:
         print("Could not generate any evaluation sequences with the available data.")
         return
 
-    # Get the corresponding dates for the predictions
-    # The actual values (Y_eval) correspond to the end of each sequence
-    prediction_dates = df_eval_featured['Time'].iloc[tsteps + ROWS_AHEAD - 1 : tsteps + ROWS_AHEAD - 1 + len(Y_eval_normalized)].values
+    # Build log-return targets aligned to the end of each window.
+    from src.data_utils import compute_log_return_labels
 
-    # Make predictions on the entire set of sequences
-    predictions_normalized = model.predict(X_eval, batch_size=BATCH_SIZE)
+    prices_eval = df_eval_featured["Open"].to_numpy(dtype=float)
+    log_returns = compute_log_return_labels(prices_eval, rows_ahead=ROWS_AHEAD)
 
-    # --- DIAGNOSTIC: Compare standard deviations ---
-    print("\n--- Diagnostic Stats ---")
-    print(f"Std Dev of Normalized Predictions: {np.std(predictions_normalized):.4f}")
-    print(f"Std Dev of Normalized Actuals (Y_eval): {np.std(Y_eval_normalized):.4f}")
+    n = len(log_returns)
+    if n == 0:
+        print("No prices available to compute log-return targets.")
+        return
+
+    valid_len = max(0, n - ROWS_AHEAD)
+    if valid_len <= 0:
+        print("Not enough data to compute forward log returns for evaluation.")
+        return
+
+    total_sequences = max(0, valid_len - tsteps + 1)
+    if total_sequences <= 0:
+        print("Not enough data to align log-return targets with sequences.")
+        return
+
+    effective_sequences = min(X_eval.shape[0], total_sequences)
+    y_eval = []
+    for i in range(effective_sequences):
+        t_end = i + tsteps - 1
+        y_eval.append(log_returns[t_end])
+
+    if not y_eval:
+        print("No aligned log-return targets available for evaluation.")
+        return
+
+    Y_eval = np.asarray(y_eval, dtype=float)
+    if Y_eval.ndim == 1:
+        Y_eval = Y_eval.reshape(-1, 1)
+
+    # Truncate X_eval if necessary so that X and Y lengths match.
+    if X_eval.shape[0] > Y_eval.shape[0]:
+        X_eval = X_eval[: Y_eval.shape[0]]
+
+    # Get the corresponding dates for the predictions (use horizon timestamp).
+    prediction_dates = df_eval_featured["Time"].iloc[
+        tsteps + ROWS_AHEAD - 1 : tsteps + ROWS_AHEAD - 1 + len(Y_eval)
+    ].values
+
+    # Make predictions on the entire set of sequences; outputs are log-return
+    # predictions in the same units as ``Y_eval``.
+    predictions_log = model.predict(X_eval, batch_size=BATCH_SIZE)
+
+    # --- DIAGNOSTIC: Compare standard deviations in log-return space ---
+    print("\n--- Diagnostic Stats (log returns) ---")
+    print(f"Std Dev of Predicted Log Returns: {np.std(predictions_log):.6f}")
+    print(f"Std Dev of Actual Log Returns (Y_eval): {np.std(Y_eval):.6f}")
     print("------------------------\n")
 
-    print(f"Mean 'Open' for denormalization: {mean_open:.4f}")
-    print(f"Std 'Open' for denormalization: {std_open:.4f}")
+    # Ensure shapes are compatible
+    predictions_log = predictions_log.reshape(-1, 1)
+    if predictions_log.shape[0] > Y_eval.shape[0]:
+        predictions_log = predictions_log[: Y_eval.shape[0]]
 
-    # Denormalize predictions and actuals
-    predictions = (predictions_normalized * std_open) + mean_open
-    actuals = (Y_eval_normalized * std_open) + mean_open
-
-    # Apply explicit rolling bias-correction layer on recent data.
-    predictions_corrected = apply_rolling_bias_and_amplitude_correction(
-        predictions=predictions.flatten(),
-        actuals=actuals.flatten(),
+    # Apply explicit rolling bias-correction layer in log-return space.
+    predictions_corrected_log = apply_rolling_bias_and_amplitude_correction(
+        predictions=predictions_log.flatten(),
+        actuals=Y_eval.flatten(),
         window=correction_window_size,
         global_mean_residual=mean_residual,
-    ).reshape(predictions.shape)
-    print(f"Applied rolling bias correction and amplitude scaling with window size: {correction_window_size}")
+    ).reshape(predictions_log.shape)
+    print(
+        f"Applied rolling bias correction and amplitude scaling in log-return space "
+        f"with window size: {correction_window_size}"
+    )
 
-    # Calculate residuals (using corrected predictions)
-    residuals = actuals - predictions_corrected
+    # Calculate residuals (using corrected predictions) in log-return space.
+    residuals_log = Y_eval - predictions_corrected_log
 
-    # --- 4. Calculate and Print Evaluation Metrics ---
-    mae = mean_absolute_error(actuals, predictions_corrected)
-    mse = mean_squared_error(actuals, predictions_corrected)
+    # --- 4. Calculate and Print Evaluation Metrics (log returns) ---
+    mae = mean_absolute_error(Y_eval, predictions_corrected_log)
+    mse = mean_squared_error(Y_eval, predictions_corrected_log)
     rmse = np.sqrt(mse)
-    correlation = np.corrcoef(actuals.flatten(), predictions_corrected.flatten())[0, 1] # Calculate correlation
+    correlation = np.corrcoef(Y_eval.flatten(), predictions_corrected_log.flatten())[0, 1]
 
-    print("\n--- Model Performance Metrics ---")
-    print(f"Mean Absolute Error (MAE): {mae:.4f}")
-    print(f"Mean Squared Error (MSE): {mse:.4f}")
-    print(f"Root Mean Squared Error (RMSE): {rmse:.4f}")
-    print(f"Correlation (Actual vs. Predicted): {correlation:.4f}") # Print correlation
-    print("---------------------------------\n")
+    print("\n--- Model Performance Metrics (log returns) ---")
+    print(f"Mean Absolute Error (MAE): {mae:.6f}")
+    print(f"Mean Squared Error (MSE): {mse:.6f}")
+    print(f"Root Mean Squared Error (RMSE): {rmse:.6f}")
+    print(f"Correlation (Actual vs. Predicted): {correlation:.4f}")
+    print("---------------------------------------------\n")
 
     # --- 5. Plot the Results ---
     print("Plotting results...")
     plt.style.use('seaborn-v0_8-darkgrid')
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 10), sharex=True) # Two subplots
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 10), sharex=True)  # Two subplots
 
-    # Plot Actual vs. Predicted
-    ax1.plot(prediction_dates, actuals, label='Actual Prices', color='royalblue', linewidth=2)
-    ax1.plot(prediction_dates, predictions_corrected, label='Predicted Prices (Corrected)', color='orangered', linestyle='--', linewidth=2)
-    ax1.set_title('Model Prediction vs. Actual Prices (Bias Corrected)', fontsize=16)
-    ax1.set_ylabel('Price (USD)', fontsize=12)
+    # Plot Actual vs. Predicted log returns
+    ax1.plot(
+        prediction_dates,
+        Y_eval,
+        label='Actual Log Returns',
+        color='royalblue',
+        linewidth=2,
+    )
+    ax1.plot(
+        prediction_dates,
+        predictions_corrected_log,
+        label='Predicted Log Returns (Corrected)',
+        color='orangered',
+        linestyle='--',
+        linewidth=2,
+    )
+    ax1.set_title('Model Prediction vs. Actual Log Returns (Bias Corrected)', fontsize=16)
+    ax1.set_ylabel('Log Return', fontsize=12)
     ax1.legend(fontsize=12)
     ax1.grid(True)
 
-    # Plot Residuals
-    ax2.plot(prediction_dates, residuals, label='Residuals (Actual - Predicted)', color='green', linewidth=1)
+    # Plot Residuals in log-return space
+    ax2.plot(
+        prediction_dates,
+        residuals_log,
+        label='Residuals (Actual - Predicted)',
+        color='green',
+        linewidth=1,
+    )
     ax2.axhline(y=0, color='red', linestyle='--', linewidth=0.8)
-    ax2.set_title('Prediction Residuals', fontsize=16)
+    ax2.set_title('Prediction Residuals (Log Returns)', fontsize=16)
     ax2.set_xlabel('Date', fontsize=12)
-    ax2.set_ylabel('Error (USD)', fontsize=12)
+    ax2.set_ylabel('Error (Log Return)', fontsize=12)
     ax2.legend(fontsize=12)
     ax2.grid(True)
     
@@ -252,11 +315,11 @@ def evaluate_model_performance(
     plt.savefig(evaluation_plot_path)
     print(f"Evaluation plot saved as '{evaluation_plot_path}'")
 
-    # Plot histogram of residuals
+    # Plot histogram of residuals (log returns)
     plt.figure(figsize=(10, 6))
-    plt.hist(residuals, bins=50, color='skyblue', edgecolor='black')
-    plt.title('Histogram of Prediction Residuals', fontsize=16)
-    plt.xlabel('Residual (Actual - Predicted)', fontsize=12)
+    plt.hist(residuals_log, bins=50, color='skyblue', edgecolor='black')
+    plt.title('Histogram of Prediction Residuals (Log Returns)', fontsize=16)
+    plt.xlabel('Residual (Actual - Predicted Log Return)', fontsize=12)
     plt.ylabel('Frequency', fontsize=12)
     plt.grid(True)
 
@@ -264,7 +327,7 @@ def evaluate_model_performance(
     plt.savefig(residuals_hist_path)
     print(f"Residuals histogram saved as '{residuals_hist_path}'")
 
-    return mae, correlation # Return MAE and correlation
+    return mae, correlation  # Return MAE and correlation
 
 if __name__ == "__main__":
     try:
