@@ -18,7 +18,7 @@ from typing import Iterable, Optional, List
 import numpy as np
 import pandas as pd
 
-from src.backtest_engine import BacktestConfig, BacktestResult, Position, Trade
+from src.backtest_engine import BacktestConfig, BacktestResult, Position, Trade, run_backtest
 from src.config import (
     FREQUENCY,
     RISK_PER_TRADE_PCT,
@@ -28,14 +28,17 @@ from src.config import (
     INITIAL_EQUITY,
     COMMISSION_PER_UNIT_PER_LEG,
     MIN_COMMISSION_PER_ORDER,
+    BACKTEST_DEFAULT_START_DATE,
+    BACKTEST_DEFAULT_END_DATE,
     get_hourly_data_csv_path,
 )
 from src.trading_strategy import StrategyConfig, StrategyState, TradePlan, compute_tp_sl_and_size
 from src.backtest import (
-    _estimate_atr_like,
+    _compute_atr_series,
     _load_predictions_csv,
     _make_csv_prediction_provider,
     _plot_price_and_equity_with_trades,
+    _apply_date_range,
 )
 
 
@@ -63,7 +66,11 @@ class PaperTradingConfig:
 
 @dataclass
 class PaperTradingState:
-    """Mutable state for an ongoing paper-trading session."""
+    """(Legacy) state for manual paper-trading loop.
+
+    Kept for backwards compatibility but no longer used now that we delegate
+    to the core backtest engine via ``run_backtest``.
+    """
 
     equity: float
     position: Optional[Position]
@@ -109,7 +116,9 @@ def run_paper_trading_over_dataframe(
     if data.empty:
         return BacktestResult(equity_curve=[cfg.initial_equity], trades=[])
 
-    atr_like = _estimate_atr_like(data)
+    # Compute per-bar ATR series (same helper as used by the backtest CLI).
+    atr_series = _compute_atr_series(data, window=14)
+    atr_like = float(atr_series.dropna().mean()) if not atr_series.dropna().empty else 1.0
     bt_cfg = _build_backtest_config(cfg, atr_like=atr_like)
 
     if predictions_csv is None:
@@ -120,104 +129,22 @@ def run_paper_trading_over_dataframe(
     preds_df = _load_predictions_csv(predictions_csv)
     provider = _make_csv_prediction_provider(preds_df, data)
 
-    # Internal state mirrors the backtest engine.
-    state = PaperTradingState(
-        equity=bt_cfg.initial_equity,
-        position=None,
-        trades=[],
-        equity_curve=[],
-    )
-
     required_cols = {"Open", "High", "Low", "Close"}
     missing = required_cols - set(data.columns)
     if missing:
         raise ValueError(f"Missing required columns in data: {missing}")
 
-    n = len(data)
-    for i in range(n):
-        row = data.iloc[i]
+    # Delegate to the core backtest engine so that paper trading uses the
+    # exact same entry/exit logic and per-bar ATR handling.
+    result = run_backtest(
+        data,
+        prediction_provider=provider,
+        cfg=bt_cfg,
+        atr_series=atr_series,
+        model_error_sigma_series=atr_series,
+    )
 
-        # 1) Exit logic for any open position.
-        if state.position is not None:
-            high = float(row["High"])
-            low = float(row["Low"])
-
-            exit_price: Optional[float] = None
-            if low <= state.position.sl_price:
-                exit_price = state.position.sl_price
-            elif high >= state.position.tp_price:
-                exit_price = state.position.tp_price
-
-            if exit_price is not None:
-                per_leg_commission = max(
-                    bt_cfg.commission_per_unit_per_leg * state.position.size,
-                    bt_cfg.min_commission_per_order,
-                )
-                commission = per_leg_commission * 2.0
-                trade = Trade(
-                    entry_index=state.position.entry_index,
-                    exit_index=i,
-                    entry_price=state.position.entry_price,
-                    exit_price=exit_price,
-                    size=state.position.size,
-                    commission=commission,
-                )
-                state.equity += trade.pnl
-                state.trades.append(trade)
-                state.position = None
-
-        # 2) Entry logic if flat and not at the last bar.
-        if state.position is None and i < n - 1:
-            predicted_price = provider(i, row)
-            decision_price = float(row["Close"])
-            strat_state = StrategyState(
-                current_price=decision_price,
-                predicted_price=float(predicted_price),
-                model_error_sigma=float(bt_cfg.model_error_sigma),
-                atr=float(bt_cfg.fixed_atr),
-                account_equity=float(state.equity),
-                has_open_position=False,
-            )
-
-            plan: Optional[TradePlan] = compute_tp_sl_and_size(strat_state, bt_cfg.strategy_config)
-            if plan is not None:
-                next_row = data.iloc[i + 1]
-                entry_price = float(next_row["Open"])
-                tp_dist = float(plan.tp_price) - decision_price
-                sl_dist = decision_price - float(plan.sl_price)
-
-                state.position = Position(
-                    entry_index=i + 1,
-                    entry_price=entry_price,
-                    size=float(plan.size),
-                    tp_price=entry_price + tp_dist,
-                    sl_price=entry_price - sl_dist,
-                )
-
-        state.equity_curve.append(state.equity)
-
-    # 3) Close any remaining open position at the last Close.
-    if state.position is not None:
-        last_row = data.iloc[-1]
-        exit_price = float(last_row["Close"])
-        per_leg_commission = max(
-            bt_cfg.commission_per_unit_per_leg * state.position.size,
-            bt_cfg.min_commission_per_order,
-        )
-        commission = per_leg_commission * 2.0
-        trade = Trade(
-            entry_index=state.position.entry_index,
-            exit_index=n - 1,
-            entry_price=state.position.entry_price,
-            exit_price=exit_price,
-            size=state.position.size,
-            commission=commission,
-        )
-        state.equity += trade.pnl
-        state.trades.append(trade)
-        state.equity_curve[-1] = state.equity
-
-    return BacktestResult(equity_curve=state.equity_curve, trades=state.trades)
+    return result
 
 
 def main() -> None:
@@ -233,6 +160,18 @@ def main() -> None:
         type=float,
         default=10_000.0,
         help="Initial account equity for the paper-trading session.",
+    )
+    parser.add_argument(
+        "--start-date",
+        type=str,
+        default=None,
+        help="Optional start date (YYYY-MM-DD) for the paper-trade window.",
+    )
+    parser.add_argument(
+        "--end-date",
+        type=str,
+        default=None,
+        help="Optional end date (YYYY-MM-DD) for the paper-trade window.",
     )
     parser.add_argument(
         "--csv-path",
@@ -260,14 +199,19 @@ def main() -> None:
     initial_equity = float(args.initial_equity)
     csv_path = args.csv_path or get_hourly_data_csv_path(freq)
 
-    data = pd.read_csv(csv_path)
+    data_full = pd.read_csv(csv_path)
+    data, date_from, date_to = _apply_date_range(
+        data_full,
+        start_date=args.start_date,
+        end_date=args.end_date,
+    )
 
     cfg = PaperTradingConfig(initial_equity=initial_equity, frequency=freq)
     result = run_paper_trading_over_dataframe(data, cfg=cfg, predictions_csv=args.predictions_csv)
 
     print("[paper] Session summary")
     print(f"Frequency:      {freq}")
-    if "Time" in data.columns:
+    if "Time" in data.columns and not data.empty:
         try:
             time_series = pd.to_datetime(data["Time"])
             start_time = time_series.iloc[0]
@@ -275,7 +219,9 @@ def main() -> None:
             print(f"Start date:     {start_time}")
             print(f"End date:       {end_time}")
         except Exception:
-            pass
+            print(f"Start/End date: {date_from} -> {date_to}")
+    else:
+        print(f"Start/End date: {date_from} -> {date_to}")
     print(f"Initial equity: {initial_equity:.2f}")
     print(f"Final equity:   {result.final_equity:.2f}")
     print(f"Trades:         {len(result.trades)}")
@@ -284,7 +230,16 @@ def main() -> None:
     # equity + trades diagram under backtests/. This uses matplotlib if
     # available and otherwise no-ops with a message, so it is safe for CLI
     # usage and tests.
-    _plot_price_and_equity_with_trades(data, result, symbol="NVDA")
+    _plot_price_and_equity_with_trades(
+        data,
+        result,
+        symbol="NVDA",
+        freq=freq,
+        k_sigma_err=cfg.k_sigma_err,
+        k_atr_min_tp=cfg.k_atr_min_tp,
+        risk_per_trade_pct=cfg.risk_per_trade_pct,
+        reward_risk_ratio=cfg.reward_risk_ratio,
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover

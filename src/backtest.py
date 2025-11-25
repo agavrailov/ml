@@ -12,6 +12,7 @@ Later this can be extended to use real model predictions.
 from __future__ import annotations
 
 import os
+import json
 
 import argparse
 from pathlib import Path
@@ -30,7 +31,12 @@ from src.config import (
     INITIAL_EQUITY,
     COMMISSION_PER_UNIT_PER_LEG,
     MIN_COMMISSION_PER_ORDER,
+    BACKTEST_DEFAULT_START_DATE,
+    BACKTEST_DEFAULT_END_DATE,
+    ROWS_AHEAD,
+    TSTEPS,
     get_hourly_data_csv_path,
+    get_latest_best_model_path,
 )
 from src.trading_strategy import StrategyConfig
 from src.predict import (
@@ -39,8 +45,11 @@ from src.predict import (
 )
 from src.data_processing import add_features
 from src.data_utils import apply_standard_scaler
+from src.bias_correction import apply_rolling_bias_and_amplitude_correction
 
 PREDICTIONS_DIR = "backtests"
+# Default rolling window for bias-correction layer in backtests.
+BIAS_CORRECTION_WINDOW = 100
 
 
 def _compute_atr_series(data: pd.DataFrame, window: int = 14) -> pd.Series:
@@ -85,16 +94,27 @@ def _estimate_atr_like(data: pd.DataFrame, window: int = 14) -> float:
     return float(cleaned.mean()) if not cleaned.empty else 1.0
 
 
-def _make_naive_prediction_provider(offset_multiple: float, atr_like: float) -> PredictionProvider:
+def _make_naive_prediction_provider(offset_multiple: float, atr_series: pd.Series) -> PredictionProvider:
     """Return a simple prediction provider for experimentation.
 
-    For each bar, prediction = Close + offset_multiple * atr_like.
-    This ensures a consistent positive edge in tests/experiments without
-    calling the real model.
+    For each bar, prediction = Close + offset_multiple * ATR_i, where
+    ATR_i is the per-bar ATR(14) on the active timeframe. If ATR_i is
+    missing or non-finite (e.g. warmup bars), we fall back to the mean
+    ATR over the dataset.
     """
 
+    cleaned = atr_series.dropna()
+    atr_mean = float(cleaned.mean()) if not cleaned.empty else 1.0
+
     def provider(i: int, row: pd.Series) -> float:  # noqa: ARG001
-        return float(row["Close"]) + offset_multiple * atr_like
+        if 0 <= i < len(atr_series):
+            atr_val = float(atr_series.iloc[i])
+            if not np.isfinite(atr_val):
+                atr_val = atr_mean
+        else:
+            atr_val = atr_mean
+
+        return float(row["Close"]) + offset_multiple * atr_val
 
     return provider
 
@@ -213,6 +233,42 @@ def _make_model_prediction_provider(data: pd.DataFrame, frequency: str) -> Predi
     elif len(times_full) > n:
         times_full = times_full.iloc[:n]
 
+    # Apply rolling bias-correction layer when we have a trained bias file and
+    # sufficient data for recent-window re-estimation.
+    mean_residual = 0.0
+    try:
+        model_path, bias_correction_path, _, _, _ = get_latest_best_model_path(
+            target_frequency=frequency,
+            tsteps=TSTEPS,
+        )
+        if bias_correction_path and os.path.exists(bias_correction_path):
+            with open(bias_correction_path, "r") as f:
+                bias_data = json.load(f)
+            mean_residual = float(bias_data.get("mean_residual", 0.0))
+    except Exception:
+        mean_residual = 0.0
+
+    usable_len = max(0, n - ROWS_AHEAD)
+    if usable_len > 0:
+        preds_trunc = denorm_full[:usable_len].astype(float)
+        if "Open" in df.columns:
+            acts_trunc = df["Open"].shift(-ROWS_AHEAD).to_numpy(dtype=float)[:usable_len]
+        else:
+            acts_trunc = df["Close"].shift(-ROWS_AHEAD).to_numpy(dtype=float)[:usable_len]
+
+        mask = np.isfinite(preds_trunc) & np.isfinite(acts_trunc)
+        if mask.any():
+            first = int(np.argmax(mask))
+            preds_seq = preds_trunc[first:]
+            acts_seq = acts_trunc[first:]
+            corrected_seq = apply_rolling_bias_and_amplitude_correction(
+                predictions=preds_seq,
+                actuals=acts_seq,
+                window=BIAS_CORRECTION_WINDOW,
+                global_mean_residual=mean_residual,
+            )
+            denorm_full[first:first + len(corrected_seq)] = corrected_seq
+
     # Write a single checkpoint CSV with per-bar predictions aligned to raw data.
     checkpoint_df = pd.DataFrame({
         "Time": times_full,
@@ -259,15 +315,27 @@ def _make_csv_prediction_provider(preds_df: pd.DataFrame, data: pd.DataFrame) ->
             on="Time",
             how="left",
         )
-        # Use forward/backward fill methods compatible with newer pandas versions.
-        series = merged["predicted_price"].ffill().bfill().to_numpy()
+
+        # Fill gaps in the prediction series by propagating nearest available
+        # values both forward and backward. This ensures that edge timestamps
+        # are filled from the nearest prediction, matching test expectations.
+        series = merged["predicted_price"].copy()
+        if series.notna().any():
+            series = series.ffill().bfill()
+
+        series = series.to_numpy()
     else:
-        # Positional fallback.
+        # Positional fallback: align by index and pad/truncate. When padding,
+        # repeat the last available prediction so that callers see a stable
+        # final value instead of NaNs.
         series = preds_df["predicted_price"].to_numpy()
         if len(series) < len(data):
-            # Pad by repeating last prediction.
-            pad_value = series[-1]
-            series = np.concatenate([series, np.full(len(data) - len(series), pad_value)])
+            if len(series) == 0:
+                pad_val = np.nan
+            else:
+                pad_val = float(series[-1])
+            pad = np.full(len(data) - len(series), pad_val, dtype=float)
+            series = np.concatenate([series, pad])
         elif len(series) > len(data):
             series = series[: len(data)]
 
@@ -326,7 +394,7 @@ def run_backtest_on_dataframe(
     )
 
     if prediction_mode == "naive":
-        provider = _make_naive_prediction_provider(offset_multiple=2.0, atr_like=atr_like)
+        provider = _make_naive_prediction_provider(offset_multiple=2.0, atr_series=atr_series)
     elif prediction_mode == "model":
         provider = _make_model_prediction_provider(data, frequency=freq)
     elif prediction_mode == "csv":
@@ -348,6 +416,51 @@ def run_backtest_on_dataframe(
         atr_series=atr_series,
         model_error_sigma_series=atr_series,
     )
+
+
+def _apply_date_range(
+    data: pd.DataFrame,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> tuple[pd.DataFrame, str, str]:
+    """Slice ``data`` to a [start_date, end_date] window based on ``Time``.
+
+    Returns (sliced_data, date_from_str, date_to_str).
+    If no Time column is present or no dates are provided anywhere, the
+    original DataFrame and an index-based range are returned.
+    """
+
+    if "Time" not in data.columns or data.empty:
+        # Fall back to index-based labelling only.
+        date_from = "idx0"
+        date_to = f"idx{len(data) - 1}" if len(data) > 0 else "idx-empty"
+        return data, date_from, date_to
+
+    # Effective dates: CLI args override config defaults.
+    eff_start = start_date or BACKTEST_DEFAULT_START_DATE
+    eff_end = end_date or BACKTEST_DEFAULT_END_DATE
+
+    time_series = pd.to_datetime(data["Time"])
+
+    mask = pd.Series(True, index=data.index)
+    if eff_start is not None:
+        start_ts = pd.to_datetime(eff_start)
+        mask &= time_series >= start_ts
+    if eff_end is not None:
+        end_ts = pd.to_datetime(eff_end)
+        mask &= time_series <= end_ts
+
+    sliced = data.loc[mask].copy()
+    if sliced.empty:
+        # If the requested window produces no rows, fall back to the original
+        # data but make it clear in the labels.
+        return data, "invalid_start", "invalid_end"
+
+    sliced.reset_index(drop=True, inplace=True)
+    ts_sliced = pd.to_datetime(sliced["Time"])
+    date_from = ts_sliced.iloc[0].strftime("%Y%m%d")
+    date_to = ts_sliced.iloc[-1].strftime("%Y%m%d")
+    return sliced, date_from, date_to
 
 
 def _compute_time_based_years(data: pd.DataFrame) -> float:
@@ -455,6 +568,11 @@ def _plot_price_and_equity_with_trades(
     data: pd.DataFrame,
     result: BacktestResult,
     symbol: str = "NVDA",
+    freq: str | None = None,
+    k_sigma_err: float | None = None,
+    k_atr_min_tp: float | None = None,
+    risk_per_trade_pct: float | None = None,
+    reward_risk_ratio: float | None = None,
 ) -> None:
     """Visualize NVDA price, equity curve, and trades on a single figure.
 
@@ -571,11 +689,41 @@ def _plot_price_and_equity_with_trades(
 
     fig.tight_layout()
 
-    # Save the figure to backtests/ so it can be inspected later without
-    # blocking CLI scripts or tests with an interactive window.
+    # Resolve metadata for filename components, with sensible fallbacks.
+    freq_str = str(freq or FREQUENCY)
+    k_sigma_val = float(k_sigma_err if k_sigma_err is not None else K_SIGMA_ERR)
+    k_atr_val = float(k_atr_min_tp if k_atr_min_tp is not None else K_ATR_MIN_TP)
+    risk_pct_val = float(risk_per_trade_pct if risk_per_trade_pct is not None else RISK_PER_TRADE_PCT)
+    rr_val = float(reward_risk_ratio if reward_risk_ratio is not None else REWARD_RISK_RATIO)
+
+    # Date range for the backtest, if available.
+    if "Time" in data.columns:
+        try:
+            time_series = pd.to_datetime(data["Time"])
+            date_from = time_series.iloc[0].strftime("%Y%m%d")
+            date_to = time_series.iloc[-1].strftime("%Y%m%d")
+        except Exception:  # pragma: no cover - defensive
+            date_from = "unknown"
+            date_to = "unknown"
+    else:
+        date_from = "idx0"
+        date_to = f"idx{len(data) - 1}"
+
+    # Save the figure under backtests/ with a descriptive name so that multiple
+    # runs can be visually compared over time.
     out_dir = Path(PREDICTIONS_DIR)
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"backtest_price_equity_trades_{symbol.lower()}.png"
+    filename = (
+        f"{symbol.upper()}-"
+        f"{freq_str}-"
+        f"{k_sigma_val:.2f}-"
+        f"{k_atr_val:.2f}-"
+        f"{risk_pct_val:.4f}-"
+        f"{rr_val:.2f}-"
+        f"{date_from}-"
+        f"{date_to}.png"
+    )
+    out_path = out_dir / filename
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
     print(f"Saved backtest plot to {out_path}", flush=True)
@@ -623,6 +771,18 @@ def main() -> None:
             "Minimum commission per order (per leg) in account currency. "
             "Total minimum round-trip commission = 2 * min_commission_per_order."
         ),
+    )
+    parser.add_argument(
+        "--start-date",
+        type=str,
+        default=None,
+        help="Optional start date (YYYY-MM-DD) for the backtest window.",
+    )
+    parser.add_argument(
+        "--end-date",
+        type=str,
+        default=None,
+        help="Optional end date (YYYY-MM-DD) for the backtest window.",
     )
     parser.add_argument(
         "--csv-path",
@@ -675,13 +835,20 @@ def main() -> None:
                 "to generate the necessary data files, or provide a valid "
                 "--csv-path argument."
             )
-    data = pd.read_csv(csv_path)
+    data_full = pd.read_csv(csv_path)
 
     # Basic sanity check for required columns.
     required_cols = {"Open", "High", "Low", "Close"}
-    missing = required_cols - set(data.columns)
+    missing = required_cols - set(data_full.columns)
     if missing:
         raise SystemExit(f"Data file {csv_path} is missing required columns: {missing}")
+
+    # Apply optional date range slicing based on Time column and config/CLI.
+    data, date_from, date_to = _apply_date_range(
+        data_full,
+        start_date=args.start_date,
+        end_date=args.end_date,
+    )
 
     n_bars = len(data)
     print(f"Running backtest on {n_bars} bars at {freq}...", flush=True)
@@ -700,16 +867,16 @@ def main() -> None:
     metrics = _compute_backtest_metrics(result, initial_equity=initial_equity, data=data)
 
     # Concise summary output.
-    if "Time" in data.columns:
+    if "Time" in data.columns and n_bars > 0:
         try:
             time_series = pd.to_datetime(data["Time"])
             start_time = time_series.iloc[0]
             end_time = time_series.iloc[-1]
             period_str = f"{start_time} -> {end_time}"
         except Exception:  # pragma: no cover - best-effort parsing
-            period_str = "unknown period"
+            period_str = f"{date_from} -> {date_to}"
     else:
-        period_str = "unknown period"
+        period_str = f"{date_from} -> {date_to}"
 
     print(
         f"Backtest summary | freq={freq} | bars={n_bars} | period={period_str} | "
@@ -755,7 +922,16 @@ def main() -> None:
 
     # Interactive visualization: NVDA price + equity curve + trades.
     # This will no-op (with a message) if matplotlib is not installed.
-    _plot_price_and_equity_with_trades(data, result, symbol="NVDA")
+    _plot_price_and_equity_with_trades(
+        data,
+        result,
+        symbol="NVDA",
+        freq=freq,
+        k_sigma_err=K_SIGMA_ERR,
+        k_atr_min_tp=K_ATR_MIN_TP,
+        risk_per_trade_pct=RISK_PER_TRADE_PCT,
+        reward_risk_ratio=REWARD_RISK_RATIO,
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover

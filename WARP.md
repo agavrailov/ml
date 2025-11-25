@@ -542,3 +542,52 @@ Design documentation for the trading system lives under:
 - `docs/trading system/trading_system_migration_plan.md`
 
 These documents mirror the structure of the data ingestion docs and should be kept in sync with any future trading-related code you add (backtesting engine, strategy modules, broker adapters, AWS deployment scripts).
+
+---
+
+### ATR, backtest vs. paper-trade, and strategy consistency
+
+The trading system and backtesting components make heavy use of Average True Range (ATR) and share a common engine:
+
+- **Per-bar ATR(14) series is the canonical volatility measure.**
+  - `src.backtest._compute_atr_series(data, window=14)` computes an ATR time series on the active timeframe (e.g. 14 hourly bars).
+  - Both the backtest CLI (`src/backtest.py`) and paper-trading scaffold (`src/paper_trade.py`) compute this per-bar ATR series and pass it into the core engine.
+  - The ATR series is used both as:
+    - `atr_series` (for ATR-based entry filters and position sizing), and
+    - `model_error_sigma_series` (currently a proxy until true residual-based sigmas are wired).
+
+- **Scalar ATR-like values are secondary and derived.**
+  - In a few places we compute a scalar `atr_like` as the mean of the non-NaN ATR series.
+  - This scalar is passed into `BacktestConfig` for backwards compatibility, but the actual trading logic now prefers the full per-bar ATR via `atr_series`.
+  - When making design decisions, treat the per-bar ATR series as the source of truth for volatility-aware filters and sizing.
+
+- **Backtest and paper-trade now share the same engine.**
+  - The core trading loop lives in `src.backtest_engine.run_backtest`, which takes:
+    - `data` (OHLC with `Open, High, Low, Close` and optionally `Time`),
+    - a `prediction_provider` callable,
+    - a `BacktestConfig` (containing `StrategyConfig` and commissions),
+    - optional `atr_series` and `model_error_sigma_series`.
+  - The backtest CLI (`python -m src.backtest`) constructs `BacktestConfig`, computes ATR(14), and calls `run_backtest` with both scalar and per-bar ATR inputs.
+  - The paper-trade helper `run_paper_trading_over_dataframe(...)` in `src/paper_trade.py` now:
+    - Computes the same per-bar ATR(14) series,
+    - Builds a `BacktestConfig` via `PaperTradingConfig` (mirroring `BacktestConfig`),
+    - Constructs a CSV-based `prediction_provider`, and
+    - Delegates to `run_backtest(...)` with `atr_series` and `model_error_sigma_series` set to the ATR series.
+  - As a result, backtests and paper-trade runs use identical entry/exit rules, commission logic, and volatility handling; differences in equity should come from inputs (data, prediction mode, date range), not from duplicated logic.
+
+- **Date ranges are explicit and shared.**
+  - `BacktestWindowConfig` in `src/config.py` exposes `default_start_date` / `default_end_date` (`BACKTEST_DEFAULT_START_DATE` / `BACKTEST_DEFAULT_END_DATE`), which default to `None` (use full data range).
+  - `_apply_date_range(data, start_date, end_date)` in `src/backtest.py` slices a `Time` column to a `[start_date, end_date]` window and returns `(sliced_data, date_from_str, date_to_str)`.
+  - The backtest CLI accepts `--start-date` / `--end-date` (YYYY-MM-DD) and applies `_apply_date_range` before running the engine.
+  - `src/paper_trade.py` uses the same helper and CLI options, so both tools can be aligned for walk-forward or specific test windows.
+
+- **Equity plot filenames encode strategy + window.**
+  - `_plot_price_and_equity_with_trades(...)` in `src/backtest.py` saves figures under `backtests/` with filenames:
+    - `[SYMBOL]-[FREQ]-[k_sigma_err]-[k_atr_min_tp]-[risk_per_trade_pct]-[reward_risk_ratio]-[DateFrom]-[DateTo].png`.
+  - Both the backtest and paper-trade CLIs call this helper with their effective frequency, strategy parameters, and the sliced data, so plots are directly comparable across runs and walk-forward slices.
+
+When evolving the trading system (e.g., introducing residual-based sigma series instead of ATR proxies, or adding new filters), prefer to:
+
+1. Extend `StrategyConfig` / `StrategyDefaultsConfig` in `src/config.py`.
+2. Wire new per-bar series into `run_backtest` via additional optional parameters.
+3. Keep `src/backtest.py` and `src/paper_trade.py` as *thin* orchestration layers that share this common engine, rather than duplicating trading logic.

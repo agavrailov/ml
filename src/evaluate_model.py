@@ -29,6 +29,7 @@ from src.data_utils import (
     apply_standard_scaler,
     create_sequences_for_stateless_lstm,
 )
+from src.bias_correction import apply_rolling_bias_and_amplitude_correction
 
 from typing import Optional, Tuple
 
@@ -193,36 +194,13 @@ def evaluate_model_performance(
     predictions = (predictions_normalized * std_open) + mean_open
     actuals = (Y_eval_normalized * std_open) + mean_open
 
-    # Initialize corrected predictions array
-    predictions_corrected = np.zeros_like(predictions)
-
-    # Apply rolling bias correction and amplitude scaling
-    for i in range(len(predictions)):
-        if i < correction_window_size:
-            # For the initial period, use the global mean residual and amplitude scaling
-            current_predictions_window = predictions[:i+1]
-            current_actuals_window = actuals[:i+1]
-        else:
-            current_predictions_window = predictions[i-correction_window_size+1 : i+1]
-            current_actuals_window = actuals[i-correction_window_size+1 : i+1]
-
-        # Calculate rolling mean residual
-        rolling_mean_residual = np.mean(current_actuals_window - current_predictions_window)
-
-        # Calculate rolling amplitude scaling factor
-        std_actuals_window = np.std(current_actuals_window)
-        std_predictions_window = np.std(current_predictions_window)
-
-        amplitude_scaling_factor = 1.0
-        if std_predictions_window > 0:
-            amplitude_scaling_factor = std_actuals_window / std_predictions_window
-        
-        # Apply rolling amplitude scaling
-        prediction_amplitude_corrected = (predictions[i] - np.mean(current_predictions_window)) * amplitude_scaling_factor + np.mean(current_predictions_window)
-        
-        # Apply rolling bias correction
-        predictions_corrected[i] = prediction_amplitude_corrected + rolling_mean_residual
-    
+    # Apply explicit rolling bias-correction layer on recent data.
+    predictions_corrected = apply_rolling_bias_and_amplitude_correction(
+        predictions=predictions.flatten(),
+        actuals=actuals.flatten(),
+        window=correction_window_size,
+        global_mean_residual=mean_residual,
+    ).reshape(predictions.shape)
     print(f"Applied rolling bias correction and amplitude scaling with window size: {correction_window_size}")
 
     # Calculate residuals (using corrected predictions)
@@ -266,9 +244,13 @@ def evaluate_model_performance(
     fig.autofmt_xdate()
     plt.tight_layout()
 
-    plot_filename = 'evaluation_plot.png'
-    plt.savefig(plot_filename)
-    print(f"Evaluation plot saved as '{plot_filename}'")
+    # Ensure plots are saved into the top-level 'models' directory
+    models_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'models')
+    os.makedirs(models_dir, exist_ok=True)
+
+    evaluation_plot_path = os.path.join(models_dir, 'evaluation_plot.png')
+    plt.savefig(evaluation_plot_path)
+    print(f"Evaluation plot saved as '{evaluation_plot_path}'")
 
     # Plot histogram of residuals
     plt.figure(figsize=(10, 6))
@@ -277,8 +259,10 @@ def evaluate_model_performance(
     plt.xlabel('Residual (Actual - Predicted)', fontsize=12)
     plt.ylabel('Frequency', fontsize=12)
     plt.grid(True)
-    plt.savefig('residuals_histogram.png')
-    print("Residuals histogram saved as 'residuals_histogram.png'")
+
+    residuals_hist_path = os.path.join(models_dir, 'residuals_histogram.png')
+    plt.savefig(residuals_hist_path)
+    print(f"Residuals histogram saved as '{residuals_hist_path}'")
 
     return mae, correlation # Return MAE and correlation
 

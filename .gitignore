@@ -19,3 +19,4 @@ src/__pycache__/
 notebooks/.ipynb_checkpoints
 backtests/backtest_price_equity_trades_nvda.png
 scripts/.ipynb_checkpoints
+*.png

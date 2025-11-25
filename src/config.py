@@ -159,9 +159,9 @@ class StrategyDefaultsConfig:
 
     # Noise / filter parameters
     # How much of the model residual sigma_err we subtract from the predicted move.
-    k_sigma_err: float = 0.5
+    k_sigma_err: float = 0.1
     # Minimum TP distance as a multiple of ATR.
-    k_atr_min_tp: float = 2
+    k_atr_min_tp: float = 1
 
     # Position sizing constraints
     min_position_size: float = 1.0
@@ -174,12 +174,25 @@ class StrategyDefaultsConfig:
     initial_equity: float = 10_000.0
 
 
+@dataclass(frozen=True)
+class BacktestWindowConfig:
+    """Global defaults for backtest/paper-trade date windows.
+
+    ``default_start_date`` / ``default_end_date`` are ISO strings ("YYYY-MM-DD").
+    When both are ``None``, the full available data range is used.
+    """
+
+    default_start_date: str | None = None
+    default_end_date: str | None = None
+
+
 # Instantiate structured configs
 PATHS = PathsConfig()
 TRAINING = TrainingConfig()
 IB = IbConfig()
 MARKET = MarketConfig()
 STRATEGY_DEFAULTS = StrategyDefaultsConfig()
+BACKTEST_WINDOW = BacktestWindowConfig()
 
 
 # ---------------------------
@@ -299,6 +312,10 @@ MIN_POSITION_SIZE = STRATEGY_DEFAULTS.min_position_size
 COMMISSION_PER_UNIT_PER_LEG = STRATEGY_DEFAULTS.commission_per_unit_per_leg
 MIN_COMMISSION_PER_ORDER = STRATEGY_DEFAULTS.min_commission_per_order
 INITIAL_EQUITY = STRATEGY_DEFAULTS.initial_equity
+
+# Backtest window defaults
+BACKTEST_DEFAULT_START_DATE = BACKTEST_WINDOW.default_start_date
+BACKTEST_DEFAULT_END_DATE = BACKTEST_WINDOW.default_end_date
 
 # Paths
 RAW_DATA_DIR = PATHS.raw_data_dir

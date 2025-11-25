@@ -29,6 +29,8 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import pandas as pd
 
+from src.config import BASE_DIR
+
 
 def plot_equity_and_trade_density(
     equity_path: str,
@@ -77,16 +79,16 @@ def plot_equity_and_trade_density(
     fig.autofmt_xdate()
     plt.tight_layout()
 
-    # Save diagnostics figure under backtests/ (non-blocking for scripts/tests).\r
-    out_dir = Path("backtests")\r
-    out_dir.mkdir(parents=True, exist_ok=True)\r
-    out_path = out_dir / "backtest_diagnostics.png"\r
-    fig.savefig(out_path, dpi=150)\r
-    plt.close(fig)\r
-    print(f"Saved diagnostics plot to {out_path}")\r
-\r
-\r
-def main() -> None:\r
+    # Save diagnostics figure under backtests/ at the project root (non-blocking for scripts/tests).
+    out_dir = Path(BASE_DIR) / "backtests"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "backtest_diagnostics.png"
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"Saved diagnostics plot to {out_path}")
+
+
+def main() -> None:
     parser = argparse.ArgumentParser(description="Plot equity and trade density for a backtest.")
     parser.add_argument("--equity", required=True, help="Path to equity CSV (from src.backtest).")
     parser.add_argument("--trades", required=True, help="Path to trades CSV (from src.backtest).")
