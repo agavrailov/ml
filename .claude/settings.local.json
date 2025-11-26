@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cat:*)",
+      "Bash(python3:*)",
+      "Bash(find:*)",
+      "Bash(python:*)",
+      "Bash(/usr/bin/python3:*)",
+      "Bash(cmd.exe /c \"cd /d C:\\Users\\Anton\\SRC\\my\\ml_lstm && python -m src.backtest --prediction-mode csv --report\")",
+      "Bash(cmd.exe /c \"cd /d C:\\Users\\Anton\\SRC\\my\\ml_lstm && python -m src.backtest --prediction-mode csv --predictions-csv backtests/nvda_15min_predictions.csv --report\")",
+      "Bash(cmd.exe /c:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

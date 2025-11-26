@@ -154,14 +154,14 @@ class StrategyDefaultsConfig:
     """
 
     # Core risk and reward parameters
-    risk_per_trade_pct: float = 0.02  # 1% of equity per trade
+    risk_per_trade_pct: float = 0.01  # 1% of equity per trade
     reward_risk_ratio: float = 2.5
 
     # Noise / filter parameters
     # How much of the model residual sigma_err we subtract from the predicted move.
-    k_sigma_err: float = 3
+    k_sigma_err: float = 0.25
     # Minimum TP distance as a multiple of ATR.
-    k_atr_min_tp: float = 10
+    k_atr_min_tp: float = 0.7
 
     # Position sizing constraints
     min_position_size: float = 1.0
@@ -169,7 +169,6 @@ class StrategyDefaultsConfig:
     # Execution / cost model
     commission_per_unit_per_leg: float = 0.005
     min_commission_per_order: float = 1.0
-
     # Account / session defaults
     initial_equity: float = 10_000.0
 

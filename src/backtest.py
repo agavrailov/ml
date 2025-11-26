@@ -45,7 +45,10 @@ from src.predict import (
 )
 from src.data_processing import add_features
 from src.data_utils import apply_standard_scaler
-from src.bias_correction import apply_rolling_bias_and_amplitude_correction
+from src.bias_correction import (
+    apply_rolling_bias_and_amplitude_correction,
+    compute_rolling_residual_sigma,
+)
 
 PREDICTIONS_DIR = "backtests"
 # Default rolling window for bias-correction layer in backtests.
@@ -119,7 +122,7 @@ def _make_naive_prediction_provider(offset_multiple: float, atr_series: pd.Serie
     return provider
 
 
-def _make_model_prediction_provider(data: pd.DataFrame, frequency: str) -> PredictionProvider:
+def _make_model_prediction_provider(data: pd.DataFrame, frequency: str) -> tuple[PredictionProvider, np.ndarray]:
     """Return a prediction provider using the LSTM model.
 
     This implementation builds a reusable prediction context (model + scaler +
@@ -133,7 +136,7 @@ def _make_model_prediction_provider(data: pd.DataFrame, frequency: str) -> Predi
 
     n = len(data)
     if n == 0:
-        return lambda i, row: float(row["Close"])  # pragma: no cover - defensive
+        return (lambda i, row: float(row["Close"])), np.zeros(0, dtype=np.float32)  # pragma: no cover - defensive
 
     os.makedirs(PREDICTIONS_DIR, exist_ok=True)
     checkpoint_path = os.path.join(
@@ -155,7 +158,8 @@ def _make_model_prediction_provider(data: pd.DataFrame, frequency: str) -> Predi
                 def provider(i: int, row: pd.Series) -> float:  # noqa: ARG001
                     return float(series[i])
 
-                return provider
+                sigma_series = np.zeros(n, dtype=np.float32)
+                return provider, sigma_series
         except Exception:
             # Ignore corrupted/partial checkpoints and fall back to fresh computation.
             pass
@@ -245,18 +249,23 @@ def _make_model_prediction_provider(data: pd.DataFrame, frequency: str) -> Predi
     mean_residual = 0.0
 
     usable_len = max(0, n - ROWS_AHEAD)
+    residual_sigma_series = np.zeros(shape=(n,), dtype=np.float32)
     if usable_len > 0:
         preds_trunc = denorm_full[:usable_len].astype(float)
-        if "Open" in df.columns:
-            acts_trunc = df["Open"].shift(-ROWS_AHEAD).to_numpy(dtype=float)[:usable_len]
+        # Use the original ``data`` (not the feature-engineered ``df``) for
+        # actual prices so that shapes are consistent with ``n``.
+        if "Open" in data.columns:
+            acts_trunc = data["Open"].shift(-ROWS_AHEAD).to_numpy(dtype=float)[:usable_len]
         else:
-            acts_trunc = df["Close"].shift(-ROWS_AHEAD).to_numpy(dtype=float)[:usable_len]
+            acts_trunc = data["Close"].shift(-ROWS_AHEAD).to_numpy(dtype=float)[:usable_len]
 
         mask = np.isfinite(preds_trunc) & np.isfinite(acts_trunc)
         if mask.any():
             first = int(np.argmax(mask))
             preds_seq = preds_trunc[first:]
             acts_seq = acts_trunc[first:]
+
+            # Bias + amplitude correction in price space.
             corrected_seq = apply_rolling_bias_and_amplitude_correction(
                 predictions=preds_seq,
                 actuals=acts_seq,
@@ -264,6 +273,18 @@ def _make_model_prediction_provider(data: pd.DataFrame, frequency: str) -> Predi
                 global_mean_residual=mean_residual,
             )
             denorm_full[first:first + len(corrected_seq)] = corrected_seq
+
+            # Rolling residual sigma in price space, aligned to the same window.
+            sigma_seq = compute_rolling_residual_sigma(
+                predictions=corrected_seq,
+                actuals=acts_seq,
+                window=BIAS_CORRECTION_WINDOW,
+            )
+            residual_sigma_series[first:first + len(sigma_seq)] = sigma_seq.astype(np.float32)
+
+    # If we never computed any residuals, fall back to zeros.
+    if not np.isfinite(residual_sigma_series).any():
+        residual_sigma_series[:] = 0.0
 
     # Write a single checkpoint CSV with per-bar predictions aligned to raw data.
     checkpoint_df = pd.DataFrame({
@@ -282,7 +303,7 @@ def _make_model_prediction_provider(data: pd.DataFrame, frequency: str) -> Predi
             return float(row["Close"])
         return float(val)
 
-    return provider
+    return provider, residual_sigma_series
 
 
 def _load_predictions_csv(csv_path: str) -> pd.DataFrame:
@@ -389,10 +410,12 @@ def run_backtest_on_dataframe(
         else MIN_COMMISSION_PER_ORDER,
     )
 
+    model_error_sigma_series = atr_series
+
     if prediction_mode == "naive":
         provider = _make_naive_prediction_provider(offset_multiple=2.0, atr_series=atr_series)
     elif prediction_mode == "model":
-        provider = _make_model_prediction_provider(data, frequency=freq)
+        provider, model_error_sigma_series = _make_model_prediction_provider(data, frequency=freq)
     elif prediction_mode == "csv":
         if not predictions_csv:
             raise ValueError("prediction_mode='csv' requires predictions_csv path")
@@ -401,16 +424,24 @@ def run_backtest_on_dataframe(
     else:
         raise ValueError(f"Unknown prediction_mode: {prediction_mode}")
 
+    # Ensure model_error_sigma_series is a pandas Series so that
+    # ``backtest_engine`` can index it consistently.
+    if not isinstance(model_error_sigma_series, pd.Series):
+        model_error_sigma_series = pd.Series(
+            model_error_sigma_series,
+            index=data.index,
+        )
+
     # Feed per-bar ATR into the engine so that entry filters and sizing use
-    # ATR(14) on the current timeframe. We also reuse the same ATR series as a
-    # proxy for model_error_sigma, consistent with the previous scalar
-    # behavior, but now varying over time.
+    # ATR(14) on the current timeframe. For model-based predictions we provide
+    # a separate per-bar ``model_error_sigma_series`` computed from rolling
+    # residuals; for other modes we fall back to ATR as a proxy.
     return run_backtest(
         data,
         provider,
         bt_cfg,
         atr_series=atr_series,
-        model_error_sigma_series=atr_series,
+        model_error_sigma_series=model_error_sigma_series,
     )
 
 
@@ -569,7 +600,8 @@ def _plot_price_and_equity_with_trades(
     k_atr_min_tp: float | None = None,
     risk_per_trade_pct: float | None = None,
     reward_risk_ratio: float | None = None,
-) -> None:
+    quiet: bool = False,
+) -> str | None:
     """Visualize NVDA price, equity curve, and trades on a single figure.
 
     - Price (Close) on the primary y-axis.
@@ -584,10 +616,10 @@ def _plot_price_and_equity_with_trades(
         import matplotlib.pyplot as plt  # type: ignore[import-not-found]
     except Exception:  # pragma: no cover - optional dependency
         print("matplotlib is not available; skipping backtest plot.", flush=True)
-        return
+        return None
 
     if data.empty or not result.equity_curve:
-        return
+        return None
 
     # X-axis: prefer explicit timestamps if present, otherwise use bar indices.
     if "Time" in data.columns:
@@ -722,7 +754,43 @@ def _plot_price_and_equity_with_trades(
     out_path = out_dir / filename
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
-    print(f"Saved backtest plot to {out_path}", flush=True)
+    if not quiet:
+        print(f"Saved backtest plot to {out_path}", flush=True)
+    return str(out_path)
+
+
+def _print_report(
+    symbol: str,
+    freq: str,
+    period_str: str,
+    n_trades: int,
+    initial_equity: float,
+    final_equity: float,
+    metrics: dict,
+    plot_path: str | None = None,
+) -> None:
+    """Print a clean, formatted backtest report to console."""
+    width = 55
+    line = "=" * width
+
+    print()
+    print(line)
+    print(f"  BACKTEST REPORT: {symbol} {freq}")
+    print(f"  {period_str}")
+    print(line)
+    print(f"  {'Trades:':<20} {n_trades:>10}")
+    print(f"  {'Win Rate:':<20} {metrics.get('win_rate', 0) * 100:>9.1f}%")
+    print(f"  {'Total Return:':<20} {metrics.get('total_return', 0) * 100:>+9.1f}%")
+    print(f"  {'Max Drawdown:':<20} {metrics.get('max_drawdown', 0) * 100:>9.1f}%")
+    print(f"  {'Sharpe Ratio:':<20} {metrics.get('sharpe_ratio', 0):>10.2f}")
+    print(f"  {'Profit Factor:':<20} {metrics.get('profit_factor', 0):>10.2f}")
+    print(f"  {'CAGR:':<20} {metrics.get('cagr', 0) * 100:>9.1f}%")
+    print(line)
+    print(f"  {'Equity:':<20} {initial_equity:,.0f} -> {final_equity:,.0f}")
+    if plot_path:
+        print(f"  Plot: {plot_path}")
+    print(line)
+    print()
 
 
 def main() -> None:
@@ -811,6 +879,11 @@ def main() -> None:
         default=None,
         help="If set, write the equity curve to this CSV path.",
     )
+    parser.add_argument(
+        "--report",
+        action="store_true",
+        help="Print a clean summary report with key figures. Plot is always saved.",
+    )
 
     args = parser.parse_args()
 
@@ -847,7 +920,8 @@ def main() -> None:
     )
 
     n_bars = len(data)
-    print(f"Running backtest on {n_bars} bars at {freq}...", flush=True)
+    if not args.report:
+        print(f"Running backtest on {n_bars} bars at {freq}...", flush=True)
 
     result = run_backtest_on_dataframe(
         data,
@@ -859,36 +933,39 @@ def main() -> None:
         predictions_csv=predictions_csv,
     )
 
-    print("Backtest complete. Computing metrics...", flush=True)
+    if not args.report:
+        print("Backtest complete. Computing metrics...", flush=True)
     metrics = _compute_backtest_metrics(result, initial_equity=initial_equity, data=data)
 
-    # Concise summary output.
+    # Determine period string for output.
     if "Time" in data.columns and n_bars > 0:
         try:
             time_series = pd.to_datetime(data["Time"])
             start_time = time_series.iloc[0]
             end_time = time_series.iloc[-1]
-            period_str = f"{start_time} -> {end_time}"
+            period_str = f"{start_time.strftime('%Y-%m-%d')} -> {end_time.strftime('%Y-%m-%d')}"
         except Exception:  # pragma: no cover - best-effort parsing
             period_str = f"{date_from} -> {date_to}"
     else:
         period_str = f"{date_from} -> {date_to}"
 
-    print(
-        f"Backtest summary | freq={freq} | bars={n_bars} | period={period_str} | "
-        f"equity: {initial_equity:.2f} -> {result.final_equity:.2f} | trades={len(result.trades)}"
-    )
-
-    if metrics:
+    if not args.report:
+        # Concise summary output (legacy mode).
         print(
-            "Metrics | "
-            f"total_ret={metrics['total_return'] * 100:5.2f}% | "
-            f"CAGR={metrics['cagr'] * 100:5.2f}% | "
-            f"max_dd={metrics['max_drawdown'] * 100:5.2f}% | "
-            f"Sharpe={metrics['sharpe_ratio']:5.2f} | "
-            f"win_rate={metrics['win_rate'] * 100:5.2f}% | "
-            f"PF={metrics['profit_factor']:5.2f}"
+            f"Backtest summary | freq={freq} | bars={n_bars} | period={period_str} | "
+            f"equity: {initial_equity:.2f} -> {result.final_equity:.2f} | trades={len(result.trades)}"
         )
+
+        if metrics:
+            print(
+                "Metrics | "
+                f"total_ret={metrics['total_return'] * 100:5.2f}% | "
+                f"CAGR={metrics['cagr'] * 100:5.2f}% | "
+                f"max_dd={metrics['max_drawdown'] * 100:5.2f}% | "
+                f"Sharpe={metrics['sharpe_ratio']:5.2f} | "
+                f"win_rate={metrics['win_rate'] * 100:5.2f}% | "
+                f"PF={metrics['profit_factor']:5.2f}"
+            )
 
     # Optional exports.
     if args.export_trades_csv and result.trades:
@@ -918,7 +995,7 @@ def main() -> None:
 
     # Interactive visualization: NVDA price + equity curve + trades.
     # This will no-op (with a message) if matplotlib is not installed.
-    _plot_price_and_equity_with_trades(
+    plot_path = _plot_price_and_equity_with_trades(
         data,
         result,
         symbol="NVDA",
@@ -927,7 +1004,21 @@ def main() -> None:
         k_atr_min_tp=K_ATR_MIN_TP,
         risk_per_trade_pct=RISK_PER_TRADE_PCT,
         reward_risk_ratio=REWARD_RISK_RATIO,
+        quiet=args.report,
     )
+
+    # Print clean report when --report flag is set.
+    if args.report:
+        _print_report(
+            symbol="NVDA",
+            freq=freq,
+            period_str=period_str,
+            n_trades=len(result.trades),
+            initial_equity=initial_equity,
+            final_equity=result.final_equity,
+            metrics=metrics,
+            plot_path=plot_path,
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover

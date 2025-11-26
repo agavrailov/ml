@@ -43,7 +43,9 @@ def test_run_backtest_model_mode_no_nans(monkeypatch: Any) -> None:
         def provider(i: int, row: pd.Series) -> float:  # noqa: ARG001
             return float(series[i])
 
-        return provider
+        # Use a simple constant sigma series for this test.
+        sigma_series = np.full(len(data_arg), 1.0, dtype=float)
+        return provider, sigma_series
 
     with patch("src.backtest._make_model_prediction_provider", side_effect=_fake_model_provider):
         result = run_backtest_on_dataframe(

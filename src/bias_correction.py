@@ -84,3 +84,43 @@ def apply_rolling_bias_and_amplitude_correction(
         corrected[i] = pred_amp_corrected + mean_resid
 
     return corrected
+
+
+def compute_rolling_residual_sigma(
+    predictions: np.ndarray,
+    actuals: np.ndarray,
+    window: int,
+) -> np.ndarray:
+    """Compute a rolling std of residuals (actual - prediction).
+
+    This is used to estimate a per-bar ``model_error_sigma`` series in the
+    same spirit as :func:`apply_rolling_bias_and_amplitude_correction`, but
+    without modifying the predictions.
+    """
+    if predictions.shape != actuals.shape:
+        raise ValueError("predictions and actuals must have the same shape")
+    if predictions.ndim != 1:
+        raise ValueError("predictions and actuals must be 1D arrays")
+    if window <= 0:
+        raise ValueError("window must be a positive integer")
+
+    n = predictions.shape[0]
+    if n == 0:
+        return predictions.astype(float)
+
+    preds = predictions.astype(float)
+    acts = actuals.astype(float)
+    residuals = acts - preds
+
+    sigmas = np.zeros_like(residuals, dtype=float)
+    for i in range(n):
+        start = max(0, i - window + 1)
+        resid_win = residuals[start : i + 1]
+        # Ignore NaNs in the window.
+        resid_win = resid_win[np.isfinite(resid_win)]
+        if resid_win.size == 0:
+            sigmas[i] = 0.0
+        else:
+            sigmas[i] = float(np.std(resid_win))
+
+    return sigmas

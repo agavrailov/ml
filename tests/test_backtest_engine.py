@@ -19,8 +19,8 @@ def _constant_prediction_provider(predicted_price: float):
     return _provider
 
 
-def test_no_trades_when_prediction_too_small_vs_atr() -> None:
-    # Price barely moves, prediction small relative to ATR => no trades.
+def test_no_trades_when_prediction_too_small_vs_noise() -> None:
+    # Price barely moves, prediction small relative to model error => no trades.
     data = pd.DataFrame(
         {
             "Open": [100.0, 100.1, 100.3, 100.5],
@@ -33,17 +33,18 @@ def test_no_trades_when_prediction_too_small_vs_atr() -> None:
     strat_cfg = StrategyConfig(
         risk_per_trade_pct=0.01,
         reward_risk_ratio=2.0,
-        k_sigma_err=0.0,  # no model error for this test
-        k_atr_min_tp=1.0,  # require TP at least 1 * ATR
+        k_sigma_err=0.0,
+        k_atr_min_tp=1.0,  # require usable_return / sigma_return >= 1.0
     )
     cfg = BacktestConfig(
         initial_equity=10_000.0,
         strategy_config=strat_cfg,
-        model_error_sigma=0.0,
+        model_error_sigma=1.0,  # sigma in price units -> sigma_return = 0.01
         fixed_atr=1.0,
     )
 
-    # Prediction only 0.3 above current price; usable_move=0.3 < ATR=1.0.
+    # Prediction only 0.3 above current price; predicted_return=0.003,
+    # sigma_return=0.01 -> snr=0.3 < 1.0, so no trades.
     provider = _constant_prediction_provider(predicted_price=100.3)
 
     result: BacktestResult = run_backtest(data, provider, cfg)

@@ -59,11 +59,13 @@ def test_no_trade_when_usable_move_negative(base_config: StrategyConfig) -> None
     assert plan is None
 
 
-def test_no_trade_when_usable_move_smaller_than_atr_threshold(base_config: StrategyConfig) -> None:
-    # predicted_move - k_sigma_err * sigma_err = 0.4, but k_atr_min_tp * ATR = 0.5
-    # predicted_move = 0.9, sigma_err = 0.5 -> usable_move = 0.4
-    # ATR = 1.0, k_atr_min_tp = 0.5 -> min_tp_dist_atr = 0.5
-    state = make_state(predicted_price=100.9, model_error_sigma=0.5, atr=1.0)
+def test_no_trade_when_usable_move_smaller_than_snr_threshold(base_config: StrategyConfig) -> None:
+    # Choose values so usable_return > 0 but usable_return / sigma_return < k_atr_min_tp.
+    # current_price = 100, model_error_sigma = 0.5 -> sigma_return = 0.005
+    # predicted_price = 100.6 -> predicted_return ≈ 0.006
+    # usable_return = 0.006 - 0.005 = 0.001
+    # snr = usable_return / sigma_return = 0.001 / 0.005 = 0.2 < k_atr_min_tp = 0.5
+    state = make_state(predicted_price=100.6, model_error_sigma=0.5, atr=1.0)
     plan = compute_tp_sl_and_size(state, base_config)
     assert plan is None
 

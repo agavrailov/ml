@@ -100,10 +100,14 @@ def compute_tp_sl_and_size(state: StrategyState, cfg: StrategyConfig) -> Optiona
     if usable_return <= 0.0:
         return None
 
-    # 3) ATR-based filter: avoid trading on noise (also in returns).
-    min_tp_return = cfg.k_atr_min_tp * atr_return
-    if usable_return < min_tp_return:
-        return None
+    # 3) SNR-based filter: avoid trading on noise.
+    #    We interpret ``k_atr_min_tp`` as a minimum signal-to-noise ratio
+    #    threshold on usable_return / sigma_return. If ``sigma_return`` is not
+    #    available (<= 0), we skip this filter and rely only on usable_return.
+    if sigma_return > 0.0:
+        snr = usable_return / sigma_return
+        if snr < cfg.k_atr_min_tp:
+            return None
 
     # 4) Define TP distance from usable move and convert back to price.
     tp_dist = usable_return * price
