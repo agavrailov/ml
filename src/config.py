@@ -116,6 +116,65 @@ class TrainingConfig:
 
 
 @dataclass(frozen=True)
+class ModelConfig:
+    """Concrete model configuration used by the unified model API.
+
+    This is a thin wrapper around :class:`TrainingConfig` and selected path
+    settings. It is intentionally small and focused on the parameters actually
+    required to build, train, and load the LSTM.
+    """
+
+    frequency: str
+    tsteps: int
+    n_features: int
+    lstm_units: int
+    batch_size: int
+    learning_rate: float
+    n_lstm_layers: int
+    stateful: bool
+    optimizer_name: str
+    loss_function: str
+    model_registry_dir: str
+
+
+def get_model_config(
+    *,
+    frequency: str | None = None,
+    tsteps: int | None = None,
+    n_features: int | None = None,
+    lstm_units: int | None = None,
+    batch_size: int | None = None,
+    learning_rate: float | None = None,
+    n_lstm_layers: int | None = None,
+    stateful: bool | None = None,
+    optimizer_name: str | None = None,
+    loss_function: str | None = None,
+) -> "ModelConfig":
+    """Return an immutable model configuration for a training/prediction run.
+
+    Defaults come from ``TRAINING`` and path aliases defined in this module.
+    Callers can optionally override individual fields without having to know
+    about all internal config globals.
+    """
+
+    base = TRAINING
+
+    return ModelConfig(
+        frequency=frequency or base.frequency,
+        tsteps=tsteps or base.tsteps,
+        n_features=n_features or base.n_features,
+        lstm_units=lstm_units or base.lstm_units,
+        batch_size=batch_size or base.batch_size,
+        learning_rate=learning_rate or base.learning_rate,
+        n_lstm_layers=n_lstm_layers or base.n_lstm_layers,
+        stateful=base.stateful if stateful is None else stateful,
+        optimizer_name=optimizer_name or base.optimizer_name,
+        loss_function=loss_function or base.loss_function,
+        model_registry_dir=MODEL_REGISTRY_DIR,
+    )
+
+
+@dataclass(frozen=True)
 class IbConfig:
     """IB/TWS connection and data ingestion settings."""
 

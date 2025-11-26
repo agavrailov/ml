@@ -25,31 +25,39 @@ def test_health_check(client: TestClient):
     assert response.json() == {"status": "ok"}
 
 # Test for successful prediction
-@patch('api.main.predict_future_prices') # Corrected patch target
-def test_predict_success(mock_predict_future_prices, client: TestClient):
+@patch('api.main.get_active_model_path')
+@patch('api.main.predict_future_prices')  # Corrected patch target
+def test_predict_success(
+    mock_predict_future_prices,
+    mock_get_active_model_path,
+    client: TestClient,
+):
     # Mock the prediction function to return a known value
     mock_predict_future_prices.return_value = 123.45
+    # Pretend there is an active model so the endpoint does not fail with 500.
+    mock_get_active_model_path.return_value = "models/my_lstm_model_dummy_20240101_000000.keras"
 
     # Create dummy OHLC data of correct length for feature engineering
     required_data_points = 20 + TSTEPS
     dummy_data = []
     for _ in range(required_data_points):
         dummy_data.append({"Open": 100.0, "High": 101.0, "Low": 99.0, "Close": 100.5})
-    
+
     response = client.post("/predict", json={"data": dummy_data})
-    
+
     assert response.status_code == 200
     # The actual predicted price and model version might vary, so we check for keys
-    assert "predicted_price" in response.json()
-    assert "model_version" in response.json()
-    
+    body = response.json()
+    assert "predicted_price" in body
+    assert "model_version" in body
+
     # Verify that predict_future_prices was called with the correct data
     assert mock_predict_future_prices.called
     call_args, _ = mock_predict_future_prices.call_args
     passed_df = call_args[0]
     assert isinstance(passed_df, pd.DataFrame)
     assert len(passed_df) == required_data_points
-    assert passed_df.iloc[0]['Open'] == 100.0
+    assert passed_df.iloc[0]["Open"] == 100.0
 
 # Test for invalid input length
 def test_predict_invalid_length(client: TestClient):

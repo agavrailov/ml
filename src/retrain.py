@@ -8,7 +8,7 @@ import json
 from tensorflow.keras.callbacks import EarlyStopping # Added import
 from datetime import datetime
 
-from src.model import build_lstm_model
+from src.model import build_lstm_model, load_model
 from src.data_utils import (
     fit_standard_scaler,
     apply_standard_scaler,
@@ -74,7 +74,8 @@ def retrain_model(lstm_units=LSTM_UNITS, learning_rate=LEARNING_RATE, epochs=EPO
         print(f"Error: No trained models found in {MODEL_REGISTRY_DIR}. Please train a model first using train.py.")
         return None
     print(f"Loading base model for retraining: {latest_model_path}")
-    base_model = keras.models.load_model(latest_model_path)
+    # Load the base model via the unified model loader.
+    base_model = load_model(latest_model_path)
 
     # Rolling window loop
     for i in range(len(df_featured) - train_window_size - validation_window_size + 1):

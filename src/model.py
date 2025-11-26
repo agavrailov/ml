@@ -1,10 +1,15 @@
+import os
+from datetime import datetime
+from pathlib import Path
+from typing import Optional, Tuple
+
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
 from tensorflow.keras.models import Model
-from typing import Optional, Tuple
+from tensorflow.keras.callbacks import EarlyStopping
 
-from src.config import DROPOUT_RATE_1, DROPOUT_RATE_2
+from src.config import DROPOUT_RATE_1, DROPOUT_RATE_2, ModelConfig, get_model_config
 
 def build_lstm_model(
     input_shape: Tuple[int, int],
@@ -101,6 +106,97 @@ def load_stateful_weights_into_non_stateful_model(
 
     # Set weights to the non-stateful model
     non_stateful_model.set_weights(stateful_weights)
+
+
+def build_model(model_cfg: Optional[ModelConfig] = None) -> keras.Model:
+    """Build a compiled LSTM model from :class:`ModelConfig`.
+
+    This is a thin convenience wrapper around :func:`build_lstm_model` that
+    reads defaults from :func:`get_model_config` when ``model_cfg`` is omitted.
+    """
+
+    cfg = model_cfg or get_model_config()
+
+    return build_lstm_model(
+        input_shape=(cfg.tsteps, cfg.n_features),
+        lstm_units=cfg.lstm_units,
+        batch_size=cfg.batch_size if cfg.stateful else None,
+        learning_rate=cfg.learning_rate,
+        n_lstm_layers=cfg.n_lstm_layers,
+        stateful=cfg.stateful,
+        optimizer_name=cfg.optimizer_name,
+        loss_function=cfg.loss_function,
+    )
+
+
+def load_model(model_path: str | Path, *, compile: bool = True) -> keras.Model:
+    """Load a saved Keras model from disk.
+
+    Centralizes usage of ``keras.models.load_model`` so higher-level code can
+    depend on a single entrypoint for deserialization.
+    """
+
+    return keras.models.load_model(str(model_path), compile=compile)
+
+
+def train_and_save_model(
+    *,
+    model: keras.Model,
+    X_train,
+    Y_train,
+    X_val,
+    Y_val,
+    epochs: int,
+    batch_size: int,
+    frequency: str,
+    tsteps: int,
+    model_registry_dir: str,
+    patience: int = 5,
+):
+    """Fit a model on (X_train, Y_train), evaluate on validation data, and save it.
+
+    This helper centralizes the Keras ``fit`` + early-stopping behaviour and the
+    naming convention for saved models used during training.
+
+    Returns
+    -------
+    final_val_loss : float
+        The best (minimum) validation loss observed during training.
+    model_path : str
+        Filesystem path where the trained model was saved.
+    timestamp : str
+        Timestamp string used in the filename, e.g. ``"20250101_000000"``.
+    """
+
+    early_stopping = EarlyStopping(
+        monitor="val_loss",
+        patience=patience,
+        restore_best_weights=True,
+    )
+
+    history = model.fit(
+        X_train,
+        Y_train,
+        epochs=epochs,
+        batch_size=batch_size,
+        validation_data=(X_val, Y_val),
+        callbacks=[early_stopping],
+        shuffle=False,
+        verbose=2,
+    )
+
+    final_val_loss = float(min(history.history["val_loss"]))
+
+    os.makedirs(model_registry_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    model_path = os.path.join(
+        model_registry_dir,
+        f"my_lstm_model_{frequency}_tsteps{tsteps}_{timestamp}.keras",
+    )
+    model.save(model_path)
+
+    return final_val_loss, model_path, timestamp
+
 
 if __name__ == "__main__":
     # Example usage and basic test

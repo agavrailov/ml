@@ -15,7 +15,11 @@ import logging
 # Reduce Python-level TF logging (e.g. retracing warnings)
 tf.get_logger().setLevel(logging.ERROR)
 
-from src.model import build_lstm_model, load_stateful_weights_into_non_stateful_model
+from src.model import (
+    build_lstm_model,
+    load_stateful_weights_into_non_stateful_model,
+    load_model,
+)
 from src.data_processing import add_features  # Import add_features
 from src.data_utils import apply_standard_scaler
 from src.config import (
@@ -70,7 +74,8 @@ def build_prediction_context(
             "Please train a model first."
         )
 
-    stateful_model = keras.models.load_model(model_path)
+    # Load the trained *stateful* model via the unified model loader.
+    stateful_model = load_model(model_path)
 
     best_hps: dict = {}
     best_hps_path = "best_hyperparameters.json"

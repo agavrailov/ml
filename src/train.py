@@ -8,7 +8,11 @@ from tensorflow.keras.callbacks import EarlyStopping
 import importlib
 from datetime import datetime
 
-from src.model import build_lstm_model, load_stateful_weights_into_non_stateful_model
+from src.model import (
+    build_lstm_model,
+    load_stateful_weights_into_non_stateful_model,
+    train_and_save_model,
+)
 from src.data_processing import prepare_keras_input_data
 from src.data_utils import (
     fit_standard_scaler,
@@ -177,34 +181,28 @@ def train_model(
     model = build_lstm_model(
         input_shape=(tsteps, n_features_dynamic),
         lstm_units=lstm_units,
-        batch_size=current_batch_size if stateful else None, # Pass batch_size only if stateful
+        batch_size=current_batch_size if stateful else None,  # Pass batch_size only if stateful
         learning_rate=learning_rate,
         n_lstm_layers=n_lstm_layers,
         stateful=stateful,
         optimizer_name=OPTIMIZER_NAME,
-        loss_function=LOSS_FUNCTION
+        loss_function=LOSS_FUNCTION,
     )
 
-    early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
-
     print(f"Starting model training for {frequency} with TSTEPS={tsteps}...")
-    history = model.fit(X_train, Y_train,
-              epochs=epochs,
-              batch_size=current_batch_size,
-              validation_data=(X_val, Y_val),
-              callbacks=[early_stopping],
-              shuffle=False,
-              verbose=2)
+    final_val_loss, model_path, timestamp = train_and_save_model(
+        model=model,
+        X_train=X_train,
+        Y_train=Y_train,
+        X_val=X_val,
+        Y_val=Y_val,
+        epochs=epochs,
+        batch_size=current_batch_size,
+        frequency=frequency,
+        tsteps=tsteps,
+        model_registry_dir=MODEL_REGISTRY_DIR,
+    )
     print(f"Model training finished for {frequency} with TSTEPS={tsteps}.")
-
-    final_val_loss = min(history.history['val_loss'])
-    
-    # --- Model Saving ---
-    os.makedirs(MODEL_REGISTRY_DIR, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    model_path = os.path.join(MODEL_REGISTRY_DIR, f"my_lstm_model_{frequency}_tsteps{tsteps}_{timestamp}.keras")
-    model.save(model_path)
-    print(f"Model saved to {model_path} with validation loss {final_val_loss:.4f}")
 
     # --- Bias Correction Calculation ---
     print("Calculating bias correction from validation set...")

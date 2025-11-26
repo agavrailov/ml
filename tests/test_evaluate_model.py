@@ -52,7 +52,7 @@ def test_evaluate_model_uses_last_twenty_percent_window(tmp_path):
                 np.ones((10, 1)),
             ),
         ),
-        patch("src.evaluate_model.keras.models.load_model") as mock_load_model,
+        patch("src.evaluate_model.load_model") as mock_load_model,
         patch("src.evaluate_model.build_lstm_model") as mock_build_model,
         patch("src.evaluate_model.load_stateful_weights_into_non_stateful_model"),
         patch("src.evaluate_model.plt.savefig"),

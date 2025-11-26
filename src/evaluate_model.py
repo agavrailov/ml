@@ -3,8 +3,7 @@ import sys
 import pandas as pd
 import numpy as np
 import json
-from tensorflow import keras
-from sklearn.metrics import mean_absolute_error, mean_squared_error # Added import
+from sklearn.metrics import mean_absolute_error, mean_squared_error  # Added import
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 import importlib # Added import for reloading modules
@@ -24,7 +23,11 @@ from src.config import (
 import src.config # Import src.config as a module
 
 from src.data_processing import prepare_keras_input_data, add_features
-from src.model import build_lstm_model, load_stateful_weights_into_non_stateful_model
+from src.model import (
+    build_lstm_model,
+    load_stateful_weights_into_non_stateful_model,
+    load_model,
+)
 from src.data_utils import (
     apply_standard_scaler,
     create_sequences_for_stateless_lstm,
@@ -109,7 +112,8 @@ def evaluate_model_performance(
         return
 
     print(f"Loading trained (stateful) model from: {model_path}")
-    stateful_model = keras.models.load_model(model_path)
+    # Load the trained *stateful* model via the unified model loader.
+    stateful_model = load_model(model_path)
     
     # Hyperparameters are passed directly, no need to load from best_hps.json
     # lstm_units, n_lstm_layers, stateful, optimizer_name, loss_function are already arguments

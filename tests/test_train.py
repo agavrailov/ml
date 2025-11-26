@@ -72,6 +72,7 @@ def test_train_model_filters_to_2023_plus_and_respects_split(tmp_path):
         patch("src.train.json.dump"),
         patch("src.train.open", mock_open(), create=True),
         patch("src.train.datetime") as mock_datetime,
+        patch("src.train.train_and_save_model") as mock_train_and_save,
     ):
         # Configure scaler mock to return mean/std and a JSON-serialisable dict
         mock_fit_scaler.return_value = (
@@ -89,6 +90,9 @@ def test_train_model_filters_to_2023_plus_and_respects_split(tmp_path):
         model.fit.return_value = history
         model.predict.return_value = np.ones((10, 1))
         mock_build_model.return_value = model
+
+        # train_and_save_model is responsible for fitting/saving; return dummy values.
+        mock_train_and_save.return_value = (0.4, "dummy_model.keras", "20250101_000000")
 
         result = train_model(frequency="15min", tsteps=hps["tsteps"], features_to_use=feature_cols)
  
