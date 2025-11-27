@@ -13,7 +13,7 @@ from src.model import (
     load_stateful_weights_into_non_stateful_model,
     train_and_save_model,
 )
-from src.data_processing import prepare_keras_input_data
+from src.data import load_hourly_features
 from src.data_utils import (
     fit_standard_scaler,
     apply_standard_scaler,
@@ -70,14 +70,18 @@ def train_model(
     n_features_dynamic = len(features_to_use)
 
     # --- Data Preparation ---
-    hourly_data_path = get_hourly_data_csv_path(frequency) # Get path to the hourly data
+    hourly_data_path = get_hourly_data_csv_path(frequency)  # Get path to the hourly data
     scaler_params_path = get_scaler_params_json_path(frequency)
 
     if not os.path.exists(hourly_data_path):
-        print(f"Error: Hourly data not found for frequency {frequency} at {hourly_data_path}. Skipping training.")
+        print(
+            f"Error: Hourly data not found for frequency {frequency} at {hourly_data_path}. "
+            "Skipping training."
+        )
         return None
 
-    df_featured, feature_cols = prepare_keras_input_data(hourly_data_path, features_to_use)
+    # Use centralized data helper to load engineered feature frame.
+    df_featured, feature_cols = load_hourly_features(frequency, features_to_use)
 
     # Restrict training data to records from 2023-01-01 onwards.
     # Adjust this cutoff when you want to change the training window.

@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 
 from src.backtest_engine import BacktestConfig, BacktestResult, PredictionProvider, run_backtest
+from src.data import load_hourly_ohlc
 from src.config import (
     FREQUENCY,
     RISK_PER_TRADE_PCT,
@@ -896,6 +897,7 @@ def main() -> None:
 
     if args.csv_path:
         csv_path = args.csv_path
+        data_full = pd.read_csv(csv_path)
     else:
         csv_path = get_hourly_data_csv_path(freq)
         if not os.path.exists(csv_path):
@@ -904,7 +906,8 @@ def main() -> None:
                 "to generate the necessary data files, or provide a valid "
                 "--csv-path argument."
             )
-    data_full = pd.read_csv(csv_path)
+        # Use centralized data helper to load the default OHLC CSV.
+        data_full = load_hourly_ohlc(freq)
 
     # Basic sanity check for required columns.
     required_cols = {"Open", "High", "Low", "Close"}

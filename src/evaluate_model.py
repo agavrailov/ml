@@ -18,11 +18,11 @@ from src.config import (
     FREQUENCY,
     TSTEPS,
     OPTIMIZER_NAME,
-    LOSS_FUNCTION
+    LOSS_FUNCTION,
 )
-import src.config # Import src.config as a module
+import src.config  # Import src.config as a module
 
-from src.data_processing import prepare_keras_input_data, add_features
+from src.data import load_hourly_features
 from src.model import (
     build_lstm_model,
     load_stateful_weights_into_non_stateful_model,
@@ -136,14 +136,14 @@ def evaluate_model_performance(
     # Use the non_stateful_model for predictions
     model = non_stateful_model
     
-    print("Loading hourly data and scaler parameters...")
-    df_hourly = pd.read_csv(hourly_data_csv, parse_dates=['Time'])
-    
+    print(f"Loading hourly data and scaler parameters...")
+
     with open(scaler_params_json, 'r') as f:
         scaler_params = json.load(f)
     
     # --- 2. Filter and Prepare Data ---
-    df_full_featured, _ = prepare_keras_input_data(hourly_data_csv, features_to_use)  # Pass features_to_use
+    # Use centralized data helper to obtain the feature-engineered frame.
+    df_full_featured, _ = load_hourly_features(frequency, features_to_use)
 
     # Use the last 20% of the available data as the validation/evaluation window.
     total_rows = len(df_full_featured)

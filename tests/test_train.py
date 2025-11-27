@@ -57,7 +57,7 @@ def test_train_model_filters_to_2023_plus_and_respects_split(tmp_path):
         patch("src.train.get_hourly_data_csv_path", return_value=str(hourly_csv_path)),
         patch("src.train.get_scaler_params_json_path", return_value=str(scaler_params_path)),
         patch("src.train.os.path.exists", return_value=True),
-        patch("src.train.prepare_keras_input_data", return_value=(df.copy(), feature_cols)),
+        patch("src.train.load_hourly_features", return_value=(df.copy(), feature_cols)),
         patch("src.train.fit_standard_scaler") as mock_fit_scaler,
         patch("src.train.apply_standard_scaler", side_effect=lambda d, cols, sp: d),
         patch(

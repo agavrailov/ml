@@ -100,6 +100,15 @@ Only after Milestone 1 is stable and tested do we proceed.
 
 **Goal:** Make the data path into the model explicit and centralized, without changing notebooks/CLI.
 
+**Status:** Implemented (within current scope).
+- `src.data.load_hourly_ohlc` and `src.data.load_hourly_features` wrap the existing
+  CSV + feature-engineering pipeline.
+- `train.py`, `evaluate_model.py`, and the `backtest` CLI now consume hourly OHLC
+  and feature frames exclusively via `src.data` for the default NVDA path.
+- Resampling from minute → hourly remains in `src.data_processing.convert_minute_to_timeframe`,
+  invoked by the existing data-processing script; this is already a single entrypoint
+  and does not need further abstraction for now.
+
 ### 2.1 Create `src/data.py`
 
 **Responsibilities:**

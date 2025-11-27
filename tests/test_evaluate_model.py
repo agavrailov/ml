@@ -43,7 +43,7 @@ def test_evaluate_model_uses_last_twenty_percent_window(tmp_path):
     with (
         patch("src.evaluate_model.get_hourly_data_csv_path", return_value=str(hourly_csv_path)),
         patch("src.evaluate_model.get_scaler_params_json_path", return_value=str(scaler_params_path)),
-        patch("src.evaluate_model.prepare_keras_input_data", return_value=(df_full_featured, feature_cols)),
+        patch("src.evaluate_model.load_hourly_features", return_value=(df_full_featured, feature_cols)),
         patch("src.evaluate_model.apply_standard_scaler", side_effect=_capture_apply_standard_scaler),
         patch(
             "src.evaluate_model.create_sequences_for_stateless_lstm",
