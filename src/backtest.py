@@ -39,7 +39,7 @@ from src.config import (
     get_hourly_data_csv_path,
     get_latest_best_model_path,
 )
-from src.trading_strategy import StrategyConfig
+from src.strategy import StrategyConfig
 from src.predict import (
     build_prediction_context,
     predict_sequence_batch,

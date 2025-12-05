@@ -32,7 +32,7 @@ from src.config import (
     BACKTEST_DEFAULT_END_DATE,
     get_hourly_data_csv_path,
 )
-from src.trading_strategy import StrategyConfig, StrategyState, TradePlan, compute_tp_sl_and_size
+from src.strategy import StrategyConfig, StrategyState, TradePlan, compute_tp_sl_and_size
 from src.backtest import (
     _compute_atr_series,
     _load_predictions_csv,

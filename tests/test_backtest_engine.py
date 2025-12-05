@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 
 from src.backtest_engine import BacktestConfig, BacktestResult, run_backtest
-from src.trading_strategy import StrategyConfig
+from src.strategy import StrategyConfig
 
 
 def _constant_prediction_provider(predicted_price: float):

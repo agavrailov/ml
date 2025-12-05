@@ -87,8 +87,8 @@ class TrainingConfig:
     tr_split: float = 0.7
     batch_size: int = 64
     epochs: int = 20
-    learning_rate: float = 0.01
-    lstm_units: int = 32
+    learning_rate: float = 0.003
+    lstm_units: int = 64
     dropout_rate_1: float = 0.1
     dropout_rate_2: float = 0.1
     n_lstm_layers: int = 1

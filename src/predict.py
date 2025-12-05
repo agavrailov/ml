@@ -68,6 +68,11 @@ def build_prediction_context(
         n_lstm_layers_trained,
     ) = get_latest_best_model_path(target_frequency=frequency, tsteps=tsteps)
 
+    # Ensure model_path is an absolute path for robust checking
+    if model_path:
+        script_dir = os.path.dirname(__file__)
+        model_path = os.path.abspath(os.path.join(script_dir, model_path))
+
     if not model_path or not os.path.exists(model_path):
         raise FileNotFoundError(
             f"No best model found for frequency {frequency} and TSTEPS {tsteps}. "
@@ -78,7 +83,10 @@ def build_prediction_context(
     stateful_model = load_model(model_path)
 
     best_hps: dict = {}
-    best_hps_path = "best_hyperparameters.json"
+    # Ensure best_hps_path is an absolute path for robust checking
+    script_dir = os.path.dirname(__file__)
+    best_hps_path = os.path.abspath(os.path.join(script_dir, "best_hyperparameters.json"))
+
     if os.path.exists(best_hps_path):
         try:
             with open(best_hps_path, 'r') as f:

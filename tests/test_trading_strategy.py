@@ -1,4 +1,4 @@
-"""Tests for src.trading_strategy.
+"""Tests for src.strategy.
 
 These tests use synthetic scenarios to validate the MVP strategy logic.
 """
@@ -8,7 +8,7 @@ import math
 
 import pytest
 
-from src.trading_strategy import StrategyConfig, StrategyState, compute_tp_sl_and_size
+from src.strategy import StrategyConfig, StrategyState, compute_tp_sl_and_size
 
 
 @pytest.fixture

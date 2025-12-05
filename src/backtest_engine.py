@@ -16,7 +16,7 @@ from typing import Callable, List, Optional
 import pandas as pd
 import numpy as np
 
-from src.trading_strategy import StrategyConfig, StrategyState, TradePlan, compute_tp_sl_and_size
+from src.strategy import StrategyConfig, StrategyState, TradePlan, compute_tp_sl_and_size
 
 
 @dataclass

@@ -155,49 +155,72 @@ Add or update tests:
 
 ## Milestone 3 – Strategy & Backtest Cleanup (`src/strategy.py`)
 
-**Goal:** Isolate strategy logic and parameters from backtest plumbing, while leaving entry points intact.
+**Status:** Implemented (with simplified design).
 
-### 3.1 Create `src/strategy.py`
+**Goal (updated):** Isolate core strategy logic from backtest plumbing, while keeping the overall architecture simple and testable.
+
+### 3.1 `src/strategy.py` – per-bar decision rule
 
 **Responsibilities:**
-- Strategy parameters and position-sizing rules.
-- Converting predictions + prices into trades.
-- Computing equity curves.
+- Own the *per-bar* trading decision logic (when to open a position, TP/SL distances, position size).
+- Encapsulate strategy parameters in a small dataclass.
 
-**Initial public API:**
-- `StrategyParams` dataclass with:
+**Current public API:**
+- `StrategyConfig` dataclass with:
+  - `risk_per_trade_pct`
+  - `reward_risk_ratio`
   - `k_sigma_err`
   - `k_atr_min_tp`
-  - `reward_risk_ratio`
-  - `risk_per_trade_pct`
-- Core functions:
-  - `generate_trades(price_series, predictions, params: StrategyParams) -> trades_df`
-  - `compute_equity_curve(trades_df, initial_capital, ...) -> equity_df`
+  - `min_position_size`
+- Supporting structures:
+  - `StrategyState` – snapshot of inputs for a single decision step.
+  - `TradePlan` – proposed TP/SL/size for a new long position.
+- Core function:
+  - `compute_tp_sl_and_size(state: StrategyState, cfg: StrategyConfig) -> Optional[TradePlan]`
 
-### 3.2 Refactor `backtest.py` to Use `strategy.py`
+This module is intentionally narrow: it does **not** know about DataFrames, trades lists, or equity curves. It only answers "given current price/prediction/ATR/equity, should we open a trade, and with what TP/SL/size?".
 
-Steps:
-1. Move signal-generation and TP/SL logic from `backtest.py` into `strategy.py`.
-2. Keep `backtest.py` as a thin orchestrator that:
-   - Gets prices + predictions.
-   - Constructs `StrategyParams` (possibly from existing config/global values).
-   - Calls `generate_trades` and `compute_equity_curve`.
-3. Preserve CLI behavior and outputs.
+### 3.2 `src/backtest_engine.py` – trade lifecycle & equity curve
 
-Success criteria:
-- Strategy rules and parameters are clearly visible in `strategy.py`.
-- `backtest.py` is primarily wiring/orchestration code.
+**Responsibilities:**
+- Iterate over historical OHLC bars.
+- Use a prediction provider + `StrategyConfig` to turn a per-bar `TradePlan` into concrete trades.
+- Simulate TP/SL exits, commissions, and equity curve evolution.
 
-### 3.3 Tests for Milestone 3
+**Current public API:**
+- `BacktestConfig` – wraps `StrategyConfig` plus risk/commission settings.
+- `BacktestResult` – equity curve and executed trades.
+- `run_backtest(data, prediction_provider, cfg, atr_series=None, model_error_sigma_series=None)`.
 
-Add or update tests:
+All multi-bar logic (position state machine, TP/SL checks across future bars, commissions, equity updates) lives here rather than in `strategy.py` or the CLI.
 
-- **Deterministic strategy test:**
-  - For a small, synthetic price and prediction series, `generate_trades` produces a known set of trades.
-- **Equity curve invariants:**
-  - Equity curve respects position sizing and reward/risk constraints.
-- **Regression test:**
-  - For a fixed historical slice and seed, key backtest metrics (e.g. trade count, P&L, max drawdown) stay within acceptable bounds compared to pre-refactor.
+### 3.3 `src/backtest.py` – CLI/wiring layer
+
+**Responsibilities:**
+- Load OHLC data (via `src.data`).
+- Build prediction providers (naive/model/CSV).
+- Compute ATR series and model-error series.
+- Construct `StrategyConfig` / `BacktestConfig` and call `run_backtest`.
+- Compute summary metrics and optional plots.
+
+`backtest.py` is intentionally kept as a thin orchestration layer over `src.backtest_engine` + `src.strategy`; it does not contain its own trading rules.
+
+### 3.4 Tests for Milestone 3
+
+Implemented tests:
+
+- **Deterministic strategy tests (`tests/test_trading_strategy.py`):**
+  - Validate that `compute_tp_sl_and_size` opens no trade when already in a position, when predictions are not bullish, when SNR is below the threshold, etc.
+  - Check that TP/SL distances and position size match the configured risk and reward/risk ratio when a trade is opened.
+- **Backtest engine invariants (`tests/test_backtest_engine.py`):
+  - Scenarios where no trades occur because predictions are too small vs noise.
+  - Scenarios with positive TP trades and negative SL trades, including commission effects.
+- **Integration / CLI smoke tests:**
+  - `tests/test_backtest_cli.py`, `tests/test_backtest_cli_smoke.py`,
+    `tests/test_backtest_model_mode.py`, `tests/test_backtest_model_integration.py`,
+    `tests/test_backtest_csv_provider.py` exercise end-to-end wiring and I/O.
+
+We deliberately **did not** introduce an extra `StrategyParams` / `generate_trades` / `compute_equity_curve` layer, since `StrategyConfig` + `run_backtest` already provide a single, testable seam between strategy logic and backtest plumbing with less indirection.
 
 ---
 

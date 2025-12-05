@@ -5,7 +5,7 @@ import numpy as np
 import tensorflow as tf
 from tensorflow import keras
 import json
-from tensorflow.keras.callbacks import EarlyStopping # Added import
+from tensorflow.keras.callbacks import EarlyStopping  # Added import
 from datetime import datetime
 
 from src.model import build_lstm_model, load_model
@@ -21,6 +21,7 @@ from src.config import (
     EPOCHS, LEARNING_RATE, LSTM_UNITS,
     PROCESSED_DATA_DIR, HOURLY_DATA_CSV, TRAINING_DATA_CSV, SCALER_PARAMS_JSON, MODEL_REGISTRY_DIR, get_latest_model_path, get_active_model_path
 )
+from src.experiments import log_experiment
 
 ACTIVE_MODEL_PATH_FILE = os.path.join("models", "active_model.txt")
 
@@ -130,17 +131,40 @@ def retrain_model(lstm_units=LSTM_UNITS, learning_rate=LEARNING_RATE, epochs=EPO
 
         # Retrain the model
         print("Starting model retraining...")
-        history = model.fit(X_train, Y_train,
-                  epochs=epochs,
-                  batch_size=current_batch_size,
-                  validation_data=(X_val, Y_val),
-                  callbacks=[early_stopping],
-                  shuffle=False, # Shuffle is False for time series data to preserve temporal order
-                  verbose=0) # Suppress verbose output for each epoch
+        history = model.fit(
+            X_train,
+            Y_train,
+            epochs=epochs,
+            batch_size=current_batch_size,
+            validation_data=(X_val, Y_val),
+            callbacks=[early_stopping],
+            shuffle=False,  # Shuffle is False for time series data to preserve temporal order
+            verbose=0,  # Suppress verbose output for each epoch
+        )
         print("Model retraining finished.")
 
-        current_val_loss = history.history['val_loss'][-1]
+        current_val_loss = float(history.history['val_loss'][-1])
         print(f"Validation Loss for window {i+1}: {current_val_loss:.4f}")
+
+        # Log per-window experiment record
+        log_experiment(
+            {
+                "phase": "retrain_window",
+                "window_index": i,
+                "train_window_size": train_window_size,
+                "validation_window_size": validation_window_size,
+                "lstm_units": lstm_units,
+                "learning_rate": learning_rate,
+                "batch_size": current_batch_size,
+                "tsteps": TSTEPS,
+                "rows_ahead": ROWS_AHEAD,
+                "final_val_loss": current_val_loss,
+                "history": {
+                    "loss": history.history.get("loss"),
+                    "val_loss": history.history.get("val_loss"),
+                },
+            }
+        )
 
         # Save the best model
         if current_val_loss < best_val_loss:
@@ -153,6 +177,20 @@ def retrain_model(lstm_units=LSTM_UNITS, learning_rate=LEARNING_RATE, epochs=EPO
 
     if best_model_path:
         print(f"\nOverall best retrained model saved at: {best_model_path} with validation loss: {best_val_loss:.4f}")
+        log_experiment(
+            {
+                "phase": "retrain_summary",
+                "best_val_loss": float(best_val_loss),
+                "best_model_path": best_model_path,
+                "train_window_size": train_window_size,
+                "validation_window_size": validation_window_size,
+                "lstm_units": lstm_units,
+                "learning_rate": learning_rate,
+                "batch_size": current_batch_size,
+                "tsteps": TSTEPS,
+                "rows_ahead": ROWS_AHEAD,
+            }
+        )
         return best_val_loss
     else:
         print("\nNo models were retrained successfully.")

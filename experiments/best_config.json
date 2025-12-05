@@ -1,0 +1,15 @@
+{
+  "final_val_loss": 0.00026967472513206303,
+  "config": {
+    "frequency": "15min",
+    "tsteps": 5,
+    "lstm_units": 64,
+    "batch_size": 64,
+    "learning_rate": 0.003,
+    "n_lstm_layers": 1,
+    "stateful": true,
+    "optimizer_name": "rmsprop",
+    "loss_function": "mse"
+  },
+  "model_path": "C:\\Users\\Anton\\SRC\\my\\ml_lstm\\models\\registry\\my_lstm_model_15min_tsteps5_20251127_180049.keras"
+}

@@ -53,7 +53,7 @@ from src.backtest import (
     _make_csv_prediction_provider,
 )
 from src.backtest_engine import BacktestConfig, run_backtest
-from src.trading_strategy import StrategyConfig
+from src.strategy import StrategyConfig
 from src.config import FREQUENCY, get_hourly_data_csv_path, get_predictions_csv_path
 """
 

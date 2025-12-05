@@ -138,6 +138,8 @@ def load_model(model_path: str | Path, *, compile: bool = True) -> keras.Model:
 
     return keras.models.load_model(str(model_path), compile=compile)
 
+from src.experiments import log_experiment
+
 
 def train_and_save_model(
     *,
@@ -194,6 +196,25 @@ def train_and_save_model(
         f"my_lstm_model_{frequency}_tsteps{tsteps}_{timestamp}.keras",
     )
     model.save(model_path)
+
+    # Log a compact summary record for this training run.
+    log_experiment(
+        {
+            "phase": "initial_train",
+            "model_path": model_path,
+            "frequency": frequency,
+            "tsteps": tsteps,
+            "batch_size": batch_size,
+            "epochs": epochs,
+            "patience": patience,
+            "final_val_loss": final_val_loss,
+            "history": {
+                "loss": history.history.get("loss"),
+                "val_loss": history.history.get("val_loss"),
+                "mae": history.history.get("mae"),
+            },
+        }
+    )
 
     return final_val_loss, model_path, timestamp
 
