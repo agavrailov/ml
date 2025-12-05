@@ -98,31 +98,6 @@ def _estimate_atr_like(data: pd.DataFrame, window: int = 14) -> float:
     return float(cleaned.mean()) if not cleaned.empty else 1.0
 
 
-def _make_naive_prediction_provider(offset_multiple: float, atr_series: pd.Series) -> PredictionProvider:
-    """Return a simple prediction provider for experimentation.
-
-    For each bar, prediction = Close + offset_multiple * ATR_i, where
-    ATR_i is the per-bar ATR(14) on the active timeframe. If ATR_i is
-    missing or non-finite (e.g. warmup bars), we fall back to the mean
-    ATR over the dataset.
-    """
-
-    cleaned = atr_series.dropna()
-    atr_mean = float(cleaned.mean()) if not cleaned.empty else 1.0
-
-    def provider(i: int, row: pd.Series) -> float:  # noqa: ARG001
-        if 0 <= i < len(atr_series):
-            atr_val = float(atr_series.iloc[i])
-            if not np.isfinite(atr_val):
-                atr_val = atr_mean
-        else:
-            atr_val = atr_mean
-
-        return float(row["Close"]) + offset_multiple * atr_val
-
-    return provider
-
-
 def _make_model_prediction_provider(data: pd.DataFrame, frequency: str) -> tuple[PredictionProvider, np.ndarray]:
     """Return a prediction provider using the LSTM model.
 
@@ -307,74 +282,26 @@ def _make_model_prediction_provider(data: pd.DataFrame, frequency: str) -> tuple
     return provider, residual_sigma_series
 
 
-def _load_predictions_csv(csv_path: str) -> pd.DataFrame:
-    """Load a per-bar predictions CSV.
-
-    Expected columns at minimum:
-    - ``Time``: timestamp matching the OHLC data.
-    - ``predicted_price``: model-predicted price for the target horizon.
-    """
-    df = pd.read_csv(os.path.normpath(csv_path))
-    if "predicted_price" not in df.columns:
-        raise ValueError(f"Predictions CSV {csv_path} must contain 'predicted_price' column.")
-    return df
-
-
-def _make_csv_prediction_provider(preds_df: pd.DataFrame, data: pd.DataFrame) -> PredictionProvider:
-    """Return a prediction provider backed by a predictions DataFrame.
-
-    If a ``Time`` column is present in both dataframes, we align on Time;
-    otherwise we assume positional alignment.
-    """
-    if "Time" in data.columns and "Time" in preds_df.columns:
-        merged = pd.merge(
-            data[["Time"]].reset_index(drop=True),
-            preds_df[["Time", "predicted_price"]].reset_index(drop=True),
-            on="Time",
-            how="left",
-        )
-
-        # Fill gaps in the prediction series by propagating nearest available
-        # values both forward and backward. This ensures that edge timestamps
-        # are filled from the nearest prediction, matching test expectations.
-        series = merged["predicted_price"].copy()
-        if series.notna().any():
-            series = series.ffill().bfill()
-
-        series = series.to_numpy()
-    else:
-        # Positional fallback: align by index and pad/truncate. When padding,
-        # repeat the last available prediction so that callers see a stable
-        # final value instead of NaNs.
-        series = preds_df["predicted_price"].to_numpy()
-        if len(series) < len(data):
-            if len(series) == 0:
-                pad_val = np.nan
-            else:
-                pad_val = float(series[-1])
-            pad = np.full(len(data) - len(series), pad_val, dtype=float)
-            series = np.concatenate([series, pad])
-        elif len(series) > len(data):
-            series = series[: len(data)]
-
-    def provider(i: int, row: pd.Series) -> float:  # noqa: ARG001
-        return float(series[i])
-
-    return provider
-
-
 def run_backtest_on_dataframe(
     data: pd.DataFrame,
     initial_equity: float = INITIAL_EQUITY,
     frequency: Optional[str] = None,
-    prediction_mode: str = "naive",
+    prediction_mode: str = "model",
     commission_per_unit_per_leg: float | None = None,
     min_commission_per_order: float | None = None,
     predictions_csv: Optional[str] = None,
+    # Optional overrides for strategy parameters (use config defaults when None).
+    risk_per_trade_pct: float | None = None,
+    reward_risk_ratio: float | None = None,
+    k_sigma_err: float | None = None,
+    k_atr_min_tp: float | None = None,
 ) -> BacktestResult:
     """Run a backtest on an in-memory DataFrame using default settings.
 
     This is primarily for tests and notebook experiments.
+
+    Currently only ``prediction_mode='model'`` is supported. Passing any other
+    value will raise a ``ValueError``.
     """
 
     freq = frequency or FREQUENCY
@@ -386,12 +313,13 @@ def run_backtest_on_dataframe(
     atr_series = _compute_atr_series(data, window=14)
 
     # Strategy defaults come from STRATEGY_DEFAULTS so that risk and noise
-    # parameters are centralized in config.py.
+    # parameters are centralized in config.py. Allow callers to override
+    # individual knobs for optimization / UI workflows.
     strat_cfg = StrategyConfig(
-        risk_per_trade_pct=RISK_PER_TRADE_PCT,
-        reward_risk_ratio=REWARD_RISK_RATIO,
-        k_sigma_err=K_SIGMA_ERR,
-        k_atr_min_tp=K_ATR_MIN_TP,
+        risk_per_trade_pct=float(risk_per_trade_pct) if risk_per_trade_pct is not None else RISK_PER_TRADE_PCT,
+        reward_risk_ratio=float(reward_risk_ratio) if reward_risk_ratio is not None else REWARD_RISK_RATIO,
+        k_sigma_err=float(k_sigma_err) if k_sigma_err is not None else K_SIGMA_ERR,
+        k_atr_min_tp=float(k_atr_min_tp) if k_atr_min_tp is not None else K_ATR_MIN_TP,
     )
 
     # Use the mean ATR as a scalar proxy for backwards compatibility, but
@@ -413,17 +341,22 @@ def run_backtest_on_dataframe(
 
     model_error_sigma_series = atr_series
 
-    if prediction_mode == "naive":
-        provider = _make_naive_prediction_provider(offset_multiple=2.0, atr_series=atr_series)
-    elif prediction_mode == "model":
-        provider, model_error_sigma_series = _make_model_prediction_provider(data, frequency=freq)
-    elif prediction_mode == "csv":
-        if not predictions_csv:
-            raise ValueError("prediction_mode='csv' requires predictions_csv path")
-        preds_df = _load_predictions_csv(predictions_csv)
-        provider = _make_csv_prediction_provider(preds_df, data)
-    else:
-        raise ValueError(f"Unknown prediction_mode: {prediction_mode}")
+    if prediction_mode != "model":
+        raise ValueError(f"Unsupported prediction_mode: {prediction_mode!r}. Only 'model' is supported.")
+
+    provider, model_error_sigma_series = _make_model_prediction_provider(data, frequency=freq)
+    # If the model-based residual sigma series is all zeros (or non-finite),
+    # fall back to using ATR as a proxy. Otherwise k_sigma_err and
+    # k_atr_min_tp would have no effect in model mode, making optimization
+    # impossible.
+    try:
+        import numpy as _np  # local alias to avoid polluting module namespace
+
+        arr = _np.asarray(model_error_sigma_series, dtype=float)
+        if not _np.isfinite(arr).any() or _np.nanmax(arr) == 0.0:
+            model_error_sigma_series = atr_series
+    except Exception:
+        model_error_sigma_series = atr_series
 
     # Ensure model_error_sigma_series is a pandas Series so that
     # ``backtest_engine`` can index it consistently.
@@ -590,6 +523,109 @@ def _compute_backtest_metrics(
         "win_rate": win_rate,
         "profit_factor": profit_factor,
     }
+
+
+def run_backtest_for_ui(
+    frequency: str | None = None,
+    initial_equity: float = INITIAL_EQUITY,
+    prediction_mode: str = "model",
+    start_date: str | None = None,
+    end_date: str | None = None,
+    predictions_csv: str | None = None,
+    # Optional strategy parameter overrides from UI / optimization.
+    risk_per_trade_pct: float | None = None,
+    reward_risk_ratio: float | None = None,
+    k_sigma_err: float | None = None,
+    k_atr_min_tp: float | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+    """Convenience wrapper for interactive UIs.
+
+    This mirrors the CLI behaviour in :func:`main` but returns in-memory
+    DataFrames instead of writing CSVs or printing to stdout.
+
+    Returns ``(equity_df, trades_df, metrics)`` where:
+    - ``equity_df`` has columns ["Time" or "step", "equity"].
+    - ``trades_df`` is a tabular view of individual trades (may be empty).
+    - ``metrics`` is the same dict produced by :func:`_compute_backtest_metrics`,
+      with a few extra metadata fields (period, n_trades).
+    """
+
+    freq = frequency or FREQUENCY
+
+    # Load OHLC data in the same way as the CLI.
+    csv_path = get_hourly_data_csv_path(freq)
+    if not os.path.exists(csv_path):
+        raise FileNotFoundError(
+            f"'{csv_path}' not found. Please run 'python -m src.data_pipeline' "
+            "to generate the necessary data files."
+        )
+
+    data_full = load_hourly_ohlc(freq)
+
+    # Apply optional date range slicing based on Time column and config/inputs.
+    data, date_from, date_to = _apply_date_range(
+        data_full,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+    result = run_backtest_on_dataframe(
+        data,
+        initial_equity=initial_equity,
+        frequency=freq,
+        prediction_mode=prediction_mode,
+        predictions_csv=predictions_csv,
+        risk_per_trade_pct=risk_per_trade_pct,
+        reward_risk_ratio=reward_risk_ratio,
+        k_sigma_err=k_sigma_err,
+        k_atr_min_tp=k_atr_min_tp,
+    )
+
+    metrics = _compute_backtest_metrics(
+        result,
+        initial_equity=initial_equity,
+        data=data,
+    )
+
+    # Equity curve DataFrame.
+    if "Time" in data.columns:
+        time_values = pd.to_datetime(data["Time"])
+        time_col_name = "Time"
+    else:
+        time_values = pd.RangeIndex(len(data))
+        time_col_name = "step"
+
+    n = min(len(time_values), len(result.equity_curve))
+    equity_df = pd.DataFrame(
+        {
+            time_col_name: time_values[:n],
+            "equity": list(result.equity_curve)[:n],
+        }
+    )
+
+    # Trades DataFrame (may be empty).
+    trades_records = [
+        {
+            "entry_index": t.entry_index,
+            "exit_index": t.exit_index,
+            "entry_price": t.entry_price,
+            "exit_price": t.exit_price,
+            "size": t.size,
+            "commission": t.commission,
+            "gross_pnl": t.gross_pnl,
+            "pnl": t.pnl,
+        }
+        for t in result.trades
+    ]
+    trades_df = pd.DataFrame(trades_records)
+
+    # Attach a few helpful metadata fields to metrics for display.
+    enriched_metrics = dict(metrics)
+    enriched_metrics["period"] = f"{date_from} -> {date_to}"
+    enriched_metrics["n_trades"] = len(result.trades)
+    enriched_metrics["final_equity"] = result.final_equity
+
+    return equity_df, trades_df, enriched_metrics
 
 
 def _plot_price_and_equity_with_trades(
@@ -811,11 +847,11 @@ def main() -> None:
     parser.add_argument(
         "--prediction-mode",
         type=str,
-        choices=["naive", "model", "csv"],
-        default="naive",
+        choices=["model"],
+        default="model",
         help=(
-            "Prediction source: 'naive' (Close + k*ATR), 'model' (LSTM on the fly), "
-            "or 'csv' (precomputed predictions CSV)."
+            "Prediction source: 'model' (LSTM on the fly). "
+            "Naive and CSV-based modes have been removed."
         ),
     )
     parser.add_argument(
