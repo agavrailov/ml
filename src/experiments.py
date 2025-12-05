@@ -4,7 +4,6 @@ import argparse
 import itertools
 import json
 import os
-from dataclasses import asdict
 from datetime import datetime
 from typing import Any, Dict, Iterable, List
 

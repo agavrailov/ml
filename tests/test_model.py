@@ -264,5 +264,8 @@ def test_train_and_save_model_trains_and_saves_with_expected_name(tmp_path):
 
     expected_path = tmp_path / "my_lstm_model_15min_tsteps5_20250101_000000.keras"
     assert model_path == str(expected_path)
-    mock_makedirs.assert_called_once_with(str(tmp_path), exist_ok=True)
+    # Ensure the model registry directory is created; experiments logging may
+    # create additional directories, so we only assert that this path appears
+    # among the makedirs calls, not that it is the only one.
+    mock_makedirs.assert_any_call(str(tmp_path), exist_ok=True)
     mock_save.assert_called_once_with(str(expected_path))

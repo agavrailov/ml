@@ -2,18 +2,22 @@ import sys
 import os
 import json
 import itertools
-import pandas as pd
 from datetime import datetime
 
 from src.config import (
-    RESAMPLE_FREQUENCIES, TSTEPS_OPTIONS, LSTM_UNITS_OPTIONS, BATCH_SIZE_OPTIONS,
-    DROPOUT_RATE_OPTIONS, N_LSTM_LAYERS_OPTIONS, STATEFUL_OPTIONS,
-    OPTIMIZER_OPTIONS, LOSS_FUNCTION_OPTIONS, FEATURES_TO_USE_OPTIONS,
-    PROCESSED_DATA_DIR, RAW_DATA_CSV,
-    get_hourly_data_csv_path, get_training_data_csv_path, get_scaler_params_json_path,
+    RESAMPLE_FREQUENCIES,
+    TSTEPS_OPTIONS,
+    LSTM_UNITS_OPTIONS,
+    BATCH_SIZE_OPTIONS,
+    N_LSTM_LAYERS_OPTIONS,
+    STATEFUL_OPTIONS,
+    OPTIMIZER_OPTIONS,
+    LOSS_FUNCTION_OPTIONS,
+    FEATURES_TO_USE_OPTIONS,
+    RAW_DATA_CSV,
     get_run_hyperparameters,
 )
-from src.data_processing import convert_minute_to_timeframe, prepare_keras_input_data
+from src.data_processing import convert_minute_to_timeframe
 from src.train import train_model
 from src.evaluate_model import evaluate_model_performance
 

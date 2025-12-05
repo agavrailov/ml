@@ -13,12 +13,12 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
-from typing import Iterable, Optional, List
+from typing import Optional
 
 import numpy as np
 import pandas as pd
 
-from src.backtest_engine import BacktestConfig, BacktestResult, Position, Trade, run_backtest
+from src.backtest_engine import BacktestConfig, BacktestResult, run_backtest
 from src.config import (
     FREQUENCY,
     RISK_PER_TRADE_PCT,
@@ -32,7 +32,7 @@ from src.config import (
     BACKTEST_DEFAULT_END_DATE,
     get_hourly_data_csv_path,
 )
-from src.strategy import StrategyConfig, StrategyState, TradePlan, compute_tp_sl_and_size
+from src.strategy import StrategyConfig
 from src.backtest import (
     _compute_atr_series,
     _load_predictions_csv,
@@ -62,20 +62,6 @@ class PaperTradingConfig:
     reward_risk_ratio: float = REWARD_RISK_RATIO
     k_sigma_err: float = K_SIGMA_ERR
     k_atr_min_tp: float = K_ATR_MIN_TP
-
-
-@dataclass
-class PaperTradingState:
-    """(Legacy) state for manual paper-trading loop.
-
-    Kept for backwards compatibility but no longer used now that we delegate
-    to the core backtest engine via ``run_backtest``.
-    """
-
-    equity: float
-    position: Optional[Position]
-    trades: List[Trade]
-    equity_curve: List[float]
 
 
 def _build_backtest_config(cfg: PaperTradingConfig, atr_like: float) -> BacktestConfig:
