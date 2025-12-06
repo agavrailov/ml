@@ -380,7 +380,7 @@ RAW_DATA_DIR = PATHS.raw_data_dir
 PROCESSED_DATA_DIR = PATHS.processed_data_dir
 MODEL_SAVE_PATH = PATHS.model_save_path
 MODEL_REGISTRY_DIR = PATHS.model_registry_dir
-ACTIVE_MODEL_PATH_FILE = PATHS.active_model_path_file
+ACTIVE_MODEL_PATH_FILE = PATHS.active_model_path_file  # legacy; kept for backwards-compatible fallback only
 RAW_DATA_CSV = PATHS.raw_data_csv()
 
 def get_hourly_data_csv_path(frequency, processed_data_dir=PROCESSED_DATA_DIR):
@@ -408,12 +408,39 @@ def get_equity_csv_path(symbol: str, frequency: str) -> str:
     return PATHS.equity_csv(symbol, frequency)
 
 def get_active_model_path():
+    """Resolve the path of the currently *active* model.
+
+    The active model is defined as the globally best entry in
+    ``best_hyperparameters.json`` (lowest validation_loss across all
+    (frequency, tsteps) combinations). The legacy text pointer file is only
+    used as a final fallback for backwards compatibility.
     """
-    Reads the path of the currently active model from a file.
-    """
+
+    # 1) Global best from best_hyperparameters.json
+    model_path, *_ = get_latest_best_model_path()
+    if model_path:
+        return model_path
+
+    # 2) Legacy pointer file (text or JSON).
     if os.path.exists(ACTIVE_MODEL_PATH_FILE):
-        with open(ACTIVE_MODEL_PATH_FILE, 'r') as f:
-            return f.read().strip()
+        try:
+            with open(ACTIVE_MODEL_PATH_FILE, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+        except OSError:
+            return None
+
+        if not content:
+            return None
+
+        # Newer versions may store a small JSON object {"path": "..."}.
+        try:
+            data = json.loads(content)
+            if isinstance(data, dict) and "path" in data:
+                return data["path"]
+        except json.JSONDecodeError:
+            # Treat the raw content as a plain filesystem path.
+            return content
+
     return None
 
 def get_latest_best_model_path(target_frequency=None, tsteps=None):

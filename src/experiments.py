@@ -10,15 +10,15 @@ from typing import Any, Dict, Iterable, List
 import numpy as np
 import tensorflow as tf
 
-# Enable eager execution for robustness during experimentation (may be slower).
-tf.config.run_functions_eagerly(True)
+# Disable eager execution so training uses compiled graph mode (faster,
+# and avoids extra tf.data / TensorArray warnings).
+tf.config.run_functions_eagerly(False)
 
 from src.config import (
     TRAINING,
     get_model_config,
     MODEL_REGISTRY_DIR,
     FEATURES_TO_USE_OPTIONS,
-    ACTIVE_MODEL_PATH_FILE,
 )
 from src.data_processing import prepare_keras_input_data
 from src.data_utils import (
@@ -76,11 +76,11 @@ def _load_all_experiments() -> List[Dict[str, Any]]:
 
 
 def _update_global_best_from_log() -> None:
-    """Scan the log for the globally best grid run and persist it.
+    """Scan the log for the globally best grid run.
 
-    This ensures that ``best_config.json`` and ``ACTIVE_MODEL_PATH_FILE``
-    always reflect the best model across *all* experiments, not just the
-    current invocation.
+    This helper currently has no side-effects; global best information is read
+    from and written to ``best_hyperparameters.json`` by training scripts and
+    UIs. The log remains useful for offline analysis.
     """
 
     records = _load_all_experiments()
@@ -98,27 +98,9 @@ def _update_global_best_from_log() -> None:
     if not candidates:
         return
 
-    best = min(candidates, key=lambda r: r["final_val_loss"])
-
-    # Persist best config for downstream consumers (e.g. notebooks, CLIs).
-    best_config_path = os.path.join("experiments", "best_config.json")
-    os.makedirs(os.path.dirname(best_config_path), exist_ok=True)
-    with open(best_config_path, "w", encoding="utf-8") as f:
-        json.dump(
-            {
-                "final_val_loss": best["final_val_loss"],
-                "config": best["config"],
-                "model_path": best["model_path"],
-            },
-            f,
-            indent=2,
-        )
-
-    # Update the active model pointer so the rest of the platform can
-    # automatically use the globally best model.
-    os.makedirs(os.path.dirname(ACTIVE_MODEL_PATH_FILE), exist_ok=True)
-    with open(ACTIVE_MODEL_PATH_FILE, "w", encoding="utf-8") as f:
-        f.write(best["model_path"])
+    # We still compute the best candidate for logging/debugging purposes, but
+    # do not persist a separate best_config.json file anymore.
+    _best = min(candidates, key=lambda r: r["final_val_loss"])
 
 
 def run_lr_units_batch_grid(

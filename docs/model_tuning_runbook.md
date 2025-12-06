@@ -75,21 +75,14 @@ The experiments module maintains a single *global* notion of the best model seen
    - Loads all records from `experiments/experiments_log.jsonl`.
    - Filters to `phase == "grid_search_initial"` entries that contain `final_val_loss`, `config`, and `model_path`.
    - Selects the configuration with the lowest `final_val_loss`.
-3. That global best is then persisted to:
-   - `experiments/best_config.json`
-   - `models/active_model.txt` (via `ACTIVE_MODEL_PATH_FILE`).
+3. That global best can be inspected from the log itself or from
+   `best_hyperparameters.json`, which stores the best known model (and
+   hyperparameters) per `(frequency, tsteps)` pair.
 
-The `experiments/best_config.json` file has the form:
-
-```json
-{
-  "final_val_loss": <float>,
-  "config": { ... hyperparameters ... },
-  "model_path": ".../models/registry/my_lstm_model_... .keras"
-}
-```
-
-The `models/active_model.txt` file contains a single line: the filesystem path to the currently promoted model.
+Runtime helpers (such as `get_active_model_path()`) resolve the active model
+purely from `best_hyperparameters.json`, so no separate text pointer or
+best-config file is required.
+`best_hyperparameters.json`), so no separate text pointer file is required.
 
 ---
 
@@ -116,5 +109,7 @@ This ensures that:
 
 1. Run one or more grids with `python -m src.experiments ...`.
 2. After they finish, inspect `experiments/best_config.json` or the log in a notebook if you want more detail.
-3. The active model for all consumers is automatically updated via `models/active_model.txt`.
-4. Use the standard prediction / backtest CLIs, which will transparently load the active model via `get_active_model_path()`.
+3. The active model for all consumers is automatically resolved from
+   `best_hyperparameters.json`.
+4. Use the standard prediction / backtest CLIs, which will transparently load
+   the active model via `get_active_model_path()`.

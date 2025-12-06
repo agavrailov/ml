@@ -23,8 +23,6 @@ from src.config import (
 )
 from src.experiments import log_experiment
 
-ACTIVE_MODEL_PATH_FILE = os.path.join("models", "active_model.txt")
-
 def retrain_model(lstm_units=LSTM_UNITS, learning_rate=LEARNING_RATE, epochs=EPOCHS, current_batch_size=BATCH_SIZE, train_window_size=None, validation_window_size=None):
     """
     Loads the existing trained model, loads the latest processed data,

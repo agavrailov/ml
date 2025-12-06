@@ -9,3 +9,4 @@ streamlit
 altair
 pytest
 ib_insync
+pandas_market_calendars

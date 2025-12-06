@@ -6,12 +6,14 @@ from datetime import datetime # Moved import to top
 # Add the project root to the Python path to import src modules
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.config import get_latest_model_path, ACTIVE_MODEL_PATH_FILE, MODEL_REGISTRY_DIR
+from src.config import get_latest_model_path, MODEL_REGISTRY_DIR, BASE_DIR
 
 def promote_model():
-    """
-    Finds the latest model in the registry and promotes it to be the active model
-    by writing its path to the active_model.txt file.
+    """Promote the latest model in the registry as the active/best model.
+
+    This updates ``best_hyperparameters.json`` so that helpers like
+    :func:`get_latest_best_model_path` and :func:`get_active_model_path` resolve
+    this model as the globally best one.
     """
     print("Attempting to promote the latest model...")
 
@@ -25,20 +27,65 @@ def promote_model():
 
     print(f"Found latest model: {latest_model_path}")
 
-    # 2. Create the content for the active model file
-    active_model_info = {
-        "path": latest_model_path,
-        "promoted_at": datetime.now().isoformat()
+    # 2. Update best_hyperparameters.json so the platform resolves this model
+    # as the globally best one. We infer (frequency, tsteps) from the filename
+    # following the convention::
+    #
+    #     my_lstm_model_{frequency}_tsteps{tsteps}_{timestamp}.keras
+    #
+    best_hps_path = os.path.join(BASE_DIR, "best_hyperparameters.json")
+    fname = os.path.basename(latest_model_path)
+
+    freq_key = None
+    tsteps_key = None
+    if fname.startswith("my_lstm_model_") and "_tsteps" in fname:
+        try:
+            # Strip prefix and split at "_tsteps" to get frequency and remainder.
+            rest = fname[len("my_lstm_model_"):]
+            freq_part, after_freq = rest.split("_tsteps", 1)
+            freq_key = freq_part
+            # after_freq starts with the integer tsteps, then an underscore.
+            tsteps_digits = "".join(ch for ch in after_freq if ch.isdigit())
+            if tsteps_digits:
+                tsteps_key = tsteps_digits
+        except ValueError:
+            freq_key = None
+            tsteps_key = None
+
+    if freq_key is None or tsteps_key is None:
+        print(
+            "Warning: Could not infer (frequency, tsteps) from model filename; "
+            "not updating best_hyperparameters.json."
+        )
+        return
+
+    # Load existing best_hyperparameters if present.
+    if os.path.exists(best_hps_path):
+        try:
+            with open(best_hps_path, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+            best_hps_overall = json.loads(content) if content else {}
+        except json.JSONDecodeError:
+            best_hps_overall = {}
+    else:
+        best_hps_overall = {}
+
+    if freq_key not in best_hps_overall:
+        best_hps_overall[freq_key] = {}
+
+    # Force this model to be the best for its (frequency, tsteps) pair by
+    # assigning a very low validation_loss.
+    best_hps_overall[freq_key][tsteps_key] = {
+        "validation_loss": 0.0,
+        "model_filename": fname,
     }
 
-    # 3. Write the path to the active_model.txt file
     try:
-        os.makedirs(os.path.dirname(ACTIVE_MODEL_PATH_FILE), exist_ok=True)
-        with open(ACTIVE_MODEL_PATH_FILE, 'w') as f:
-            json.dump(active_model_info, f, indent=4)
-        print(f"Successfully promoted model. Active model pointer created at: {ACTIVE_MODEL_PATH_FILE}")
+        with open(best_hps_path, "w", encoding="utf-8") as f:
+            json.dump(best_hps_overall, f, indent=4)
+        print(f"Successfully promoted model. Updated best_hyperparameters.json at: {best_hps_path}")
     except Exception as e:
-        print(f"Error: Failed to write to active model file at '{ACTIVE_MODEL_PATH_FILE}'.")
+        print(f"Error: Failed to write best_hyperparameters.json at '{best_hps_path}'.")
         print(f"Details: {e}")
 
 if __name__ == "__main__":

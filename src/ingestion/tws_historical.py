@@ -182,6 +182,7 @@ async def fetch_historical_data(
 
         # Determine the actual start date for fetching
         actual_fetch_start_date = start_date
+        latest_timestamp_in_file = None
         if not strict_range:
             latest_timestamp_in_file = _get_latest_timestamp_from_csv(file_path)
             if latest_timestamp_in_file:
@@ -275,6 +276,24 @@ async def fetch_historical_data(
                 combined_df_batch = pd.concat(dfs_to_append)
                 combined_df_batch.sort_values("DateTime", inplace=True)  # Ensure chronological order
 
+                # When not using a strict range and we already have data in the file,
+                # drop any bars that are not strictly newer than the latest timestamp
+                # we observed. This avoids re-appending the same bars when the caller
+                # repeatedly requests overlapping windows (e.g. 1 D ending "now").
+                if not strict_range and latest_timestamp_in_file is not None:
+                    dt_series = pd.to_datetime(combined_df_batch["DateTime"])
+                    mask_new = dt_series > latest_timestamp_in_file
+                    if not mask_new.any():
+                        print(
+                            "All fetched bars in this batch are <= existing latest "
+                            "timestamp; skipping append for this batch.",
+                        )
+                        continue
+                    combined_df_batch = combined_df_batch.loc[mask_new]
+                    # Update our notion of the latest timestamp so subsequent batches
+                    # only keep strictly newer bars as well.
+                    latest_timestamp_in_file = dt_series[mask_new].max()
+
                 combined_df_batch.to_csv(
                     file_path,
                     mode="a",
@@ -289,7 +308,10 @@ async def fetch_historical_data(
                 )
 
         if total_bars_fetched == 0:
-            print("No historical data received for the entire period.")
+            print(
+                "No *new* historical data to append for the requested period "
+                "(file is already up to date or IB returned only overlapping bars)."
+            )
             return
 
         print(
