@@ -32,6 +32,7 @@ from src.config import (
     LSTM_UNITS,
     LEARNING_RATE,
     get_latest_best_model_path,
+    get_active_model_path,
     N_LSTM_LAYERS,
     STATEFUL,
     FEATURES_TO_USE_OPTIONS,
@@ -68,15 +69,21 @@ def build_prediction_context(
         n_lstm_layers_trained,
     ) = get_latest_best_model_path(target_frequency=frequency, tsteps=tsteps)
 
-    # Ensure model_path is an absolute path for robust checking
+    # Ensure model_path is an absolute path for robust checking when present.
     if model_path:
         script_dir = os.path.dirname(__file__)
         model_path = os.path.abspath(os.path.join(script_dir, model_path))
 
+    # Fallback: if no best-model entry is found, try the active model pointer.
+    if not model_path or not os.path.exists(model_path):
+        active_model = get_active_model_path()
+        if active_model:
+            model_path = os.path.abspath(active_model)
+
     if not model_path or not os.path.exists(model_path):
         raise FileNotFoundError(
-            f"No best model found for frequency {frequency} and TSTEPS {tsteps}. "
-            "Please train a model first."
+            f"No best model or active model found for frequency {frequency} and TSTEPS {tsteps}. "
+            "Please train a model or update models/active_model.txt."
         )
 
     # Load the trained *stateful* model via the unified model loader.

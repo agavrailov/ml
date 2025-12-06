@@ -120,22 +120,56 @@ def _make_model_prediction_provider(data: pd.DataFrame, frequency: str) -> tuple
         f"nvda_{frequency}_model_predictions_checkpoint.csv",
     )
 
-    # If a full-length checkpoint exists, load and reuse it.
+    # If a full-length checkpoint exists, load and reuse it *only* when it is
+    # shape- and time-aligned with the current data. Otherwise, fall back to a
+    # fresh prediction run so that misaligned checkpoints cannot silently turn
+    # off trading.
     if os.path.exists(checkpoint_path):
         try:
             checkpoint_df = pd.read_csv(checkpoint_path)
             if "predicted_price" in checkpoint_df.columns and len(checkpoint_df) >= n:
                 series = checkpoint_df["predicted_price"].iloc[:n].to_numpy(dtype=float)
-                print(
-                    f"Loaded {len(series)} model predictions from checkpoint at {checkpoint_path}",
-                    flush=True,
-                )
 
-                def provider(i: int, row: pd.Series) -> float:  # noqa: ARG001
-                    return float(series[i])
+                is_aligned = True
+                if "Time" in data.columns and "Time" in checkpoint_df.columns:
+                    try:
+                        data_times = pd.to_datetime(data["Time"]).reset_index(drop=True)
+                        ckpt_times = pd.to_datetime(checkpoint_df["Time"]).iloc[:n].reset_index(drop=True)
+                        # Require both endpoints to match; this is cheap and
+                        # robust enough for our single-symbol use case.
+                        if not (
+                            len(ckpt_times) == n
+                            and data_times.iloc[0] == ckpt_times.iloc[0]
+                            and data_times.iloc[-1] == ckpt_times.iloc[-1]
+                        ):
+                            is_aligned = False
+                    except Exception:
+                        # Any parsing/shape issues -> treat as misaligned.
+                        is_aligned = False
 
-                sigma_series = np.zeros(n, dtype=np.float32)
-                return provider, sigma_series
+                if is_aligned:
+                    print(
+                        f"Loaded {len(series)} model predictions from checkpoint at {checkpoint_path}",
+                        flush=True,
+                    )
+
+                    def provider(i: int, row: pd.Series) -> float:  # noqa: ARG001
+                        # Defensive: if checkpoint contains NaNs or we access
+                        # out of range, fall back to the bar's Close so that
+                        # the backtest continues instead of silently skipping
+                        # trades.
+                        if i < 0 or i >= len(series):
+                            return float(row["Close"])
+                        val = series[i]
+                        if not np.isfinite(val):
+                            return float(row["Close"])
+                        return float(val)
+
+                    # For now we do not persist residual sigma in the
+                    # checkpoint; use zeros and let the engine fall back to ATR
+                    # when appropriate.
+                    sigma_series = np.zeros(n, dtype=np.float32)
+                    return provider, sigma_series
         except Exception:
             # Ignore corrupted/partial checkpoints and fall back to fresh computation.
             pass
@@ -544,7 +578,7 @@ def run_backtest_for_ui(
     DataFrames instead of writing CSVs or printing to stdout.
 
     Returns ``(equity_df, trades_df, metrics)`` where:
-    - ``equity_df`` has columns ["Time" or "step", "equity"].
+    - ``equity_df`` has columns ["Time" or "step", "equity", "price"].
     - ``trades_df`` is a tabular view of individual trades (may be empty).
     - ``metrics`` is the same dict produced by :func:`_compute_backtest_metrics`,
       with a few extra metadata fields (period, n_trades).
@@ -595,11 +629,12 @@ def run_backtest_for_ui(
         time_values = pd.RangeIndex(len(data))
         time_col_name = "step"
 
-    n = min(len(time_values), len(result.equity_curve))
+    n = min(len(time_values), len(result.equity_curve), len(data))
     equity_df = pd.DataFrame(
         {
             time_col_name: time_values[:n],
             "equity": list(result.equity_curve)[:n],
+            "price": data["Close"].astype(float).iloc[:n].to_list(),
         }
     )
 
@@ -681,6 +716,11 @@ def _plot_price_and_equity_with_trades(
 
     fig, ax_price = plt.subplots(figsize=(12, 6))
     ax_equity = ax_price.twinx()
+
+    # Transparent background so exported PNGs can be overlaid.
+    fig.patch.set_alpha(0.0)
+    ax_price.set_facecolor("none")
+    ax_equity.set_facecolor("none")
 
     # Plot NVDA price.
     ax_price.plot(times, prices, color="tab:blue", label=f"{symbol} Close")
@@ -789,7 +829,7 @@ def _plot_price_and_equity_with_trades(
         f"{date_to}.png"
     )
     out_path = out_dir / filename
-    fig.savefig(out_path, dpi=150)
+    fig.savefig(out_path, dpi=150, transparent=True)
     plt.close(fig)
     if not quiet:
         print(f"Saved backtest plot to {out_path}", flush=True)

@@ -14,6 +14,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from src.backtest import run_backtest_for_ui
+
+# Use wide layout so plots can take full screen width.
+st.set_page_config(layout="wide")
 import src.config as cfg_mod
 
 
@@ -216,9 +219,14 @@ def _run_backtest(
 
 st.title("Backtest UI (MVP)")
 
-# For now we focus on a single trained model frequency (15min) and model-based
-# predictions only. Other modes (naive/csv) are removed to keep the UI simple.
-freq = st.selectbox("Frequency", ["15min"], index=0)
+# Allow selecting any configured resample frequency; default to the main config FREQUENCY.
+_available_freqs = getattr(cfg_mod, "RESAMPLE_FREQUENCIES", ["15min"])
+_default_freq = getattr(cfg_mod, "FREQUENCY", _available_freqs[0])
+try:
+    _default_index = _available_freqs.index(_default_freq)
+except ValueError:
+    _default_index = 0
+freq = st.selectbox("Frequency", _available_freqs, index=_default_index)
 
 # Reload current defaults from config.py so changes on disk are visible
 # without restarting the Streamlit server.
@@ -289,12 +297,62 @@ if mode == "Run backtest" and st.button("Run backtest"):
             equity_to_plot = equity_df.iloc[::step]
         else:
             equity_to_plot = equity_df
-        st.line_chart(equity_to_plot.set_index(time_col)["equity"])
+
+        # Use matplotlib so we can show equity and NVDA price on separate axes.
+        x = (
+            pd.to_datetime(equity_to_plot[time_col])
+            if time_col == "Time" and "Time" in equity_to_plot.columns
+            else equity_to_plot.index
+        )
+
+        fig, ax_equity = plt.subplots(figsize=(12, 6))
+        ax_price = ax_equity.twinx()
+
+        # Transparent background for embedding in dark/light themes.
+        fig.patch.set_alpha(0.0)
+        ax_equity.set_facecolor("none")
+        ax_price.set_facecolor("none")
+
+        # Equity on primary y-axis.
+        ax_equity.plot(x, equity_to_plot["equity"], color="tab:orange", label="Equity")
+        ax_equity.set_ylabel("Equity", color="tab:orange")
+        ax_equity.tick_params(axis="y", labelcolor="tab:orange")
+
+        # NVDA price on secondary y-axis (if available).
+        if "price" in equity_to_plot.columns:
+            ax_price.plot(x, equity_to_plot["price"], color="tab:blue", alpha=0.7, label="NVDA price")
+            ax_price.set_ylabel("NVDA price", color="tab:blue")
+            ax_price.tick_params(axis="y", labelcolor="tab:blue")
+
+        ax_equity.set_xlabel("Time" if time_col == "Time" else "Bar index")
+        ax_equity.set_title("Equity vs NVDA price")
+
+        # Combined legend from both axes.
+        lines_e, labels_e = ax_equity.get_legend_handles_labels()
+        lines_p, labels_p = ax_price.get_legend_handles_labels()
+        if lines_e or lines_p:
+            ax_equity.legend(lines_e + lines_p, labels_e + labels_p, loc="upper left")
+
+        fig.tight_layout()
+        st.pyplot(fig)
     else:
         st.write("No equity data to display.")
 
     st.subheader("Metrics")
-    st.json(metrics)
+    # Present key metrics in a human-friendly table (percentages, rounding, separators).
+    formatted_metrics = [
+        ("Total return", f"{metrics.get('total_return', 0.0) * 100:.0f}%"),
+        ("CAGR", f"{metrics.get('cagr', 0.0) * 100:.0f}%"),
+        ("Max drawdown", f"{metrics.get('max_drawdown', 0.0) * 100:.0f}%"),
+        ("Sharpe ratio", f"{metrics.get('sharpe_ratio', 0.0):.2f}"),
+        ("Win rate", f"{metrics.get('win_rate', 0.0) * 100:.0f}%"),
+        ("Profit factor", f"{metrics.get('profit_factor', 0.0):.2f}"),
+        ("Period", metrics.get('period', '')),
+        ("Number of trades", f"{int(metrics.get('n_trades', 0))}"),
+        ("Final equity", f"{metrics.get('final_equity', 0.0):,.0f}"),
+    ]
+    metrics_df = pd.DataFrame(formatted_metrics, columns=["Metric", "Value"])
+    st.table(metrics_df)
 
 elif mode == "Optimize" and st.button("Run optimization"):
     st.write("Running grid search over parameter ranges...")
@@ -401,13 +459,21 @@ elif mode == "Optimize" and st.button("Run optimization"):
             # ------------------------------------------------------------------
             st.subheader("Heatmaps (k_sigma_err vs k_atr_min_tp)")
             if not results_df.empty:
-                mode_risk = results_df["risk_per_trade_pct"].mode().iloc[0]
-                mode_rr = results_df["reward_risk_ratio"].mode().iloc[0]
-
-                slice_df = results_df[
-                    (results_df["risk_per_trade_pct"] == mode_risk)
-                    & (results_df["reward_risk_ratio"] == mode_rr)
+                # Aggregate over any varying risk_per_trade_pct / reward_risk_ratio so that
+                # each (k_sigma_err, k_atr_min_tp) pair maps to a single row that matches
+                # the values in the Optimization results table.
+                agg_cols = [
+                    "k_sigma_err",
+                    "k_atr_min_tp",
+                    "total_return",
+                    "max_drawdown",
+                    "sharpe_ratio",
                 ]
+                slice_df = (
+                    results_df[agg_cols]
+                    .groupby(["k_sigma_err", "k_atr_min_tp"], as_index=False)
+                    .max()
+                )
 
                 if not slice_df.empty:
                     sharpe_grid = slice_df.pivot(
@@ -428,7 +494,8 @@ elif mode == "Optimize" and st.button("Run optimization"):
                         values="max_drawdown",
                     ).sort_index().sort_index(axis=1)
 
-                    fig, axes = plt.subplots(1, 3, figsize=(14, 4))
+                    # Larger figure so the three heatmaps use most of the screen.
+                    fig, axes = plt.subplots(1, 3, figsize=(20, 6))
 
                     grids = [
                         (sharpe_grid, axes[0], "Sharpe Ratio", "viridis"),
