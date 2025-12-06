@@ -150,14 +150,35 @@ def _load_params_grid(defaults: dict) -> pd.DataFrame:
                     for _, row in df.iterrows():
                         name = row["Parameter"]
                         base_row = base[base["Parameter"] == name].iloc[0]
+
+                        value = row.get("Value", base_row["Value"])
+                        if pd.isna(value):
+                            value = base_row["Value"]
+
+                        start = row.get("Start", base_row["Start"])
+                        if pd.isna(start):
+                            start = base_row["Start"]
+
+                        step = row.get("Step", base_row["Step"])
+                        if pd.isna(step):
+                            step = base_row["Step"]
+
+                        stop = row.get("Stop", base_row["Stop"])
+                        if pd.isna(stop):
+                            stop = base_row["Stop"]
+
+                        optimize_val = row.get("Optimize", base_row["Optimize"])
+                        if pd.isna(optimize_val):
+                            optimize_val = base_row["Optimize"]
+
                         rows.append(
                             {
                                 "Parameter": name,
-                                "Value": row.get("Value", base_row["Value"]),
-                                "Start": row.get("Start", base_row["Start"]),
-                                "Step": row.get("Step", base_row["Step"]),
-                                "Stop": row.get("Stop", base_row["Stop"]),
-                                "Optimize": bool(row.get("Optimize", base_row["Optimize"])),
+                                "Value": value,
+                                "Start": start,
+                                "Step": step,
+                                "Stop": stop,
+                                "Optimize": bool(optimize_val),
                             }
                         )
                     df = pd.DataFrame(rows)
@@ -1011,12 +1032,21 @@ with tab_backtest:
     # JSON sidecar so manual edits survive app reloads.
     st.subheader("Strategy parameters")
     params_df_initial = _load_params_grid(_defaults)
+
     params_df = st.data_editor(
         params_df_initial,
         num_rows="fixed",
         key="strategy_params",
         width="stretch",
         hide_index=True,
+        column_config={
+            "Parameter": st.column_config.TextColumn("Parameter", disabled=True),
+            "Value": st.column_config.NumberColumn("Value"),
+            "Start": st.column_config.NumberColumn("Start"),
+            "Step": st.column_config.NumberColumn("Step"),
+            "Stop": st.column_config.NumberColumn("Stop"),
+            "Optimize": st.column_config.CheckboxColumn("Optimize"),
+        },
     )
 
     # Extract current "Value" settings from the parameter grid.
@@ -1128,189 +1158,239 @@ with tab_backtest:
         metrics_df = pd.DataFrame(formatted_metrics, columns=["Metric", "Value"])
         st.table(metrics_df)
 
-    elif mode == "Optimize" and st.button("Run optimization"):
-        st.write("Running grid search over parameter ranges...")
+    elif mode == "Optimize":
+        # Separate the action of running optimization from displaying results so
+        # that results/plots persist even if the parameter table is edited.
+        run_optimization = st.button("Run optimization")
+        results_df = None
 
-        # Build value ranges for each parameter based on Start/Stop/Step.
-        param_ranges: dict[str, list[float]] = {}
-        for _, row in params_df.iterrows():
-            name = row["Parameter"]
-            optimize = bool(row.get("Optimize", True))
+        if run_optimization:
+            st.write("Running grid search over parameter ranges...")
 
-            # If not optimizing this parameter, keep it fixed at the current Value.
-            if not optimize:
-                param_ranges[name] = [float(row["Value"])]
-                continue
+            # Build value ranges for each parameter based on Start/Stop/Step.
+            param_ranges: dict[str, list[float]] = {}
+            for _, row in params_df.iterrows():
+                name = row["Parameter"]
+                optimize = bool(row.get("Optimize", True))
 
-            start = float(row["Start"])
-            stop = float(row["Stop"])
-            step = float(row["Step"])
+                # If not optimizing this parameter, keep it fixed at the current Value.
+                if not optimize:
+                    param_ranges[name] = [float(row["Value"])]
+                    continue
 
-            values: list[float] = []
-            if step > 0 and stop >= start:
-                current = start
-                # Cap iterations defensively to avoid infinite loops.
-                for _ in range(1000):
-                    if current > stop + 1e-9:
-                        break
-                    values.append(float(current))
-                    current += step
-            # Fallback: if range is invalid, just use the current Value.
-            if not values:
-                values = [float(row["Value"])]
+                start = float(row["Start"])
+                stop = float(row["Stop"])
+                step = float(row["Step"])
 
-            param_ranges[name] = values
+                values: list[float] = []
+                if step > 0 and stop >= start:
+                    current = start
+                    # Cap iterations defensively to avoid infinite loops.
+                    for _ in range(1000):
+                        if current > stop + 1e-9:
+                            break
+                        values.append(float(current))
+                        current += step
+                # Fallback: if range is invalid, just use the current Value.
+                if not values:
+                    values = [float(row["Value"])]
 
-        # Compute total combinations.
-        from itertools import product
+                param_ranges[name] = values
 
-        total_runs = 1
-        for vals in param_ranges.values():
-            total_runs *= max(len(vals), 1)
+            # Compute total combinations.
+            from itertools import product
 
-        max_runs = 200
-        if total_runs > max_runs:
-            st.error(f"Grid is too large ({total_runs} runs). Reduce ranges or steps (limit = {max_runs}).")
-        else:
-            progress = st.progress(0.0)
-            results_rows: list[dict] = []
-            names = list(param_ranges.keys())
-            all_values = [param_ranges[n] for n in names]
+            total_runs = 1
+            for vals in param_ranges.values():
+                total_runs *= max(len(vals), 1)
 
-            run_idx = 0
-            for combo in product(*all_values):
-                combo_params = dict(zip(names, combo))
-
-                k_sigma = float(combo_params.get("k_sigma_err", k_sigma_val))
-                k_atr = float(combo_params.get("k_atr_min_tp", k_atr_val))
-                risk_pct = float(combo_params.get("risk_per_trade_pct", risk_pct_val))
-                rr = float(combo_params.get("reward_risk_ratio", rr_val))
-
-                equity_df, trades_df, metrics = _run_backtest(
-                    frequency=freq,
-                    start_date=start_date or None,
-                    end_date=end_date or None,
-                    risk_per_trade_pct=risk_pct,
-                    reward_risk_ratio=rr,
-                    k_sigma_err=k_sigma,
-                    k_atr_min_tp=k_atr,
+            max_runs = 200
+            if total_runs > max_runs:
+                st.error(
+                    f"Grid is too large ({total_runs} runs). Reduce ranges or steps (limit = {max_runs}).",
                 )
+            else:
+                progress = st.progress(0.0)
+                results_rows: list[dict] = []
+                names = list(param_ranges.keys())
+                all_values = [param_ranges[n] for n in names]
 
-                results_rows.append(
-                    {
-                        "k_sigma_err": k_sigma,
-                        "k_atr_min_tp": k_atr,
-                        "risk_per_trade_pct": risk_pct,
-                        "reward_risk_ratio": rr,
-                        "total_return": metrics.get("total_return", 0.0),
-                        "cagr": metrics.get("cagr", 0.0),
-                        "max_drawdown": metrics.get("max_drawdown", 0.0),
-                        "sharpe_ratio": metrics.get("sharpe_ratio", 0.0),
-                        "profit_factor": metrics.get("profit_factor", 0.0),
-                        "win_rate": metrics.get("win_rate", 0.0),
-                        "n_trades": metrics.get("n_trades", 0),
-                        "final_equity": metrics.get("final_equity", 0.0),
-                    }
-                )
+                run_idx = 0
+                for combo in product(*all_values):
+                    combo_params = dict(zip(names, combo))
 
-                run_idx += 1
-                progress.progress(run_idx / total_runs)
+                    k_sigma = float(combo_params.get("k_sigma_err", k_sigma_val))
+                    k_atr = float(combo_params.get("k_atr_min_tp", k_atr_val))
+                    risk_pct = float(combo_params.get("risk_per_trade_pct", risk_pct_val))
+                    rr = float(combo_params.get("reward_risk_ratio", rr_val))
 
-            if results_rows:
-                results_df = pd.DataFrame(results_rows)
-                # Sort by total_return descending by default.
-                results_df = results_df.sort_values(by="total_return", ascending=False)
-
-                st.subheader("Optimization results")
-                st.dataframe(
-                    results_df.reset_index(drop=True),
-                    width="stretch",
-                )
-
-                # ------------------------------------------------------------------
-                # Heatmaps: k_sigma_err (x) vs k_atr_min_tp (y) for key metrics.
-                # We use the most common risk_per_trade_pct and reward_risk_ratio to
-                # select a 2D slice through the grid.
-                # ------------------------------------------------------------------
-                st.subheader("Heatmaps (k_sigma_err vs k_atr_min_tp)")
-                if not results_df.empty:
-                    # Aggregate over any varying risk_per_trade_pct / reward_risk_ratio so that
-                    # each (k_sigma_err, k_atr_min_tp) pair maps to a single row that matches
-                    # the values in the Optimization results table.
-                    agg_cols = [
-                        "k_sigma_err",
-                        "k_atr_min_tp",
-                        "total_return",
-                        "max_drawdown",
-                        "sharpe_ratio",
-                    ]
-                    slice_df = (
-                        results_df[agg_cols]
-                        .groupby(["k_sigma_err", "k_atr_min_tp"], as_index=False)
-                        .max()
+                    equity_df, trades_df, metrics = _run_backtest(
+                        frequency=freq,
+                        start_date=start_date or None,
+                        end_date=end_date or None,
+                        risk_per_trade_pct=risk_pct,
+                        reward_risk_ratio=rr,
+                        k_sigma_err=k_sigma,
+                        k_atr_min_tp=k_atr,
                     )
 
-                    if not slice_df.empty:
-                        sharpe_grid = slice_df.pivot(
-                            index="k_atr_min_tp",
-                            columns="k_sigma_err",
-                            values="sharpe_ratio",
-                        ).sort_index().sort_index(axis=1)
+                    results_rows.append(
+                        {
+                            "k_sigma_err": k_sigma,
+                            "k_atr_min_tp": k_atr,
+                            "risk_per_trade_pct": risk_pct,
+                            "reward_risk_ratio": rr,
+                            "total_return": metrics.get("total_return", 0.0),
+                            "cagr": metrics.get("cagr", 0.0),
+                            "max_drawdown": metrics.get("max_drawdown", 0.0),
+                            "sharpe_ratio": metrics.get("sharpe_ratio", 0.0),
+                            "profit_factor": metrics.get("profit_factor", 0.0),
+                            "win_rate": metrics.get("win_rate", 0.0),
+                            "n_trades": metrics.get("n_trades", 0),
+                            "final_equity": metrics.get("final_equity", 0.0),
+                        }
+                    )
 
-                        ret_grid = slice_df.pivot(
-                            index="k_atr_min_tp",
-                            columns="k_sigma_err",
-                            values="total_return",
-                        ).sort_index().sort_index(axis=1)
+                    run_idx += 1
+                    progress.progress(run_idx / total_runs)
 
-                        mdd_grid = slice_df.pivot(
-                            index="k_atr_min_tp",
-                            columns="k_sigma_err",
-                            values="max_drawdown",
-                        ).sort_index().sort_index(axis=1)
+                if results_rows:
+                    results_df = pd.DataFrame(results_rows)
+                    # Sort by total_return descending by default.
+                    results_df = results_df.sort_values(by="total_return", ascending=False)
+                    # Persist results so they survive subsequent UI interactions.
+                    st.session_state["optimization_results"] = results_df
+        else:
+            # Reuse the most recent optimization results, if any.
+            results_df = st.session_state.get("optimization_results")
 
-                        # Larger figure so the three heatmaps use most of the screen.
-                        fig, axes = plt.subplots(1, 3, figsize=(20, 6))
+        # If we have results (either from a new run or from session_state),
+        # display the table, allow loading a row into the parameter grid, and
+        # render the heatmaps.
+        if results_df is not None and not results_df.empty:
+            st.subheader("Optimization results")
+            display_df = results_df.reset_index(drop=True)
+            st.dataframe(display_df, width="stretch")
 
-                        grids = [
-                            (sharpe_grid, axes[0], "Sharpe Ratio", "viridis"),
-                            (ret_grid, axes[1], "Total Return", "YlOrRd"),
-                            (mdd_grid, axes[2], "Max Drawdown", "RdYlGn_r"),
-                        ]
+            # Simple selector to copy a result row's parameters into the
+            # strategy parameter grid (Value column).
+            if len(display_df) > 1:
+                idx_to_use = st.number_input(
+                    "Select result row index to load into strategy parameters",
+                    min_value=0,
+                    max_value=len(display_df) - 1,
+                    step=1,
+                    value=0,
+                    key="opt_result_row_select",
+                )
+            else:
+                idx_to_use = 0
 
-                        for grid, ax, title, cmap in grids:
-                            im = ax.imshow(grid.values, aspect="auto", cmap=cmap)
-                            ax.set_title(title)
-                            ax.set_xlabel("k_sigma_err")
-                            # Only show y-label on the first plot to reduce clutter.
-                            ax.set_ylabel("k_atr_min_tp" if ax is axes[0] else "")
+            if st.button("Load selected result into strategy parameters"):
+                chosen = display_df.iloc[int(idx_to_use)]
+                mapping = {
+                    "k_sigma_err": float(chosen["k_sigma_err"]),
+                    "k_atr_min_tp": float(chosen["k_atr_min_tp"]),
+                    "risk_per_trade_pct": float(chosen["risk_per_trade_pct"]),
+                    "reward_risk_ratio": float(chosen["reward_risk_ratio"]),
+                }
 
-                            # Tick labels from the DataFrame indices/columns.
-                            ax.set_xticks(range(len(grid.columns)))
-                            ax.set_xticklabels([f"{v:g}" for v in grid.columns], rotation=45)
-                            ax.set_yticks(range(len(grid.index)))
-                            ax.set_yticklabels([f"{v:g}" for v in grid.index])
+                # Update the Value column of the strategy parameter grid.
+                params_df_updated = params_df.copy()
+                for name, value in mapping.items():
+                    mask = params_df_updated["Parameter"] == name
+                    if mask.any():
+                        params_df_updated.loc[mask, "Value"] = value
 
-                            # Annotate cells with numeric values.
-                            for i, y_val in enumerate(grid.index):
-                                for j, x_val in enumerate(grid.columns):
-                                    val = grid.loc[y_val, x_val]
-                                    ax.text(
-                                        j,
-                                        i,
-                                        f"{val:.2f}",
-                                        ha="center",
-                                        va="center",
-                                        fontsize=8,
-                                        color="black",
-                                    )
+                _save_params_grid(params_df_updated)
+                st.success(
+                    "Loaded optimization parameters into strategy grid. "
+                    "You can now run an individual backtest with these values.",
+                )
 
-                            # Add a small colorbar per subplot.
-                            plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+            # ------------------------------------------------------------------
+            # Heatmaps: k_sigma_err (x) vs k_atr_min_tp (y) for key metrics.
+            # We use the most common risk_per_trade_pct and reward_risk_ratio to
+            # select a 2D slice through the grid.
+            # ------------------------------------------------------------------
+            st.subheader("Heatmaps (k_sigma_err vs k_atr_min_tp)")
+            # Aggregate over any varying risk_per_trade_pct / reward_risk_ratio so that
+            # each (k_sigma_err, k_atr_min_tp) pair maps to a single row that matches
+            # the values in the Optimization results table.
+            agg_cols = [
+                "k_sigma_err",
+                "k_atr_min_tp",
+                "total_return",
+                "max_drawdown",
+                "sharpe_ratio",
+            ]
+            slice_df = (
+                results_df[agg_cols]
+                .groupby(["k_sigma_err", "k_atr_min_tp"], as_index=False)
+                .max()
+            )
 
-                        plt.tight_layout()
-                        st.pyplot(fig)
-                    else:
-                        st.info(
-                            "No 2D slice available for heatmaps with the current parameter ranges.",
-                        )
+            if not slice_df.empty:
+                sharpe_grid = slice_df.pivot(
+                    index="k_atr_min_tp",
+                    columns="k_sigma_err",
+                    values="sharpe_ratio",
+                ).sort_index().sort_index(axis=1)
+
+                ret_grid = slice_df.pivot(
+                    index="k_atr_min_tp",
+                    columns="k_sigma_err",
+                    values="total_return",
+                ).sort_index().sort_index(axis=1)
+
+                mdd_grid = slice_df.pivot(
+                    index="k_atr_min_tp",
+                    columns="k_sigma_err",
+                    values="max_drawdown",
+                ).sort_index().sort_index(axis=1)
+
+                # Larger figure so the three heatmaps use most of the screen.
+                fig, axes = plt.subplots(1, 3, figsize=(20, 6))
+
+                grids = [
+                    (sharpe_grid, axes[0], "Sharpe Ratio", "viridis"),
+                    (ret_grid, axes[1], "Total Return", "YlOrRd"),
+                    (mdd_grid, axes[2], "Max Drawdown", "RdYlGn_r"),
+                ]
+
+                for grid, ax, title, cmap in grids:
+                    im = ax.imshow(grid.values, aspect="auto", cmap=cmap)
+                    ax.set_title(title)
+                    ax.set_xlabel("k_sigma_err")
+                    # Only show y-label on the first plot to reduce clutter.
+                    ax.set_ylabel("k_atr_min_tp" if ax is axes[0] else "")
+
+                    # Tick labels from the DataFrame indices/columns.
+                    ax.set_xticks(range(len(grid.columns)))
+                    ax.set_xticklabels([f"{v:g}" for v in grid.columns], rotation=45)
+                    ax.set_yticks(range(len(grid.index)))
+                    ax.set_yticklabels([f"{v:g}" for v in grid.index])
+
+                    # Annotate cells with numeric values.
+                    for i, y_val in enumerate(grid.index):
+                        for j, x_val in enumerate(grid.columns):
+                            val = grid.loc[y_val, x_val]
+                            ax.text(
+                                j,
+                                i,
+                                f"{val:.2f}",
+                                ha="center",
+                                va="center",
+                                fontsize=8,
+                                color="black",
+                            )
+
+                    # Add a small colorbar per subplot.
+                    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+                plt.tight_layout()
+                st.pyplot(fig)
+            else:
+                st.info(
+                    "No 2D slice available for heatmaps with the current parameter ranges.",
+                )
