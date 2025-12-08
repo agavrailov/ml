@@ -56,6 +56,7 @@ class Position:
     size: float
     tp_price: float
     sl_price: float
+    direction: int  # +1 = long, -1 = short
 
 
 @dataclass
@@ -65,11 +66,18 @@ class Trade:
     entry_price: float
     exit_price: float
     size: float
+    direction: int  # +1 = long, -1 = short
     commission: float = 0.0
 
     @property
     def gross_pnl(self) -> float:
-        return (self.exit_price - self.entry_price) * self.size
+        """Gross PnL before commissions.
+
+        For longs:  (exit - entry) * size
+        For shorts: (entry - exit) * size
+        """
+        signed_move = (self.exit_price - self.entry_price) * float(self.direction)
+        return signed_move * self.size
 
     @property
     def pnl(self) -> float:
@@ -145,11 +153,18 @@ def run_backtest(
 
             exit_price: Optional[float] = None
 
-            # Simple rule: SL first, then TP if SL not hit.
-            if low <= position.sl_price:
-                exit_price = position.sl_price
-            elif high >= position.tp_price:
-                exit_price = position.tp_price
+            if position.direction > 0:
+                # LONG: SL below, TP above.
+                if low <= position.sl_price:
+                    exit_price = position.sl_price
+                elif high >= position.tp_price:
+                    exit_price = position.tp_price
+            else:
+                # SHORT: SL above, TP below.
+                if high >= position.sl_price:
+                    exit_price = position.sl_price
+                elif low <= position.tp_price:
+                    exit_price = position.tp_price
 
             if exit_price is not None:
                 per_leg_commission = max(
@@ -163,6 +178,7 @@ def run_backtest(
                     entry_price=position.entry_price,
                     exit_price=exit_price,
                     size=position.size,
+                    direction=position.direction,
                     commission=commission,
                 )
                 equity += trade.pnl
@@ -200,37 +216,38 @@ def run_backtest(
             if not (np.isfinite(model_sigma) and np.isfinite(atr_value)):
                 equity_curve.append(equity)
                 continue
-            # Allow model_sigma == 0.0 to represent "no model error margin" but
-            # still require a strictly positive ATR value for sizing.
-            if not (atr_value > 0):
+
+            # Basic filter: require ATR and sigma to be positive.
+            if model_sigma <= 0.0 or atr_value <= 0.0:
                 equity_curve.append(equity)
                 continue
 
-            state = StrategyState(
+            # Strategy decision.
+            strat_state = StrategyState(
                 current_price=decision_price,
                 predicted_price=predicted_price,
                 model_error_sigma=model_sigma,
                 atr=atr_value,
-                account_equity=float(equity),
+                account_equity=equity,
                 has_open_position=False,
             )
 
-            plan: Optional[TradePlan] = compute_tp_sl_and_size(state, cfg.strategy_config)
-            if plan is not None:
-                # Use distances from the decision price to adjust TP/SL to the
-                # actual entry price (next bar's Open).
-                next_row = data.iloc[i + 1]
-                entry_price = float(next_row["Open"])
-                tp_dist = float(plan.tp_price) - decision_price
-                sl_dist = decision_price - float(plan.sl_price)
+            trade_plan = compute_tp_sl_and_size(strat_state, cfg.strategy_config)
+            if trade_plan is None:
+                equity_curve.append(equity)
+                continue
 
-                position = Position(
-                    entry_index=i + 1,
-                    entry_price=entry_price,
-                    size=float(plan.size),
-                    tp_price=entry_price + tp_dist,
-                    sl_price=entry_price - sl_dist,
-                )
+            # Open position at next bar's Open.
+            next_row = data.iloc[i + 1]
+            entry_price = float(next_row["Open"])
+            position = Position(
+                entry_index=i + 1,
+                entry_price=entry_price,
+                size=trade_plan.size,
+                tp_price=trade_plan.tp_price,
+                sl_price=trade_plan.sl_price,
+                direction=trade_plan.direction,
+            )
 
         equity_curve.append(equity)
 

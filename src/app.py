@@ -70,9 +70,21 @@ def _load_strategy_defaults() -> dict:
     global cfg_mod
     cfg_mod = module
 
+    # Prefer dedicated long/short constants when available; fall back to shared.
+    base_k_sigma_long = float(getattr(module, "K_SIGMA_LONG", module.K_SIGMA_ERR))
+    base_k_sigma_short = float(getattr(module, "K_SIGMA_SHORT", module.K_SIGMA_ERR))
+    base_k_atr_long = float(getattr(module, "K_ATR_LONG", module.K_ATR_MIN_TP))
+    base_k_atr_short = float(getattr(module, "K_ATR_SHORT", module.K_ATR_MIN_TP))
+
     return {
+        # Shared defaults (still used in some places)
         "k_sigma_err": float(module.K_SIGMA_ERR),
         "k_atr_min_tp": float(module.K_ATR_MIN_TP),
+        # Side-specific defaults for UI/backtests
+        "k_sigma_long": base_k_sigma_long,
+        "k_sigma_short": base_k_sigma_short,
+        "k_atr_long": base_k_atr_long,
+        "k_atr_short": base_k_atr_short,
         "risk_per_trade_pct": float(module.RISK_PER_TRADE_PCT),
         "reward_risk_ratio": float(module.REWARD_RISK_RATIO),
     }
@@ -84,19 +96,35 @@ def _build_default_params_df(defaults: dict) -> pd.DataFrame:
     return pd.DataFrame(
         [
             {
-                "Parameter": "k_sigma_err",
-                "Value": defaults["k_sigma_err"],
-                "Start": defaults["k_sigma_err"],
+                "Parameter": "k_sigma_long",
+                "Value": defaults["k_sigma_long"],
+                "Start": defaults["k_sigma_long"],
                 "Step": 0.1,
-                "Stop": defaults["k_sigma_err"],
+                "Stop": defaults["k_sigma_long"],
                 "Optimize": True,
             },
             {
-                "Parameter": "k_atr_min_tp",
-                "Value": defaults["k_atr_min_tp"],
-                "Start": defaults["k_atr_min_tp"],
+                "Parameter": "k_sigma_short",
+                "Value": defaults["k_sigma_short"],
+                "Start": defaults["k_sigma_short"],
                 "Step": 0.1,
-                "Stop": defaults["k_atr_min_tp"],
+                "Stop": defaults["k_sigma_short"],
+                "Optimize": True,
+            },
+            {
+                "Parameter": "k_atr_long",
+                "Value": defaults["k_atr_long"],
+                "Start": defaults["k_atr_long"],
+                "Step": 0.1,
+                "Stop": defaults["k_atr_long"],
+                "Optimize": False,
+            },
+            {
+                "Parameter": "k_atr_short",
+                "Value": defaults["k_atr_short"],
+                "Start": defaults["k_atr_short"],
+                "Step": 0.1,
+                "Stop": defaults["k_atr_short"],
                 "Optimize": False,
             },
             {
@@ -204,8 +232,10 @@ def _save_strategy_defaults_to_config(
     *,
     risk_per_trade_pct: float,
     reward_risk_ratio: float,
-    k_sigma_err: float,
-    k_atr_min_tp: float,
+    k_sigma_long: float,
+    k_sigma_short: float,
+    k_atr_long: float,
+    k_atr_short: float,
 ) -> None:
     """Persist current strategy parameters into src/config.py.
 
@@ -222,14 +252,18 @@ def _save_strategy_defaults_to_config(
     patterns = {
         "risk_per_trade_pct": r"(risk_per_trade_pct: float = )([0-9.eE+\-]+)",
         "reward_risk_ratio": r"(reward_risk_ratio: float = )([0-9.eE+\-]+)",
-        "k_sigma_err": r"(k_sigma_err: float = )([0-9.eE+\-]+)",
-        "k_atr_min_tp": r"(k_atr_min_tp: float = )([0-9.eE+\-]+)",
+        "k_sigma_long": r"(k_sigma_long: float = )([0-9.eE+\-]+)",
+        "k_sigma_short": r"(k_sigma_short: float = )([0-9.eE+\-]+)",
+        "k_atr_long": r"(k_atr_long: float = )([0-9.eE+\-]+)",
+        "k_atr_short": r"(k_atr_short: float = )([0-9.eE+\-]+)",
     }
     values = {
         "risk_per_trade_pct": risk_per_trade_pct,
         "reward_risk_ratio": reward_risk_ratio,
-        "k_sigma_err": k_sigma_err,
-        "k_atr_min_tp": k_atr_min_tp,
+        "k_sigma_long": k_sigma_long,
+        "k_sigma_short": k_sigma_short,
+        "k_atr_long": k_atr_long,
+        "k_atr_short": k_atr_short,
     }
 
     new_text = text
@@ -257,8 +291,12 @@ def _run_backtest(
     end_date: str | None,
     risk_per_trade_pct: float | None,
     reward_risk_ratio: float | None,
-    k_sigma_err: float | None,
-    k_atr_min_tp: float | None,
+    k_sigma_long: float | None,
+    k_sigma_short: float | None,
+    k_atr_long: float | None,
+    k_atr_short: float | None,
+    enable_longs: bool | None,
+    allow_shorts: bool | None,
 ):
     """Non-cached wrapper around run_backtest_for_ui (model mode only)."""
     return run_backtest_for_ui(
@@ -269,8 +307,12 @@ def _run_backtest(
         predictions_csv=None,
         risk_per_trade_pct=risk_per_trade_pct,
         reward_risk_ratio=reward_risk_ratio,
-        k_sigma_err=k_sigma_err,
-        k_atr_min_tp=k_atr_min_tp,
+        k_sigma_long=k_sigma_long,
+        k_sigma_short=k_sigma_short,
+        k_atr_long=k_atr_long,
+        k_atr_short=k_atr_short,
+        enable_longs=enable_longs,
+        allow_shorts=allow_shorts,
     )
 
 
@@ -1051,8 +1093,10 @@ with tab_backtest:
 
     # Extract current "Value" settings from the parameter grid.
     _param_values = {row["Parameter"]: row["Value"] for _, row in params_df.iterrows()}
-    k_sigma_val = float(_param_values.get("k_sigma_err", _defaults["k_sigma_err"]))
-    k_atr_val = float(_param_values.get("k_atr_min_tp", _defaults["k_atr_min_tp"]))
+    k_sigma_long_val = float(_param_values.get("k_sigma_long", _defaults["k_sigma_long"]))
+    k_sigma_short_val = float(_param_values.get("k_sigma_short", _defaults["k_sigma_short"]))
+    k_atr_long_val = float(_param_values.get("k_atr_long", _defaults["k_atr_long"]))
+    k_atr_short_val = float(_param_values.get("k_atr_short", _defaults["k_atr_short"]))
     risk_pct_val = float(_param_values.get("risk_per_trade_pct", _defaults["risk_per_trade_pct"]))
     rr_val = float(_param_values.get("reward_risk_ratio", _defaults["reward_risk_ratio"]))
 
@@ -1063,8 +1107,11 @@ with tab_backtest:
         _save_strategy_defaults_to_config(
             risk_per_trade_pct=risk_pct_val,
             reward_risk_ratio=rr_val,
-            k_sigma_err=k_sigma_val,
-            k_atr_min_tp=k_atr_val,
+            # Persist both long and short filters into config.py.
+            k_sigma_long=k_sigma_long_val,
+            k_sigma_short=k_sigma_short_val,
+            k_atr_long=k_atr_long_val,
+            k_atr_short=k_atr_short_val,
         )
         _save_params_grid(params_df)
         st.success("Saved strategy defaults and parameter grid (Value/Start/Step/Stop).")
@@ -1078,6 +1125,21 @@ with tab_backtest:
     # Prediction source is always the trained LSTM model; no CSV/naive modes.
     mode = st.radio("Mode", ["Run backtest", "Optimize"], horizontal=True)
 
+    trade_side = st.radio(
+        "Trades to include",
+        ["Long only", "Short only", "Long & short"],
+        horizontal=True,
+    )
+    if trade_side == "Long only":
+        enable_longs_flag = True
+        allow_shorts_flag = False
+    elif trade_side == "Short only":
+        enable_longs_flag = False
+        allow_shorts_flag = True
+    else:  # "Long & short"
+        enable_longs_flag = True
+        allow_shorts_flag = True
+
     if mode == "Run backtest" and st.button("Run backtest"):
         with st.spinner("Running backtest..."):
             equity_df, trades_df, metrics = _run_backtest(
@@ -1086,8 +1148,12 @@ with tab_backtest:
                 end_date=end_date or None,
                 risk_per_trade_pct=risk_pct_val,
                 reward_risk_ratio=rr_val,
-                k_sigma_err=k_sigma_val,
-                k_atr_min_tp=k_atr_val,
+                k_sigma_long=k_sigma_long_val,
+                k_sigma_short=k_sigma_short_val,
+                k_atr_long=k_atr_long_val,
+                k_atr_short=k_atr_short_val,
+                enable_longs=enable_longs_flag,
+                allow_shorts=allow_shorts_flag,
             )
 
         time_col = "Time" if "Time" in equity_df.columns else "step"
@@ -1230,8 +1296,12 @@ with tab_backtest:
                         end_date=end_date or None,
                         risk_per_trade_pct=risk_pct,
                         reward_risk_ratio=rr,
-                        k_sigma_err=k_sigma,
-                        k_atr_min_tp=k_atr,
+                        k_sigma_long=k_sigma_long_val,
+                        k_sigma_short=k_sigma_short_val,
+                        k_atr_long=k_atr_long_val,
+                        k_atr_short=k_atr_short_val,
+                        enable_longs=enable_longs_flag,
+                        allow_shorts=allow_shorts_flag,
                     )
 
                     results_rows.append(

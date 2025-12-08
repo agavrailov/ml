@@ -327,8 +327,16 @@ def run_backtest_on_dataframe(
     # Optional overrides for strategy parameters (use config defaults when None).
     risk_per_trade_pct: float | None = None,
     reward_risk_ratio: float | None = None,
+    # Shared filters (used as base)
     k_sigma_err: float | None = None,
     k_atr_min_tp: float | None = None,
+    # Side-specific overrides (take precedence when provided)
+    k_sigma_long: float | None = None,
+    k_sigma_short: float | None = None,
+    k_atr_long: float | None = None,
+    k_atr_short: float | None = None,
+    enable_longs: bool | None = None,
+    allow_shorts: bool | None = None,
 ) -> BacktestResult:
     """Run a backtest on an in-memory DataFrame using default settings.
 
@@ -349,11 +357,23 @@ def run_backtest_on_dataframe(
     # Strategy defaults come from STRATEGY_DEFAULTS so that risk and noise
     # parameters are centralized in config.py. Allow callers to override
     # individual knobs for optimization / UI workflows.
+    base_sigma = float(k_sigma_err) if k_sigma_err is not None else K_SIGMA_ERR
+    base_atr = float(k_atr_min_tp) if k_atr_min_tp is not None else K_ATR_MIN_TP
+
+    k_sigma_long_eff = float(k_sigma_long) if k_sigma_long is not None else base_sigma
+    k_sigma_short_eff = float(k_sigma_short) if k_sigma_short is not None else base_sigma
+    k_atr_long_eff = float(k_atr_long) if k_atr_long is not None else base_atr
+    k_atr_short_eff = float(k_atr_short) if k_atr_short is not None else base_atr
+
     strat_cfg = StrategyConfig(
         risk_per_trade_pct=float(risk_per_trade_pct) if risk_per_trade_pct is not None else RISK_PER_TRADE_PCT,
         reward_risk_ratio=float(reward_risk_ratio) if reward_risk_ratio is not None else REWARD_RISK_RATIO,
-        k_sigma_err=float(k_sigma_err) if k_sigma_err is not None else K_SIGMA_ERR,
-        k_atr_min_tp=float(k_atr_min_tp) if k_atr_min_tp is not None else K_ATR_MIN_TP,
+        k_sigma_long=k_sigma_long_eff,
+        k_sigma_short=k_sigma_short_eff,
+        k_atr_long=k_atr_long_eff,
+        k_atr_short=k_atr_short_eff,
+        enable_longs=True if enable_longs is None else bool(enable_longs),
+        allow_shorts=False if allow_shorts is None else bool(allow_shorts),
     )
 
     # Use the mean ATR as a scalar proxy for backwards compatibility, but
@@ -498,6 +518,7 @@ def _compute_backtest_metrics(
     - sharpe_ratio (simple, using per-bar returns)
     - win_rate
     - profit_factor
+    - equity_price_corr (correlation of equity and underlying returns)
     """
 
     equity_curve = np.asarray(result.equity_curve, dtype=float)
@@ -549,6 +570,19 @@ def _compute_backtest_metrics(
     else:
         cagr = 0.0
 
+    # Correlation between equity returns and underlying price returns.
+    equity_price_corr = 0.0
+    try:
+        if "Close" in data.columns and len(data) > 1 and returns.size > 0:
+            prices = data["Close"].astype(float).to_numpy()
+            price_returns = np.diff(prices) / prices[:-1]
+            # Align lengths: use the shorter of the two series.
+            m = min(len(price_returns), len(returns))
+            if m > 1 and np.std(price_returns[:m]) > 0 and np.std(returns[:m]) > 0:
+                equity_price_corr = float(np.corrcoef(price_returns[:m], returns[:m])[0, 1])
+    except Exception:  # pragma: no cover - defensive
+        equity_price_corr = 0.0
+
     return {
         "total_return": total_return,
         "cagr": cagr,
@@ -556,6 +590,7 @@ def _compute_backtest_metrics(
         "sharpe_ratio": sharpe,
         "win_rate": win_rate,
         "profit_factor": profit_factor,
+        "equity_price_corr": equity_price_corr,
     }
 
 
@@ -571,6 +606,12 @@ def run_backtest_for_ui(
     reward_risk_ratio: float | None = None,
     k_sigma_err: float | None = None,
     k_atr_min_tp: float | None = None,
+    k_sigma_long: float | None = None,
+    k_sigma_short: float | None = None,
+    k_atr_long: float | None = None,
+    k_atr_short: float | None = None,
+    enable_longs: bool | None = None,
+    allow_shorts: bool | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     """Convenience wrapper for interactive UIs.
 
@@ -613,6 +654,12 @@ def run_backtest_for_ui(
         reward_risk_ratio=reward_risk_ratio,
         k_sigma_err=k_sigma_err,
         k_atr_min_tp=k_atr_min_tp,
+        k_sigma_long=k_sigma_long,
+        k_sigma_short=k_sigma_short,
+        k_atr_long=k_atr_long,
+        k_atr_short=k_atr_short,
+        enable_longs=enable_longs,
+        allow_shorts=allow_shorts,
     )
 
     metrics = _compute_backtest_metrics(
@@ -646,6 +693,7 @@ def run_backtest_for_ui(
             "entry_price": t.entry_price,
             "exit_price": t.exit_price,
             "size": t.size,
+            "direction": t.direction,
             "commission": t.commission,
             "gross_pnl": t.gross_pnl,
             "pnl": t.pnl,
@@ -862,6 +910,7 @@ def _print_report(
     print(f"  {'Sharpe Ratio:':<20} {metrics.get('sharpe_ratio', 0):>10.2f}")
     print(f"  {'Profit Factor:':<20} {metrics.get('profit_factor', 0):>10.2f}")
     print(f"  {'CAGR:':<20} {metrics.get('cagr', 0) * 100:>9.1f}%")
+    print(f"  {'Eq-Price Corr:':<20} {metrics.get('equity_price_corr', 0):>10.2f}")
     print(line)
     print(f"  {'Equity:':<20} {initial_equity:,.0f} -> {final_equity:,.0f}")
     if plot_path:
@@ -1043,7 +1092,8 @@ def main() -> None:
                 f"max_dd={metrics['max_drawdown'] * 100:5.2f}% | "
                 f"Sharpe={metrics['sharpe_ratio']:5.2f} | "
                 f"win_rate={metrics['win_rate'] * 100:5.2f}% | "
-                f"PF={metrics['profit_factor']:5.2f}"
+                f"PF={metrics['profit_factor']:5.2f} | "
+                f"corr={metrics.get('equity_price_corr', 0):5.2f}"
             )
 
     # Optional exports.
@@ -1056,6 +1106,7 @@ def main() -> None:
                     "entry_price": t.entry_price,
                     "exit_price": t.exit_price,
                     "size": t.size,
+                    "direction": t.direction,
                     "commission": t.commission,
                     "gross_pnl": t.gross_pnl,
                     "pnl": t.pnl,

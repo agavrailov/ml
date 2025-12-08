@@ -1,34 +1,50 @@
 [
   {
-    "Parameter": "k_sigma_err",
+    "Parameter": "k_sigma_long",
     "Value": 0.7,
-    "Start": 0.0,
+    "Start": 0.7,
     "Step": 0.1,
-    "Stop": 1.0,
+    "Stop": 0.7,
+    "Optimize": true
+  },
+  {
+    "Parameter": "k_sigma_short",
+    "Value": 4.4,
+    "Start": 0.7,
+    "Step": 0.1,
+    "Stop": 0.7,
+    "Optimize": true
+  },
+  {
+    "Parameter": "k_atr_long",
+    "Value": 0.7,
+    "Start": 0.7,
+    "Step": 0.1,
+    "Stop": 0.7,
     "Optimize": false
   },
   {
-    "Parameter": "k_atr_min_tp",
-    "Value": 0.7,
-    "Start": 0.0,
-    "Step": 0.2,
-    "Stop": 1.0,
+    "Parameter": "k_atr_short",
+    "Value": 1.4,
+    "Start": 0.7,
+    "Step": 0.1,
+    "Stop": 0.7,
     "Optimize": false
   },
   {
     "Parameter": "risk_per_trade_pct",
     "Value": 0.02,
-    "Start": 0.01,
-    "Step": 0.005,
+    "Start": 0.02,
+    "Step": 0.001,
     "Stop": 0.02,
     "Optimize": false
   },
   {
     "Parameter": "reward_risk_ratio",
-    "Value": 3.5,
-    "Start": 2.0,
-    "Step": 0.5,
-    "Stop": 4.0,
-    "Optimize": true
+    "Value": 2.5,
+    "Start": 3.5,
+    "Step": 0.1,
+    "Stop": 3.5,
+    "Optimize": false
   }
 ]

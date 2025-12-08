@@ -210,17 +210,33 @@ class StrategyDefaultsConfig:
     Keeping these in one place avoids duplicating magic numbers in
     backtest/paper-trade code and makes it clear which knobs define the
     baseline trading behavior.
+
+    We support separate filter strengths for long and short trades via
+    ``k_sigma_long`` / ``k_sigma_short`` and ``k_atr_long`` / ``k_atr_short``.
+    For backwards compatibility, ``k_sigma_err`` and ``k_atr_min_tp`` are kept
+    as shared aliases to the *long* side.
     """
 
     # Core risk and reward parameters
-    risk_per_trade_pct: float = 0.02  # 1% of equity per trade
+    risk_per_trade_pct: float = 0.02  # 2% of equity per trade
     reward_risk_ratio: float = 3.5
 
-    # Noise / filter parameters
+    # Long/short-specific noise / filter parameters
     # How much of the model residual sigma_err we subtract from the predicted move.
-    k_sigma_err: float = 0.7
-    # Minimum TP distance as a multiple of ATR.
-    k_atr_min_tp: float = 0.7
+    k_sigma_long: float = 0.7
+    k_sigma_short: float = 0.7
+    # Minimum TP distance / SNR threshold as a multiple of ATR.
+    k_atr_long: float = 0.7
+    k_atr_short: float = 0.7
+
+    # Backwards-compatible shared aliases (used by older code / configs)
+    @property
+    def k_sigma_err(self) -> float:
+        return self.k_sigma_long
+
+    @property
+    def k_atr_min_tp(self) -> float:
+        return self.k_atr_long
 
     # Position sizing constraints
     min_position_size: float = 1.0
@@ -364,8 +380,16 @@ FEATURES_TO_USE_OPTIONS = TRAINING.features_to_use_options
 # Strategy / trading defaults (backwards-compatible flat aliases)
 RISK_PER_TRADE_PCT = STRATEGY_DEFAULTS.risk_per_trade_pct
 REWARD_RISK_RATIO = STRATEGY_DEFAULTS.reward_risk_ratio
-K_SIGMA_ERR = STRATEGY_DEFAULTS.k_sigma_err
-K_ATR_MIN_TP = STRATEGY_DEFAULTS.k_atr_min_tp
+
+# Long/short-specific aliases
+K_SIGMA_LONG = STRATEGY_DEFAULTS.k_sigma_long
+K_SIGMA_SHORT = STRATEGY_DEFAULTS.k_sigma_short
+K_ATR_LONG = STRATEGY_DEFAULTS.k_atr_long
+K_ATR_SHORT = STRATEGY_DEFAULTS.k_atr_short
+
+# Shared aliases (legacy)
+K_SIGMA_ERR = STRATEGY_DEFAULTS.k_sigma_err  # maps to long side
+K_ATR_MIN_TP = STRATEGY_DEFAULTS.k_atr_min_tp  # maps to long side
 MIN_POSITION_SIZE = STRATEGY_DEFAULTS.min_position_size
 COMMISSION_PER_UNIT_PER_LEG = STRATEGY_DEFAULTS.commission_per_unit_per_leg
 MIN_COMMISSION_PER_ORDER = STRATEGY_DEFAULTS.min_commission_per_order
