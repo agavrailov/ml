@@ -275,12 +275,17 @@ def _make_model_prediction_provider(data: pd.DataFrame, frequency: str) -> tuple
             preds_seq = preds_trunc[first:]
             acts_seq = acts_trunc[first:]
 
-            # Bias + amplitude correction in price space.
+            # Bias-only correction in price space. We disable amplitude scaling
+            # here (enable_amplitude=False) to avoid distorting the model's
+            # natural volatility in price space, which was empirically causing
+            # large deviations between checkpointed predictions and the
+            # underlying price series in 2025.
             corrected_seq = apply_rolling_bias_and_amplitude_correction(
                 predictions=preds_seq,
                 actuals=acts_seq,
                 window=BIAS_CORRECTION_WINDOW,
                 global_mean_residual=mean_residual,
+                enable_amplitude=False,
             )
             denorm_full[first:first + len(corrected_seq)] = corrected_seq
 

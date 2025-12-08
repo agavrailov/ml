@@ -22,5 +22,29 @@
             ],
             "bias_correction_filename": "bias_correction_15min_tsteps5_20251206_144236.json"
         }
+    },
+    "60min": {
+        "5": {
+            "validation_loss": 5.536596290767193e-05,
+            "model_filename": "my_lstm_model_60min_tsteps5_20251208_181544.keras",
+            "lstm_units": 64,
+            "learning_rate": 0.003,
+            "epochs": 55,
+            "batch_size": 64,
+            "n_lstm_layers": 1,
+            "stateful": true,
+            "optimizer_name": "rmsprop",
+            "loss_function": "mse",
+            "features_to_use": [
+                "Open",
+                "High",
+                "Low",
+                "Close",
+                "SMA_7",
+                "SMA_21",
+                "RSI"
+            ],
+            "bias_correction_filename": "bias_correction_60min_tsteps5_20251208_181544.json"
+        }
     }
 }

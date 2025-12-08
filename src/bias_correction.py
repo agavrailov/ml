@@ -14,8 +14,12 @@ def apply_rolling_bias_and_amplitude_correction(
     actuals: np.ndarray,
     window: int,
     global_mean_residual: float = 0.0,
+    *,
+    enable_amplitude: bool = True,
+    amp_min: float = 0.5,
+    amp_max: float = 2.0,
 ) -> np.ndarray:
-    """Apply rolling bias + amplitude correction on recent data.
+    """Apply rolling bias + optional amplitude correction on recent data.
 
     Parameters
     ----------
@@ -30,11 +34,20 @@ def apply_rolling_bias_and_amplitude_correction(
         Optional global mean residual (e.g. computed on a held-out
         validation set) used as a prior during the warmup period when
         fewer than ``window`` samples are available.
+    enable_amplitude:
+        When ``False``, only the rolling bias term is applied and amplitude
+        scaling is disabled. This is useful when the base model is already
+        well-calibrated in price space and additional rescaling can distort
+        signals.
+    amp_min / amp_max:
+        Soft bounds for the amplitude factor when ``enable_amplitude`` is
+        ``True``. These prevent extreme rescaling when the windowed standard
+        deviations are very different.
 
     Returns
     -------
     np.ndarray
-        1D array of bias- and amplitude-corrected predictions.
+        1D array of bias- and (optionally) amplitude-corrected predictions.
     """
     if predictions.shape != actuals.shape:
         raise ValueError("predictions and actuals must have the same shape")
@@ -70,11 +83,18 @@ def apply_rolling_bias_and_amplitude_correction(
             mean_resid = local_mean_resid
 
         # Amplitude scaling: match std(actuals) over the window while
-        # preserving the local mean of predictions.
-        std_act = float(np.std(acts_win))
-        std_pred = float(np.std(preds_win))
-        if std_pred > 0.0:
-            amp = std_act / std_pred
+        # preserving the local mean of predictions. When amplitude
+        # correction is disabled we fall back to amp = 1.0 so only the bias
+        # term is applied.
+        if enable_amplitude:
+            std_act = float(np.std(acts_win))
+            std_pred = float(np.std(preds_win))
+            if std_pred > 0.0:
+                amp = std_act / std_pred
+            else:
+                amp = 1.0
+            # Clip extreme amplitudes to avoid pathological rescaling.
+            amp = max(amp_min, min(amp_max, amp))
         else:
             amp = 1.0
 
