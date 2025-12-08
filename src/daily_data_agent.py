@@ -23,6 +23,7 @@ from src.data_processing import (
     prepare_keras_input_data,
     fill_gaps,
 )
+from src.data_quality import analyze_raw_minute_data, compute_quality_kpi
 
 
 GAP_ANALYSIS_OUTPUT_JSON = os.path.join(PROCESSED_DATA_DIR, "missing_trading_days.json")
@@ -259,6 +260,24 @@ def run_daily_pipeline(skip_ingestion: bool = False) -> None:
     # 3) Analyze and fill gaps
     print("[agent] Analyzing and filling gaps...")
     smart_fill_gaps()
+
+    # 3b) Run a raw data quality snapshot so that any severe issues are
+    # visible in logs even when no UI is running. We do *not* fail the daily
+    # pipeline on warnings or failures here; that decision can be made by the
+    # caller based on the summary.
+    if os.path.exists(RAW_DATA_CSV):
+        print("[agent] Running raw minute data quality checks (snapshot)...")
+        checks = analyze_raw_minute_data(RAW_DATA_CSV)
+        kpi = compute_quality_kpi(checks)
+        print(
+            "[agent] Data quality snapshot | score={score:.1f} / 100 | "
+            "pass={n_pass} warn={n_warn} fail={n_fail}".format(
+                score=kpi.get("score_0_100", 0.0),
+                n_pass=kpi.get("n_pass", 0),
+                n_warn=kpi.get("n_warn", 0),
+                n_fail=kpi.get("n_fail", 0),
+            )
+        )
 
     # 4) Create curated-minute snapshot from cleaned, gap-filled raw data
     print("[agent] Creating curated-minute snapshot...")

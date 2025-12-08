@@ -32,6 +32,7 @@ from src.config import (
     BACKTEST_DEFAULT_END_DATE,
     get_hourly_data_csv_path,
 )
+from src.data import load_hourly_ohlc
 from src.strategy import StrategyConfig
 from src.backtest import (
     _compute_atr_series,
@@ -185,7 +186,12 @@ def main() -> None:
     initial_equity = float(args.initial_equity)
     csv_path = args.csv_path or get_hourly_data_csv_path(freq)
 
-    data_full = pd.read_csv(csv_path)
+    if args.csv_path is None:
+        # Use centralized loader so that all invariants for hourly OHLC data
+        # (schema, Time monotonicity, NaNs) are enforced consistently.
+        data_full = load_hourly_ohlc(freq)
+    else:
+        data_full = pd.read_csv(csv_path)
     data, date_from, date_to = _apply_date_range(
         data_full,
         start_date=args.start_date,

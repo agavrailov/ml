@@ -10,31 +10,51 @@ import src.app as app
 def test_load_strategy_defaults_matches_config_module() -> None:
     """_load_strategy_defaults should reflect current values from src.config.
 
-    This indirectly validates that the helper reloads the module and returns
-    the four strategy parameters we care about.
+    This validates that the helper reloads the module and returns both the
+    shared and long/short-specific strategy parameters we care about.
     """
 
     defaults = app._load_strategy_defaults()
 
-    assert set(defaults.keys()) == {
+    expected_keys = {
         "k_sigma_err",
         "k_atr_min_tp",
+        "k_sigma_long",
+        "k_sigma_short",
+        "k_atr_long",
+        "k_atr_short",
         "risk_per_trade_pct",
         "reward_risk_ratio",
     }
+    assert set(defaults.keys()) == expected_keys
 
+    # Shared aliases
     assert defaults["k_sigma_err"] == float(cfg.K_SIGMA_ERR)
     assert defaults["k_atr_min_tp"] == float(cfg.K_ATR_MIN_TP)
     assert defaults["risk_per_trade_pct"] == float(cfg.RISK_PER_TRADE_PCT)
     assert defaults["reward_risk_ratio"] == float(cfg.REWARD_RISK_RATIO)
+
+    # Long/short-specific defaults (fall back to shared when dedicated names are
+    # not present in config).
+    exp_k_sigma_long = float(getattr(cfg, "K_SIGMA_LONG", cfg.K_SIGMA_ERR))
+    exp_k_sigma_short = float(getattr(cfg, "K_SIGMA_SHORT", cfg.K_SIGMA_ERR))
+    exp_k_atr_long = float(getattr(cfg, "K_ATR_LONG", cfg.K_ATR_MIN_TP))
+    exp_k_atr_short = float(getattr(cfg, "K_ATR_SHORT", cfg.K_ATR_MIN_TP))
+
+    assert defaults["k_sigma_long"] == exp_k_sigma_long
+    assert defaults["k_sigma_short"] == exp_k_sigma_short
+    assert defaults["k_atr_long"] == exp_k_atr_long
+    assert defaults["k_atr_short"] == exp_k_atr_short
 
 
 def test_build_default_params_df_structure() -> None:
     """Default parameter grid has one row per parameter with expected columns."""
 
     defaults = {
-        "k_sigma_err": 1.1,
-        "k_atr_min_tp": 2.2,
+        "k_sigma_long": 1.1,
+        "k_sigma_short": 1.2,
+        "k_atr_long": 2.1,
+        "k_atr_short": 2.2,
         "risk_per_trade_pct": 0.01,
         "reward_risk_ratio": 3.3,
     }
@@ -52,18 +72,20 @@ def test_build_default_params_df_structure() -> None:
 
     # Preserve ordering and defaults
     assert list(df["Parameter"]) == [
-        "k_sigma_err",
-        "k_atr_min_tp",
+        "k_sigma_long",
+        "k_sigma_short",
+        "k_atr_long",
+        "k_atr_short",
         "risk_per_trade_pct",
         "reward_risk_ratio",
     ]
 
-    row_sigma = df[df["Parameter"] == "k_sigma_err"].iloc[0]
-    assert row_sigma["Value"] == defaults["k_sigma_err"]
-    assert row_sigma["Start"] == defaults["k_sigma_err"]
-    assert row_sigma["Stop"] == defaults["k_sigma_err"]
+    row_sigma_long = df[df["Parameter"] == "k_sigma_long"].iloc[0]
+    assert row_sigma_long["Value"] == defaults["k_sigma_long"]
+    assert row_sigma_long["Start"] == defaults["k_sigma_long"]
+    assert row_sigma_long["Stop"] == defaults["k_sigma_long"]
     # Pandas may store this as a numpy.bool_, so coerce to Python bool.
-    assert bool(row_sigma["Optimize"]) is True
+    assert bool(row_sigma_long["Optimize"]) is True
 
     row_risk = df[df["Parameter"] == "risk_per_trade_pct"].iloc[0]
     assert row_risk["Step"] == 0.001
@@ -78,8 +100,10 @@ def test_load_params_grid_falls_back_to_defaults(tmp_path: Path, monkeypatch) ->
     monkeypatch.setattr(app, "PARAMS_STATE_PATH", tmp_path / "ui_strategy_params.json")
 
     defaults = {
-        "k_sigma_err": 1.0,
-        "k_atr_min_tp": 2.0,
+        "k_sigma_long": 1.0,
+        "k_sigma_short": 1.1,
+        "k_atr_long": 2.0,
+        "k_atr_short": 2.1,
         "risk_per_trade_pct": 0.01,
         "reward_risk_ratio": 3.0,
     }
@@ -98,14 +122,16 @@ def test_load_params_grid_merges_missing_columns(tmp_path: Path, monkeypatch) ->
 
     # Simulate an older file that only had Parameter and Value for one row.
     records = [
-        {"Parameter": "k_sigma_err", "Value": 9.9},
+        {"Parameter": "k_sigma_long", "Value": 9.9},
         # Other parameters will be picked up from defaults only.
     ]
     state_path.write_text(json.dumps(records), encoding="utf-8")
 
     defaults = {
-        "k_sigma_err": 1.0,
-        "k_atr_min_tp": 2.0,
+        "k_sigma_long": 1.0,
+        "k_sigma_short": 1.1,
+        "k_atr_long": 2.0,
+        "k_atr_short": 2.1,
         "risk_per_trade_pct": 0.01,
         "reward_risk_ratio": 3.0,
     }
@@ -115,15 +141,15 @@ def test_load_params_grid_merges_missing_columns(tmp_path: Path, monkeypatch) ->
     # All required columns present
     assert set(df.columns) == {"Parameter", "Value", "Start", "Step", "Stop", "Optimize"}
 
-    # k_sigma_err value comes from saved file; other fields from defaults.
-    row_sigma = df[df["Parameter"] == "k_sigma_err"].iloc[0]
+    # k_sigma_long value comes from saved file; other fields from defaults.
+    row_sigma = df[df["Parameter"] == "k_sigma_long"].iloc[0]
     assert row_sigma["Value"] == 9.9
-    assert row_sigma["Start"] == defaults["k_sigma_err"]
-    assert row_sigma["Stop"] == defaults["k_sigma_err"]
+    assert row_sigma["Start"] == defaults["k_sigma_long"]
+    assert row_sigma["Stop"] == defaults["k_sigma_long"]
 
     # A parameter that was not in the file falls back entirely to defaults.
-    row_atr = df[df["Parameter"] == "k_atr_min_tp"].iloc[0]
-    assert row_atr["Value"] == defaults["k_atr_min_tp"]
+    row_atr = df[df["Parameter"] == "k_atr_short"].iloc[0]
+    assert row_atr["Value"] == defaults["k_atr_short"]
 
 
 def test_save_and_reload_params_grid_round_trip(tmp_path: Path, monkeypatch) -> None:
@@ -133,15 +159,17 @@ def test_save_and_reload_params_grid_round_trip(tmp_path: Path, monkeypatch) -> 
     monkeypatch.setattr(app, "PARAMS_STATE_PATH", state_path)
 
     defaults = {
-        "k_sigma_err": 1.0,
-        "k_atr_min_tp": 2.0,
+        "k_sigma_long": 1.0,
+        "k_sigma_short": 1.1,
+        "k_atr_long": 2.0,
+        "k_atr_short": 2.1,
         "risk_per_trade_pct": 0.01,
         "reward_risk_ratio": 3.0,
     }
     df = app._build_default_params_df(defaults)
 
     # Modify one value to ensure we are not just seeing defaults.
-    df.loc[df["Parameter"] == "k_sigma_err", "Value"] = 4.2
+    df.loc[df["Parameter"] == "k_sigma_long", "Value"] = 4.2
 
     app._save_params_grid(df)
 
@@ -157,8 +185,10 @@ def test_save_strategy_defaults_to_config_overwrites_literals(tmp_path: Path, mo
 class StrategyDefaultsConfig:
     risk_per_trade_pct: float = 0.01
     reward_risk_ratio: float = 2.0
-    k_sigma_err: float = 1.5
-    k_atr_min_tp: float = 3.0
+    k_sigma_long: float = 1.5
+    k_sigma_short: float = 1.6
+    k_atr_long: float = 3.0
+    k_atr_short: float = 3.5
 """
     cfg_path = tmp_path / "config.py"
     cfg_path.write_text(config_text, encoding="utf-8")
@@ -168,13 +198,17 @@ class StrategyDefaultsConfig:
     app._save_strategy_defaults_to_config(
         risk_per_trade_pct=0.02,
         reward_risk_ratio=3.5,
-        k_sigma_err=2.5,
-        k_atr_min_tp=4.0,
+        k_sigma_long=2.5,
+        k_sigma_short=2.6,
+        k_atr_long=4.0,
+        k_atr_short=4.5,
     )
 
     updated = cfg_path.read_text(encoding="utf-8")
 
     assert "risk_per_trade_pct: float = 0.02" in updated
     assert "reward_risk_ratio: float = 3.5" in updated
-    assert "k_sigma_err: float = 2.5" in updated
-    assert "k_atr_min_tp: float = 4.0" in updated
+    assert "k_sigma_long: float = 2.5" in updated
+    assert "k_sigma_short: float = 2.6" in updated
+    assert "k_atr_long: float = 4.0" in updated
+    assert "k_atr_short: float = 4.5" in updated

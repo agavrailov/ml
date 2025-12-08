@@ -81,8 +81,11 @@ def build_prediction_context(
             model_path = os.path.abspath(active_model)
 
     if not model_path or not os.path.exists(model_path):
+        # Message includes the legacy substring "No best model found for frequency"
+        # so that existing tests can detect and skip when no trained model is
+        # available yet.
         raise FileNotFoundError(
-            f"No best model or active model found for frequency {frequency} and TSTEPS {tsteps}. "
+            f"No best model found for frequency {frequency} (no best model or active model found for TSTEPS {tsteps}). "
             "Please train a model or update models/active_model.txt."
         )
 

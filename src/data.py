@@ -17,6 +17,7 @@ import pandas as pd
 
 from src.config import get_hourly_data_csv_path
 from src.data_processing import prepare_keras_input_data
+from src.data_quality import validate_hourly_ohlc, validate_feature_frame
 
 __all__ = [
     "load_hourly_ohlc",
@@ -34,6 +35,7 @@ def load_hourly_ohlc(frequency: str) -> pd.DataFrame:
 
     csv_path = get_hourly_data_csv_path(frequency)
     df = pd.read_csv(csv_path, parse_dates=["Time"])
+    validate_hourly_ohlc(df, context=f"load_hourly_ohlc[{frequency}]")
     return df
 
 
@@ -64,4 +66,10 @@ def load_hourly_features(
     """
 
     csv_path = get_hourly_data_csv_path(frequency)
-    return prepare_keras_input_data(csv_path, features_to_use)
+    df_filtered, feature_cols = prepare_keras_input_data(csv_path, features_to_use)
+    validate_feature_frame(
+        df_filtered,
+        feature_cols,
+        context=f"load_hourly_features[{frequency}]",
+    )
+    return df_filtered, feature_cols

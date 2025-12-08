@@ -334,6 +334,49 @@ def analyze_raw_minute_data(csv_path: str = RAW_DATA_CSV) -> List[CheckResult]:
     return results
 
 
+def ensure_raw_data_quality(
+    *,
+    csv_path: str = RAW_DATA_CSV,
+    min_score: float = 0.0,
+    allow_failures: bool = False,
+) -> tuple[list[CheckResult], Dict[str, object]]:
+    """Run raw-minute checks and optionally enforce a quality threshold.
+
+    This is a small orchestration wrapper intended for pipeline entrypoints
+    (e.g. daily agents, data-processing CLIs). It always returns the full
+    ``(checks, kpi)`` tuple; callers may choose whether to treat failures as
+    hard errors.
+
+    Parameters
+    ----------
+    csv_path:
+        Path to the raw minute CSV; defaults to :data:`RAW_DATA_CSV`.
+    min_score:
+        Minimum acceptable ``score_0_100`` from :func:`compute_quality_kpi`.
+        Defaults to ``0.0`` so that existing flows can adopt this helper
+        without changing behaviour.
+    allow_failures:
+        When ``False`` and either ``kpi['score_0_100'] < min_score`` or any
+        check has ``status == 'fail'``, a :class:`ValueError` is raised.
+    """
+
+    checks = analyze_raw_minute_data(csv_path)
+    kpi = compute_quality_kpi(checks)
+
+    score = float(kpi.get("score_0_100", 0.0))
+    n_fail = int(kpi.get("n_fail", 0))
+
+    if not allow_failures and (score < float(min_score) or n_fail > 0):
+        # Keep the exception message concise; callers can log the full report
+        # separately via :func:`format_quality_report`.
+        raise ValueError(
+            f"Raw data quality below threshold: score={score:.1f}, "
+            f"failures={n_fail}, min_score={min_score:.1f}"
+        )
+
+    return checks, kpi
+
+
 def get_missing_trading_days(
     csv_path: str = RAW_DATA_CSV,
     calendar_name: str = "NASDAQ",
@@ -369,6 +412,75 @@ def get_missing_trading_days(
 
     missing_trading_days = sorted(exchange_days - trading_days)
     return list(missing_trading_days)
+
+
+def validate_hourly_ohlc(df: pd.DataFrame, *, context: str = "hourly_ohlc") -> None:
+    """Lightweight sanity checks for resampled OHLC frames.
+
+    This is intentionally strict but small. It is designed to be called from
+    :mod:`src.data` so that all downstream consumers (training, evaluation,
+    backtests, UI) get consistent guarantees without duplicating checks.
+
+    The function **raises ValueError** on hard violations (missing columns,
+    empty frame) and prints nothing; callers can decide how to handle the
+    exception at the boundary (CLI/UI/logging).
+    """
+
+    required_cols = {"Time", "Open", "High", "Low", "Close"}
+    missing = required_cols - set(df.columns)
+    if missing:
+        raise ValueError(
+            f"{context}: missing required columns: {sorted(missing)}"
+        )
+
+    if df.empty:
+        raise ValueError(f"{context}: DataFrame is empty.")
+
+    # Basic type / ordering checks.
+    if not pd.api.types.is_datetime64_any_dtype(df["Time"]):
+        raise ValueError(f"{context}: 'Time' column must be datetime-like.")
+
+    # Ensure time is strictly increasing to avoid surprises in downstream
+    # windowing and backtests.
+    if not df["Time"].is_monotonic_increasing:
+        raise ValueError(f"{context}: 'Time' must be monotonic increasing.")
+
+    # NaNs in OHLC are treated as hard errors at this stage; earlier pipeline
+    # stages (gap filling, cleaning) are responsible for handling them.
+    ohlc = df[["Open", "High", "Low", "Close"]]
+    if ohlc.isna().any().any():
+        raise ValueError(f"{context}: NaNs detected in OHLC columns.")
+
+
+def validate_feature_frame(
+    df: pd.DataFrame,
+    feature_cols: list[str],
+    *,
+    context: str = "feature_frame",
+) -> None:
+    """Validate an engineered feature frame used as model input.
+
+    Expectations:
+
+    - Contains a ``Time`` column (datetime-like).
+    - Contains at least the requested ``feature_cols``.
+    - Contains no NaNs in ``feature_cols``.
+    """
+
+    if "Time" not in df.columns:
+        raise ValueError(f"{context}: missing 'Time' column.")
+
+    if not pd.api.types.is_datetime64_any_dtype(df["Time"]):
+        raise ValueError(f"{context}: 'Time' column must be datetime-like.")
+
+    missing = [c for c in feature_cols if c not in df.columns]
+    if missing:
+        raise ValueError(
+            f"{context}: feature columns missing from frame: {missing}"
+        )
+
+    if df[feature_cols].isna().any().any():
+        raise ValueError(f"{context}: NaNs detected in feature columns.")
 
 
 def compute_quality_kpi(checks: List[CheckResult]) -> Dict[str, object]:

@@ -298,15 +298,28 @@ def _run_backtest(
     enable_longs: bool | None,
     allow_shorts: bool | None,
 ):
-    """Non-cached wrapper around run_backtest_for_ui (model mode only)."""
+    """Non-cached wrapper around run_backtest_for_ui (CSV mode by default).
+
+    The UI uses precomputed per-bar predictions (CSV mode) for backtests by
+    default, which is simpler and more robust for experiments. Model mode can
+    still be enabled by calling :func:`run_backtest_for_ui` directly with
+    ``prediction_mode="model"`` when needed.
+    """
+
+    from src.config import get_predictions_csv_path as _get_predictions_csv_path
+
+    predictions_csv = _get_predictions_csv_path("nvda", frequency)
+
     return run_backtest_for_ui(
         frequency=frequency,
-        prediction_mode="model",
+        prediction_mode="csv",
         start_date=start_date,
         end_date=end_date,
-        predictions_csv=None,
+        predictions_csv=predictions_csv,
         risk_per_trade_pct=risk_per_trade_pct,
         reward_risk_ratio=reward_risk_ratio,
+        k_sigma_err=None,
+        k_atr_min_tp=None,
         k_sigma_long=k_sigma_long,
         k_sigma_short=k_sigma_short,
         k_atr_long=k_atr_long,
@@ -314,8 +327,6 @@ def _run_backtest(
         enable_longs=enable_longs,
         allow_shorts=allow_shorts,
     )
-
-
 st.title("LSTM Backtesting & Training UI")
 
 # Four main tabs matching the end-to-end workflow.

@@ -40,10 +40,12 @@ def test_load_hourly_features_delegates_to_prepare_keras_input_data():
     with (
         patch("src.data.get_hourly_data_csv_path", return_value="/tmp/nvda_15min.csv") as mock_path,
         patch("src.data.prepare_keras_input_data", return_value=(dummy_df, dummy_features)) as mock_prepare,
+        patch("src.data.validate_feature_frame") as mock_validate,
     ):
         df, features = data_mod.load_hourly_features("15min", dummy_features)
 
     mock_path.assert_called_once_with("15min")
+    mock_validate.assert_called_once()
     mock_prepare.assert_called_once_with("/tmp/nvda_15min.csv", dummy_features)
     assert df is dummy_df
     assert features == dummy_features

@@ -38,6 +38,7 @@ from src.config import (
     TSTEPS,
     get_hourly_data_csv_path,
     get_latest_best_model_path,
+    get_predictions_csv_path,
 )
 from src.strategy import StrategyConfig
 from src.predict import (
@@ -54,6 +55,98 @@ from src.bias_correction import (
 PREDICTIONS_DIR = "backtests"
 # Default rolling window for bias-correction layer in backtests.
 BIAS_CORRECTION_WINDOW = 100
+
+
+def _load_predictions_csv(path: str) -> pd.DataFrame:
+    """Load a per-bar predictions CSV with at least Time/predicted_price.
+
+    This helper is shared by CSV-based backtests, paper trading, and notebooks
+    so that we have a single, well-defined way to parse and deduplicate
+    predictions.
+    """
+
+    df = pd.read_csv(path)
+    if "predicted_price" not in df.columns:
+        raise ValueError(
+            f"Predictions CSV {path!r} must contain a 'predicted_price' column; "
+            f"found columns={list(df.columns)}",
+        )
+
+    # Be permissive about the timestamp column name: Time or DateTime.
+    time_col = None
+    for cand in ("Time", "DateTime"):
+        if cand in df.columns:
+            time_col = cand
+            break
+
+    if time_col is not None:
+        df[time_col] = pd.to_datetime(df[time_col])
+        if df[time_col].duplicated().any():
+            dup_count = int(df[time_col].duplicated().sum())
+            print(
+                f"[backtest] WARNING: {dup_count} duplicate {time_col} rows in predictions; "
+                "keeping first occurrence.",
+                flush=True,
+            )
+            df = df.sort_values(time_col).drop_duplicates(subset=[time_col], keep="first")
+    return df
+
+
+def _make_csv_prediction_provider(preds_df: pd.DataFrame, data: pd.DataFrame) -> PredictionProvider:
+    """Build a prediction provider from a predictions DataFrame.
+
+    The provider returns ``predicted_price`` aligned to ``data`` by Time when
+    possible, or by index/length as a fallback. NaNs or out-of-range accesses
+    fall back to using the bar's Close so that backtests remain robust.
+    """
+
+    n = len(data)
+    if n == 0:
+        return lambda i, row: float(row["Close"])  # pragma: no cover - defensive
+
+    series = None
+
+    if "Time" in data.columns:
+        # Align by Time when present in both frames.
+        time_col = None
+        for cand in ("Time", "DateTime"):
+            if cand in preds_df.columns:
+                time_col = cand
+                break
+
+        if time_col is not None:
+            left = data[["Time"]].copy()
+            left["Time"] = pd.to_datetime(left["Time"])
+            right = preds_df[[time_col, "predicted_price"]].copy()
+            right[time_col] = pd.to_datetime(right[time_col])
+            right = right.rename(columns={time_col: "Time"})
+
+            merged = pd.merge(
+                left,
+                right,
+                on="Time",
+                how="left",
+            )
+            series = merged["predicted_price"].to_numpy(dtype=float)
+
+    if series is None:
+        # Positional fallback: trim or pad predictions to match data length.
+        base = preds_df["predicted_price"].to_numpy(dtype=float)
+        if len(base) >= n:
+            series = base[:n]
+        else:
+            pad = np.full(shape=(n - len(base),), fill_value=np.nan, dtype=float)
+            series = np.concatenate([base, pad])
+
+    def provider(i: int, row: pd.Series) -> float:  # noqa: ARG001
+        if i < 0 or i >= len(series):
+            return float(row["Close"])
+        val = series[i]
+        if not np.isfinite(val):
+            return float(row["Close"])
+        return float(val)
+
+    return provider
 
 
 def _compute_atr_series(data: pd.DataFrame, window: int = 14) -> pd.Series:
@@ -347,8 +440,13 @@ def run_backtest_on_dataframe(
 
     This is primarily for tests and notebook experiments.
 
-    Currently only ``prediction_mode='model'`` is supported. Passing any other
-    value will raise a ``ValueError``.
+    Supported ``prediction_mode`` values:
+
+    - ``"model"``: run the LSTM model on-the-fly via
+      :func:`_make_model_prediction_provider`.
+    - ``"csv"``: use a per-bar predictions CSV (``predicted_price`` column)
+      aligned on ``Time``.
+    - ``"naive"``: simple Close-based baseline (used only in legacy tests).
     """
 
     freq = frequency or FREQUENCY
@@ -400,22 +498,38 @@ def run_backtest_on_dataframe(
 
     model_error_sigma_series = atr_series
 
-    if prediction_mode != "model":
-        raise ValueError(f"Unsupported prediction_mode: {prediction_mode!r}. Only 'model' is supported.")
+    # Choose prediction provider based on mode.
+    if prediction_mode == "csv":
+        if not predictions_csv:
+            raise ValueError(
+                "prediction_mode='csv' requires predictions_csv path (per-bar "
+                "predictions with at least 'Time' and 'predicted_price' columns).",
+            )
+        preds_df = _load_predictions_csv(predictions_csv)
+        provider = _make_csv_prediction_provider(preds_df, data)
+    elif prediction_mode == "model":
+        provider, model_error_sigma_series = _make_model_prediction_provider(data, frequency=freq)
+        # If the model-based residual sigma series is all zeros (or non-finite),
+        # fall back to using ATR as a proxy. Otherwise k_sigma_err and
+        # k_atr_min_tp would have no effect in model mode, making optimization
+        # impossible.
+        try:
+            import numpy as _np  # local alias to avoid polluting module namespace
 
-    provider, model_error_sigma_series = _make_model_prediction_provider(data, frequency=freq)
-    # If the model-based residual sigma series is all zeros (or non-finite),
-    # fall back to using ATR as a proxy. Otherwise k_sigma_err and
-    # k_atr_min_tp would have no effect in model mode, making optimization
-    # impossible.
-    try:
-        import numpy as _np  # local alias to avoid polluting module namespace
-
-        arr = _np.asarray(model_error_sigma_series, dtype=float)
-        if not _np.isfinite(arr).any() or _np.nanmax(arr) == 0.0:
+            arr = _np.asarray(model_error_sigma_series, dtype=float)
+            if not _np.isfinite(arr).any() or _np.nanmax(arr) == 0.0:
+                model_error_sigma_series = atr_series
+        except Exception:
             model_error_sigma_series = atr_series
-    except Exception:
-        model_error_sigma_series = atr_series
+    elif prediction_mode == "naive":
+        # Legacy/simple baseline: use Close as the predicted price.
+        def provider(i: int, row: pd.Series) -> float:  # type: ignore[override]
+            return float(row["Close"])
+    else:
+        raise ValueError(
+            f"Unsupported prediction_mode: {prediction_mode!r}. "
+            "Supported modes are 'model', 'csv', and 'naive'.",
+        )
 
     # Ensure model_error_sigma_series is a pandas Series so that
     # ``backtest_engine`` can index it consistently.
@@ -602,7 +716,7 @@ def _compute_backtest_metrics(
 def run_backtest_for_ui(
     frequency: str | None = None,
     initial_equity: float = INITIAL_EQUITY,
-    prediction_mode: str = "model",
+    prediction_mode: str = "csv",
     start_date: str | None = None,
     end_date: str | None = None,
     predictions_csv: str | None = None,
@@ -649,12 +763,18 @@ def run_backtest_for_ui(
         end_date=end_date,
     )
 
+    # If CSV mode is requested and no explicit predictions_csv is provided,
+    # default to the standard NVDA path for the chosen frequency.
+    eff_predictions_csv = predictions_csv
+    if prediction_mode == "csv" and eff_predictions_csv is None:
+        eff_predictions_csv = get_predictions_csv_path("nvda", freq)
+
     result = run_backtest_on_dataframe(
         data,
         initial_equity=initial_equity,
         frequency=freq,
         prediction_mode=prediction_mode,
-        predictions_csv=predictions_csv,
+        predictions_csv=eff_predictions_csv,
         risk_per_trade_pct=risk_per_trade_pct,
         reward_risk_ratio=reward_risk_ratio,
         k_sigma_err=k_sigma_err,
@@ -941,11 +1061,11 @@ def main() -> None:
     parser.add_argument(
         "--prediction-mode",
         type=str,
-        choices=["model"],
-        default="model",
+        choices=["csv", "model"],
+        default="csv",
         help=(
-            "Prediction source: 'model' (LSTM on the fly). "
-            "Naive and CSV-based modes have been removed."
+            "Prediction source: 'csv' (precomputed predictions) or 'model' "
+            "(LSTM on the fly). CSV mode is recommended for most experiments."
         ),
     )
     parser.add_argument(
@@ -1056,6 +1176,11 @@ def main() -> None:
     if not args.report:
         print(f"Running backtest on {n_bars} bars at {freq}...", flush=True)
 
+    # Default predictions CSV when using CSV mode and no explicit path is given.
+    eff_predictions_csv = predictions_csv
+    if prediction_mode == "csv" and eff_predictions_csv is None:
+        eff_predictions_csv = get_predictions_csv_path("nvda", freq)
+
     result = run_backtest_on_dataframe(
         data,
         initial_equity=initial_equity,
@@ -1063,7 +1188,7 @@ def main() -> None:
         prediction_mode=prediction_mode,
         commission_per_unit_per_leg=commission_per_unit_per_leg,
         min_commission_per_order=min_commission_per_order,
-        predictions_csv=predictions_csv,
+        predictions_csv=eff_predictions_csv,
     )
 
     if not args.report:
