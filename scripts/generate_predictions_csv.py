@@ -26,9 +26,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from src import config as config_mod
-from src.data_processing import add_features
-from src.data_utils import apply_standard_scaler
-from src.predict import build_prediction_context, predict_sequence_batch
+from src.backtest import _make_model_prediction_provider
 
 
 def generate_predictions_for_csv(
@@ -38,9 +36,9 @@ def generate_predictions_for_csv(
 ) -> None:
     """Generate per-bar predictions for the given frequency and write to CSV.
 
-    This implementation reuses the shared :class:`PredictionContext` and
-    :func:`predict_sequence_batch` helpers so that the LSTM model and scaler
-    are built once and predictions are computed in a single batched call.
+    This implementation reuses the same model prediction pipeline as
+    :func:`src.backtest._make_model_prediction_provider` so that CSV-based
+    backtests see the *exact* same predictions and sigma series as model-mode.
     """
 
     source_path = config_mod.get_hourly_data_csv_path(frequency)
@@ -57,56 +55,37 @@ def generate_predictions_for_csv(
         )
 
     if max_rows is not None and max_rows > 0:
-        df = df.tail(max_rows)
+        df = df.tail(max_rows).reset_index(drop=True)
+    else:
+        df = df.reset_index(drop=True)
 
     print(f"Generating predictions for {len(df)} bars from {source_path}...")
 
-    # Ensure Time is typed as datetime.
+    # Ensure Time is typed as datetime for alignment.
     df["Time"] = pd.to_datetime(df["Time"])
 
-    # Build a reusable prediction context for this (frequency, TSTEPS).
-    ctx = build_prediction_context(frequency=frequency, tsteps=config_mod.TSTEPS)
+    # Reuse the shared model prediction provider, which will either load an
+    # existing aligned checkpoint or run the full batched prediction pipeline
+    # and write a new checkpoint. This guarantees consistency with
+    # model-mode backtests.
+    provider, sigma_series = _make_model_prediction_provider(df.copy(), frequency=frequency)
 
-    # Feature engineering over the entire dataset.
-    df_featured = add_features(df.copy(), ctx.features_to_use)
+    # Materialize per-bar predictions by calling the provider over the DataFrame.
+    preds = np.empty(len(df), dtype=float)
+    for i in range(len(df)):
+        preds[i] = float(provider(i, df.iloc[i]))
 
-    # Normalize using the stored scaler.
-    feature_cols = [c for c in df_featured.columns if c != "Time"]
-    df_normalized = apply_standard_scaler(df_featured, feature_cols, ctx.scaler_params)
-
-    # Batched predictions over all sliding windows. The model outputs
-    # forward log-return predictions (on Open prices).
-    preds_log = predict_sequence_batch(ctx, df_normalized)
-
-    # Align log-return predictions to the feature-engineered DataFrame.
-    m = len(df_featured)
-    preds_log_full = np.full(shape=(m,), fill_value=np.nan, dtype=np.float32)
-    if len(preds_log) > 0:
-        preds_log_full[ctx.tsteps - 1 : ctx.tsteps - 1 + len(preds_log)] = preds_log
-
-    # Map log returns back to prices using the raw Open series from the
-    # feature-engineered DataFrame.
-    base_open = df_featured["Open"].to_numpy(dtype=float)
-    denorm_feat = np.full_like(preds_log_full, np.nan, dtype=np.float32)
-    mask = np.isfinite(preds_log_full) & np.isfinite(base_open)
-    denorm_feat[mask] = base_open[mask] * np.exp(preds_log_full[mask])
-
-    # Align predictions back to the original raw data via Time. This accounts
-    # for any rows dropped during feature engineering (rolling windows).
-    preds_df = pd.DataFrame(
+    # Build output frame. We include model_error_sigma and a boolean flag to
+    # indicate that these predictions have already passed through the
+    # bias-correction layer, so CSV-mode backtests can avoid double-correction.
+    out_df = pd.DataFrame(
         {
-            "Time": df_featured["Time"].reset_index(drop=True),
-            "predicted_price": denorm_feat,
+            "Time": df["Time"].astype("datetime64[ns]"),
+            "predicted_price": preds,
+            "model_error_sigma": np.asarray(sigma_series, dtype=float),
+            "already_corrected": True,
         }
     )
-    merged = pd.merge(
-        df[["Time"]].reset_index(drop=True),
-        preds_df,
-        on="Time",
-        how="left",
-    )
-
-    out_df = merged[["Time", "predicted_price"]].copy()
 
     # tqdm for user feedback, iterating only to show progress, not to compute.
     for _ in tqdm(range(len(out_df)), desc="predict", unit="bar"):

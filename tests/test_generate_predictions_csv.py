@@ -55,23 +55,18 @@ def test_generate_predictions_for_csv_uses_batched_context(tmp_path: Path, monke
 
     monkeypatch.setattr(config_mod, "get_hourly_data_csv_path", _fake_hourly_path)
 
-    # Mock PredictionContext and batched predictor.
-    dummy_ctx = MagicMock()
-    dummy_ctx.features_to_use = ["Open", "High", "Low", "Close"]
-    dummy_ctx.tsteps = 5
-    dummy_ctx.std_vals = {"Open": 1.0}
-    dummy_ctx.mean_vals = {"Open": 0.0}
-    dummy_ctx.scaler_params = {"mean": {"Open": 0.0}, "std": {"Open": 1.0}}
+    # Stub out the shared model prediction provider so that we avoid heavy ML
+    # and focus purely on the CSV generation and alignment logic.
+    def _fake_model_provider(data_arg: pd.DataFrame, frequency: str):  # noqa: ARG001
+        series = np.linspace(0.0, 1.0, len(data_arg))
 
-    with (
-        patch("scripts.generate_predictions_csv.build_prediction_context", return_value=dummy_ctx),
-        patch("scripts.generate_predictions_csv.add_features", side_effect=lambda df, feats: df),
-        patch("scripts.generate_predictions_csv.apply_standard_scaler", side_effect=lambda df, cols, sp: df),
-        patch(
-            "scripts.generate_predictions_csv.predict_sequence_batch",
-            return_value=np.linspace(0.0, 1.0, 10 - dummy_ctx.tsteps + 1),
-        ),
-    ):
+        def provider(i: int, row: pd.Series) -> float:  # type: ignore[name-defined]
+            return float(series[i])
+
+        sigma_series = np.full(len(data_arg), 0.5, dtype=np.float32)
+        return provider, sigma_series
+
+    with patch("scripts.generate_predictions_csv._make_model_prediction_provider", side_effect=_fake_model_provider):
         output_path = tmp_path / "preds.csv"
         generate_predictions_for_csv(frequency=freq, output_path=str(output_path), max_rows=None)
 
@@ -79,9 +74,16 @@ def test_generate_predictions_for_csv_uses_batched_context(tmp_path: Path, monke
     out_df = pd.read_csv(output_path)
 
     # We expect one prediction per raw bar (aligned by Time).
-    assert list(out_df.columns) == ["Time", "predicted_price"]
+    # The generator now also includes model_error_sigma and an
+    # already_corrected flag so that CSV-mode can avoid double-correction.
+    assert list(out_df.columns) == [
+        "Time",
+        "predicted_price",
+        "model_error_sigma",
+        "already_corrected",
+    ]
     assert len(out_df) == 10
 
-    # The warmup region (first tsteps-1) may be NaN; later rows must be finite.
-    warmup = dummy_ctx.tsteps - 1
-    assert out_df["predicted_price"].iloc[warmup:].notna().all()
+    # All predictions must be finite after the provider is applied.
+    assert out_df["predicted_price"].notna().all()
+    assert np.isfinite(out_df["predicted_price"]).all()

@@ -266,6 +266,7 @@ def run_backtest(
             entry_price=position.entry_price,
             exit_price=exit_price,
             size=position.size,
+            direction=position.direction,
             commission=commission,
         )
         equity += trade.pnl

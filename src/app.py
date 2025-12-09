@@ -1111,6 +1111,13 @@ with tab_backtest:
     risk_pct_val = float(_param_values.get("risk_per_trade_pct", _defaults["risk_per_trade_pct"]))
     rr_val = float(_param_values.get("reward_risk_ratio", _defaults["reward_risk_ratio"]))
 
+    # Legacy aggregate parameters (used for reporting/heatmaps). We keep these
+    # as separate scalars derived from the shared defaults so existing result
+    # tables and plots that expect k_sigma_err / k_atr_min_tp still work, even
+    # though the UI now exposes long/short-specific knobs.
+    k_sigma_val = float(_defaults["k_sigma_err"])
+    k_atr_val = float(_defaults["k_atr_min_tp"])
+
     if st.button("Save parameters to config.py"):
         # Persist single-run defaults to config.py (used by CLIs and as base
         # defaults) and the full grid (Value/Start/Step/Stop/Optimize) to a
@@ -1296,10 +1303,20 @@ with tab_backtest:
                 for combo in product(*all_values):
                     combo_params = dict(zip(names, combo))
 
-                    k_sigma = float(combo_params.get("k_sigma_err", k_sigma_val))
-                    k_atr = float(combo_params.get("k_atr_min_tp", k_atr_val))
+                    # Extract per-combination parameter values, falling back to
+                    # the current grid "Value" when a given knob is not
+                    # optimized.
+                    k_sigma_long_combo = float(combo_params.get("k_sigma_long", k_sigma_long_val))
+                    k_sigma_short_combo = float(combo_params.get("k_sigma_short", k_sigma_short_val))
+                    k_atr_long_combo = float(combo_params.get("k_atr_long", k_atr_long_val))
+                    k_atr_short_combo = float(combo_params.get("k_atr_short", k_atr_short_val))
                     risk_pct = float(combo_params.get("risk_per_trade_pct", risk_pct_val))
                     rr = float(combo_params.get("reward_risk_ratio", rr_val))
+
+                    # Legacy aggregate parameters for reporting/heatmaps: use
+                    # the long-side values as k_sigma_err / k_atr_min_tp.
+                    k_sigma = k_sigma_long_combo
+                    k_atr = k_atr_long_combo
 
                     equity_df, trades_df, metrics = _run_backtest(
                         frequency=freq,
@@ -1307,10 +1324,10 @@ with tab_backtest:
                         end_date=end_date or None,
                         risk_per_trade_pct=risk_pct,
                         reward_risk_ratio=rr,
-                        k_sigma_long=k_sigma_long_val,
-                        k_sigma_short=k_sigma_short_val,
-                        k_atr_long=k_atr_long_val,
-                        k_atr_short=k_atr_short_val,
+                        k_sigma_long=k_sigma_long_combo,
+                        k_sigma_short=k_sigma_short_combo,
+                        k_atr_long=k_atr_long_combo,
+                        k_atr_short=k_atr_short_combo,
                         enable_longs=enable_longs_flag,
                         allow_shorts=allow_shorts_flag,
                     )

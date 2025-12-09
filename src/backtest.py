@@ -92,23 +92,22 @@ def _load_predictions_csv(path: str) -> pd.DataFrame:
     return df
 
 
-def _make_csv_prediction_provider(preds_df: pd.DataFrame, data: pd.DataFrame) -> PredictionProvider:
-    """Build a prediction provider from a predictions DataFrame.
+def _align_predictions_to_data(preds_df: pd.DataFrame, data: pd.DataFrame) -> np.ndarray:
+    """Align ``predicted_price`` from ``preds_df`` to ``data``.
 
-    The provider returns ``predicted_price`` aligned to ``data`` by Time when
-    possible, or by index/length as a fallback. NaNs or out-of-range accesses
-    fall back to using the bar's Close so that backtests remain robust.
+    When possible we align on ``Time``; otherwise we fall back to positional
+    alignment, trimming or padding with NaNs to match ``len(data)``.
     """
 
     n = len(data)
     if n == 0:
-        return lambda i, row: float(row["Close"])  # pragma: no cover - defensive
+        return np.zeros(0, dtype=float)
 
-    series = None
+    series: np.ndarray | None = None
 
     if "Time" in data.columns:
         # Align by Time when present in both frames.
-        time_col = None
+        time_col: str | None = None
         for cand in ("Time", "DateTime"):
             if cand in preds_df.columns:
                 time_col = cand
@@ -137,6 +136,23 @@ def _make_csv_prediction_provider(preds_df: pd.DataFrame, data: pd.DataFrame) ->
         else:
             pad = np.full(shape=(n - len(base),), fill_value=np.nan, dtype=float)
             series = np.concatenate([base, pad])
+
+    return series
+
+
+def _make_csv_prediction_provider(preds_df: pd.DataFrame, data: pd.DataFrame) -> PredictionProvider:
+    """Build a prediction provider from a predictions DataFrame.
+
+    The provider returns ``predicted_price`` aligned to ``data`` by Time when
+    possible, or by index/length as a fallback. NaNs or out-of-range accesses
+    fall back to using the bar's Close so that backtests remain robust.
+    """
+
+    n = len(data)
+    if n == 0:
+        return lambda i, row: float(row["Close"])  # pragma: no cover - defensive
+
+    series = _align_predictions_to_data(preds_df, data)
 
     def provider(i: int, row: pd.Series) -> float:  # noqa: ARG001
         if i < 0 or i >= len(series):
@@ -223,6 +239,17 @@ def _make_model_prediction_provider(data: pd.DataFrame, frequency: str) -> tuple
             if "predicted_price" in checkpoint_df.columns and len(checkpoint_df) >= n:
                 series = checkpoint_df["predicted_price"].iloc[:n].to_numpy(dtype=float)
 
+                # If the checkpoint also contains a per-bar model_error_sigma
+                # column, reuse it so that repeated model-mode runs (and CSV
+                # replays of this checkpoint) see the same sigma series that
+                # was used when the checkpoint was first created.
+                if "model_error_sigma" in checkpoint_df.columns and len(checkpoint_df) >= n:
+                    sigma_series = checkpoint_df["model_error_sigma"].iloc[:n].to_numpy(dtype=np.float32)
+                else:
+                    # Backwards-compatible behaviour for older checkpoints:
+                    # use zeros and let the caller fall back to ATR.
+                    sigma_series = np.zeros(n, dtype=np.float32)
+
                 is_aligned = True
                 if "Time" in data.columns and "Time" in checkpoint_df.columns:
                     try:
@@ -258,10 +285,6 @@ def _make_model_prediction_provider(data: pd.DataFrame, frequency: str) -> tuple
                             return float(row["Close"])
                         return float(val)
 
-                    # For now we do not persist residual sigma in the
-                    # checkpoint; use zeros and let the engine fall back to ATR
-                    # when appropriate.
-                    sigma_series = np.zeros(n, dtype=np.float32)
                     return provider, sigma_series
         except Exception:
             # Ignore corrupted/partial checkpoints and fall back to fresh computation.
@@ -394,10 +417,13 @@ def _make_model_prediction_provider(data: pd.DataFrame, frequency: str) -> tuple
     if not np.isfinite(residual_sigma_series).any():
         residual_sigma_series[:] = 0.0
 
-    # Write a single checkpoint CSV with per-bar predictions aligned to raw data.
+    # Write a single checkpoint CSV with per-bar predictions and residual
+    # sigma aligned to raw data so that future runs (and CSV-mode replays) can
+    # reuse both without recomputation.
     checkpoint_df = pd.DataFrame({
         "Time": times_full,
         "predicted_price": denorm_full,
+        "model_error_sigma": residual_sigma_series,
     })
     checkpoint_df.to_csv(checkpoint_path, index=False)
     print(f"Wrote model prediction checkpoint to {checkpoint_path}", flush=True)
@@ -505,22 +531,117 @@ def run_backtest_on_dataframe(
                 "prediction_mode='csv' requires predictions_csv path (per-bar "
                 "predictions with at least 'Time' and 'predicted_price' columns).",
             )
-        preds_df = _load_predictions_csv(predictions_csv)
-        provider = _make_csv_prediction_provider(preds_df, data)
+
+        # Special-case: if the requested CSV is exactly the default model
+        # checkpoint path for this frequency, reuse the model-mode provider and
+        # sigma logic. `_make_model_prediction_provider` will load the
+        # checkpoint (without recomputing predictions) and return the same
+        # provider and sigma series that model-mode would use.
+        default_checkpoint = os.path.join(PREDICTIONS_DIR, f"nvda_{freq}_model_predictions_checkpoint.csv")
+        try:
+            if os.path.abspath(predictions_csv) == os.path.abspath(default_checkpoint):
+                provider, model_error_sigma_series = _make_model_prediction_provider(data, frequency=freq)
+            else:
+                preds_df = _load_predictions_csv(predictions_csv)
+
+                # Heuristic: detect whether this CSV already contains bias-corrected
+                # model predictions from our own pipeline (i.e. a checkpoint) to avoid
+                # applying the bias-correction layer twice.
+                csv_basename = os.path.basename(predictions_csv)
+                already_corrected = False
+                if "model_predictions_checkpoint" in csv_basename:
+                    already_corrected = True
+                elif "already_corrected" in preds_df.columns:
+                    try:
+                        already_corrected = bool(pd.Series(preds_df["already_corrected"]).astype(bool).any())
+                    except Exception:
+                        already_corrected = False
+
+                has_sigma_column = "model_error_sigma" in preds_df.columns
+
+                # Align CSV predictions to the raw data.
+                aligned = _align_predictions_to_data(preds_df, data).astype(float)
+                n = len(data)
+                denorm_full = aligned.copy()
+
+                # If a per-bar sigma column is present, align it using the same
+                # Time-based logic as prices.
+                sigma_aligned = None
+                if has_sigma_column:
+                    tmp = preds_df.copy()
+                    # Reuse the same alignment helper by temporarily mapping the sigma
+                    # column to the expected name.
+                    tmp["predicted_price"] = tmp["model_error_sigma"]
+                    sigma_aligned = _align_predictions_to_data(tmp, data).astype(float)
+
+                if already_corrected:
+                    # Predictions are assumed to be in price space and already passed
+                    # through the bias-correction layer (e.g. checkpoint written by
+                    # `_make_model_prediction_provider`). In this case we avoid
+                    # re-estimating residual sigma and prefer any explicit sigma series
+                    # stored alongside the predictions.
+                    if sigma_aligned is not None:
+                        residual_sigma_series = sigma_aligned
+                    else:
+                        # Fall back to ATR as a coarse proxy when no sigma column is
+                        # available in an already-corrected CSV.
+                        residual_sigma_series = atr_series.copy()
+                else:
+                    # Apply the same bias-correction + residual-sigma estimation that
+                    # model-mode uses so that filters see comparable signals.
+                    residual_sigma_series = np.zeros(shape=(n,), dtype=np.float32)
+                    usable_len = max(0, n - ROWS_AHEAD)
+                    if usable_len > 0:
+                        preds_trunc = denorm_full[:usable_len].astype(float)
+                        if "Open" in data.columns:
+                            acts_trunc = data["Open"].shift(-ROWS_AHEAD).to_numpy(dtype=float)[:usable_len]
+                        else:
+                            acts_trunc = data["Close"].shift(-ROWS_AHEAD).to_numpy(dtype=float)[:usable_len]
+
+                        mask = np.isfinite(preds_trunc) & np.isfinite(acts_trunc)
+                        if mask.any():
+                            first = int(np.argmax(mask))
+                            preds_seq = preds_trunc[first:]
+                            acts_seq = acts_trunc[first:]
+
+                            corrected_seq = apply_rolling_bias_and_amplitude_correction(
+                                predictions=preds_seq,
+                                actuals=acts_seq,
+                                window=BIAS_CORRECTION_WINDOW,
+                                global_mean_residual=0.0,
+                                enable_amplitude=False,
+                            )
+                            denorm_full[first:first + len(corrected_seq)] = corrected_seq
+
+                            sigma_seq = compute_rolling_residual_sigma(
+                                predictions=corrected_seq,
+                                actuals=acts_seq,
+                                window=BIAS_CORRECTION_WINDOW,
+                            )
+                            residual_sigma_series[first:first + len(sigma_seq)] = sigma_seq.astype(np.float32)
+
+                    if not np.isfinite(residual_sigma_series).any():
+                        residual_sigma_series[:] = 0.0
+
+                def provider(i: int, row: pd.Series) -> float:  # type: ignore[override]
+                    if i < 0 or i >= len(denorm_full):
+                        return float(row["Close"])
+                    val = denorm_full[i]
+                    if np.isnan(val):
+                        return float(row["Close"])
+                    return float(val)
+
+                model_error_sigma_series = residual_sigma_series
+        except Exception:
+            # Fallback to naive Close-based provider if anything goes wrong
+            # reading or interpreting the CSV. This keeps the backtest
+            # runnable even with partially corrupted files.
+            def provider(i: int, row: pd.Series) -> float:  # type: ignore[override]
+                return float(row["Close"])
+
+            model_error_sigma_series = atr_series.copy()
     elif prediction_mode == "model":
         provider, model_error_sigma_series = _make_model_prediction_provider(data, frequency=freq)
-        # If the model-based residual sigma series is all zeros (or non-finite),
-        # fall back to using ATR as a proxy. Otherwise k_sigma_err and
-        # k_atr_min_tp would have no effect in model mode, making optimization
-        # impossible.
-        try:
-            import numpy as _np  # local alias to avoid polluting module namespace
-
-            arr = _np.asarray(model_error_sigma_series, dtype=float)
-            if not _np.isfinite(arr).any() or _np.nanmax(arr) == 0.0:
-                model_error_sigma_series = atr_series
-        except Exception:
-            model_error_sigma_series = atr_series
     elif prediction_mode == "naive":
         # Legacy/simple baseline: use Close as the predicted price.
         def provider(i: int, row: pd.Series) -> float:  # type: ignore[override]
@@ -530,6 +651,41 @@ def run_backtest_on_dataframe(
             f"Unsupported prediction_mode: {prediction_mode!r}. "
             "Supported modes are 'model', 'csv', and 'naive'.",
         )
+
+    # If the residual sigma series is effectively flat/degenerate, fall back to
+    # using ATR as a proxy so that k_sigma and k_atr filters remain effective.
+    if prediction_mode in {"model", "csv"}:
+        try:
+            import numpy as _np  # local alias to avoid polluting module namespace
+
+            arr = _np.asarray(model_error_sigma_series, dtype=float)
+            finite = arr[_np.isfinite(arr)]
+            if finite.size == 0:
+                # No finite information about model error -> use ATR as proxy.
+                model_error_sigma_series = atr_series
+            else:
+                sigma_max = float(_np.nanmax(finite))
+
+                # Compute a relative threshold w.r.t ATR so that we only treat
+                # truly "collapsed" sigma series (e.g. all zeros up to numerical
+                # noise) as degenerate and fall back to ATR.
+                atr_arr = _np.asarray(atr_series, dtype=float)
+                atr_finite = atr_arr[_np.isfinite(atr_arr)]
+                atr_max = float(_np.nanmax(atr_finite)) if atr_finite.size > 0 else None
+
+                use_atr = False
+                if sigma_max <= 0.0:
+                    use_atr = True
+                elif atr_max is not None and atr_max > 0.0:
+                    # If sigma is several orders of magnitude smaller than ATR,
+                    # treat it as effectively zero and fall back to ATR.
+                    if sigma_max < 1e-3 * atr_max:
+                        use_atr = True
+
+                if use_atr:
+                    model_error_sigma_series = atr_series
+        except Exception:
+            model_error_sigma_series = atr_series
 
     # Ensure model_error_sigma_series is a pandas Series so that
     # ``backtest_engine`` can index it consistently.

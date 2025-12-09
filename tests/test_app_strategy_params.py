@@ -212,3 +212,73 @@ class StrategyDefaultsConfig:
     assert "k_sigma_short: float = 2.6" in updated
     assert "k_atr_long: float = 4.0" in updated
     assert "k_atr_short: float = 4.5" in updated
+
+
+def test_run_backtest_uses_csv_predictions(monkeypatch, tmp_path: Path) -> None:
+    """_run_backtest should call run_backtest_for_ui with CSV predictions path.
+
+    This validates that the helper wires frequency, date range, risk/ATR/sigma
+    parameters, and long/short flags into ``run_backtest_for_ui`` and that it
+    always uses ``prediction_mode="csv"`` with the path from
+    ``get_predictions_csv_path("nvda", frequency)``.
+    """
+
+    # Arrange: fake predictions CSV path and capture calls to the engine.
+    fake_csv_path = tmp_path / "nvda_15min_predictions.csv"
+
+    def fake_get_predictions_csv_path(symbol: str, frequency: str) -> Path:
+        # Ensure the helper always uses the NVDA symbol and the provided freq.
+        assert symbol == "nvda"
+        assert frequency == "15min"
+        return fake_csv_path
+
+    calls: dict = {}
+
+    def fake_run_backtest_for_ui(**kwargs):  # type: ignore[override]
+        calls["kwargs"] = kwargs
+        return "sentinel-result"
+
+    monkeypatch.setattr(app, "run_backtest_for_ui", fake_run_backtest_for_ui)
+    monkeypatch.setattr(
+        cfg,
+        "get_predictions_csv_path",
+        fake_get_predictions_csv_path,
+    )
+
+    # Act: call the helper with a representative set of arguments.
+    result = app._run_backtest(
+        frequency="15min",
+        start_date="2020-01-01",
+        end_date="2020-12-31",
+        risk_per_trade_pct=0.01,
+        reward_risk_ratio=3.0,
+        k_sigma_long=1.1,
+        k_sigma_short=1.2,
+        k_atr_long=2.1,
+        k_atr_short=2.2,
+        enable_longs=True,
+        allow_shorts=False,
+    )
+
+    # Assert: return value is forwarded from the underlying engine.
+    assert result == "sentinel-result"
+
+    # And the engine was called exactly once with the expected wiring.
+    kwargs = calls["kwargs"]
+    assert kwargs["frequency"] == "15min"
+    assert kwargs["prediction_mode"] == "csv"
+    assert kwargs["predictions_csv"] == fake_csv_path
+    assert kwargs["start_date"] == "2020-01-01"
+    assert kwargs["end_date"] == "2020-12-31"
+    assert kwargs["risk_per_trade_pct"] == 0.01
+    assert kwargs["reward_risk_ratio"] == 3.0
+    assert kwargs["k_sigma_long"] == 1.1
+    assert kwargs["k_sigma_short"] == 1.2
+    assert kwargs["k_atr_long"] == 2.1
+    assert kwargs["k_atr_short"] == 2.2
+    assert kwargs["enable_longs"] is True
+    assert kwargs["allow_shorts"] is False
+
+    # Legacy aggregate parameters are not used in the app helper.
+    assert kwargs["k_sigma_err"] is None
+    assert kwargs["k_atr_min_tp"] is None
