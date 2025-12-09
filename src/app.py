@@ -1327,10 +1327,22 @@ with tab_backtest:
                     risk_pct = float(combo_params.get("risk_per_trade_pct", risk_pct_val))
                     rr = float(combo_params.get("reward_risk_ratio", rr_val))
 
-                    # Legacy aggregate parameters for reporting/heatmaps: use
-                    # the long-side values as k_sigma_err / k_atr_min_tp.
-                    k_sigma = k_sigma_long_combo
-                    k_atr = k_atr_long_combo
+                    # Legacy aggregate parameters for reporting/heatmaps. We map
+                    # k_sigma_err / k_atr_min_tp to the *active* side being tested
+                    # so that "Short only" optimizations reflect short-side
+                    # parameters instead of always using long-side values.
+                    if enable_longs_flag and not allow_shorts_flag:
+                        # Long only
+                        k_sigma = k_sigma_long_combo
+                        k_atr = k_atr_long_combo
+                    elif allow_shorts_flag and not enable_longs_flag:
+                        # Short only
+                        k_sigma = k_sigma_short_combo
+                        k_atr = k_atr_short_combo
+                    else:
+                        # Long & short – keep legacy behaviour (use long side).
+                        k_sigma = k_sigma_long_combo
+                        k_atr = k_atr_long_combo
 
                     equity_df, trades_df, metrics = _run_backtest(
                         frequency=freq,
@@ -1348,10 +1360,18 @@ with tab_backtest:
 
                     results_rows.append(
                         {
+                            # Aggregated knobs (used by existing tables/heatmaps).
                             "k_sigma_err": k_sigma,
                             "k_atr_min_tp": k_atr,
+                            # Side-specific parameters so we can distinguish long vs short.
+                            "k_sigma_long": k_sigma_long_combo,
+                            "k_sigma_short": k_sigma_short_combo,
+                            "k_atr_long": k_atr_long_combo,
+                            "k_atr_short": k_atr_short_combo,
+                            # Risk/return configuration.
                             "risk_per_trade_pct": risk_pct,
                             "reward_risk_ratio": rr,
+                            # Performance metrics.
                             "total_return": metrics.get("total_return", 0.0),
                             "cagr": metrics.get("cagr", 0.0),
                             "max_drawdown": metrics.get("max_drawdown", 0.0),
@@ -1400,9 +1420,14 @@ with tab_backtest:
 
             if st.button("Load selected result into strategy parameters"):
                 chosen = display_df.iloc[int(idx_to_use)]
+
+                # Map optimization result columns back into the strategy grid's
+                # parameter names (which use explicit long/short knobs).
                 mapping = {
-                    "k_sigma_err": float(chosen["k_sigma_err"]),
-                    "k_atr_min_tp": float(chosen["k_atr_min_tp"]),
+                    "k_sigma_long": float(chosen.get("k_sigma_long", chosen["k_sigma_err"])),
+                    "k_sigma_short": float(chosen.get("k_sigma_short", chosen["k_sigma_err"])),
+                    "k_atr_long": float(chosen.get("k_atr_long", chosen["k_atr_min_tp"])),
+                    "k_atr_short": float(chosen.get("k_atr_short", chosen["k_atr_min_tp"])),
                     "risk_per_trade_pct": float(chosen["risk_per_trade_pct"]),
                     "reward_risk_ratio": float(chosen["reward_risk_ratio"]),
                 }
@@ -1425,10 +1450,12 @@ with tab_backtest:
             # We use the most common risk_per_trade_pct and reward_risk_ratio to
             # select a 2D slice through the grid.
             # ------------------------------------------------------------------
-            st.subheader("Heatmaps (k_sigma_err vs k_atr_min_tp)")
+            st.subheader("Heatmaps (k_sigma vs k_atr for active side)")
             # Aggregate over any varying risk_per_trade_pct / reward_risk_ratio so that
-            # each (k_sigma_err, k_atr_min_tp) pair maps to a single row that matches
-            # the values in the Optimization results table.
+            # each (k_sigma, k_atr) pair maps to a single row that matches the values
+            # in the Optimization results table. We always use the aggregated
+            # k_sigma_err / k_atr_min_tp columns, which are already side-aware
+            # (long vs short) based on the selected trade_side.
             agg_cols = [
                 "k_sigma_err",
                 "k_atr_min_tp",

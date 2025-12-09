@@ -218,16 +218,16 @@ class StrategyDefaultsConfig:
     """
 
     # Core risk and reward parameters
-    risk_per_trade_pct: float = 0.02  # 2% of equity per trade
-    reward_risk_ratio: float = 3.5
+    risk_per_trade_pct: float = 0.01  # 2% of equity per trade
+    reward_risk_ratio: float = 2.5
 
     # Long/short-specific noise / filter parameters
     # How much of the model residual sigma_err we subtract from the predicted move.
     k_sigma_long: float = 0.7
-    k_sigma_short: float = 0.7
+    k_sigma_short: float = 0.8999999999999999
     # Minimum TP distance / SNR threshold as a multiple of ATR.
     k_atr_long: float = 0.7
-    k_atr_short: float = 0.7
+    k_atr_short: float = 0.9999999999999999
 
     # Backwards-compatible shared aliases (used by older code / configs)
     @property
