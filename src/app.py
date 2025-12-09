@@ -1076,6 +1076,20 @@ with tab_backtest:
         _default_index = 0
     freq = st.selectbox("Frequency", _available_freqs, index=_default_index)
 
+    # Optional convenience: regenerate the predictions CSV for the selected
+    # frequency without leaving the UI. This uses the same unified prediction
+    # pipeline as the CLI so that CSV-mode backtests see the same signals as
+    # model-mode.
+    if st.button("Generate predictions CSV for NVDA (current frequency)"):
+        predictions_csv_path = get_predictions_csv_path("nvda", freq)
+        try:
+            with st.spinner(f"Generating predictions CSV for NVDA at {freq}..."):
+                generate_predictions_for_csv(frequency=freq, output_path=predictions_csv_path)
+            st.success(f"Predictions CSV written to: {predictions_csv_path}")
+            st.code(str(predictions_csv_path))
+        except Exception as exc:  # pragma: no cover - UI convenience only
+            st.error(f"Failed to generate predictions CSV: {exc}")
+
     # Reload current defaults from config.py so changes on disk are visible
     # without restarting the Streamlit server.
     _defaults = _load_strategy_defaults()
