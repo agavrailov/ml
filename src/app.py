@@ -329,9 +329,9 @@ def _run_backtest(
     )
 st.title("LSTM Backtesting & Training UI")
 
-# Four main tabs matching the end-to-end workflow.
-tab_data, tab_experiments, tab_train, tab_backtest = st.tabs(
-    ["Data", "Hyperparameter Experiments", "Train & Promote", "Backtest / Strategy"]
+# Five main tabs matching the end-to-end workflow.
+tab_data, tab_experiments, tab_train, tab_backtest, tab_walkforward = st.tabs(
+    ["Data", "Hyperparameter Experiments", "Train & Promote", "Backtest / Strategy", "Walk-Forward Analysis"]
 )
 
 # --------------------------------------------------------------------------------------
@@ -1533,3 +1533,432 @@ with tab_backtest:
                 st.info(
                     "No 2D slice available for heatmaps with the current parameter ranges.",
                 )
+
+        # ----------------------------------------------------------------------
+        # Walk-forward summary (3-month windows)
+        # ----------------------------------------------------------------------
+        st.subheader("Walk-forward summary (3-month windows)")
+        from pathlib import Path as _Path  # local alias to avoid confusion with CONFIG_PATH
+
+        try:
+            # We key the summary on symbol NVDA, selected frequency, and global TSTEPS.
+            from src.config import TSTEPS as _TSTEPS
+
+            wf_path = (
+                _Path(__file__).resolve().parents[1]
+                / "backtests"
+                / f"walkforward_nvda_{freq}_tsteps{_TSTEPS}.csv"
+            )
+
+            if wf_path.exists():
+                wf_df = pd.read_csv(wf_path)
+                if not wf_df.empty:
+                    # Compute overall tested coverage from test_start/test_end columns.
+                    if {"test_start", "test_end"}.issubset(wf_df.columns):
+                        try:
+                            ts = pd.to_datetime(wf_df["test_start"]).min()
+                            te = pd.to_datetime(wf_df["test_end"]).max()
+                            st.markdown(
+                                f"**Walk-forward coverage:** {ts.date().isoformat()} → {te.date().isoformat()}",
+                            )
+                        except Exception:
+                            pass
+
+                    cols_preferred = [
+                        "fold_idx",
+                        "train_start",
+                        "train_end",
+                        "test_start",
+                        "test_end",
+                        "total_return",
+                        "cagr",
+                        "max_drawdown",
+                        "sharpe_ratio",
+                        "win_rate",
+                        "profit_factor",
+                        "n_trades",
+                        "final_equity",
+                    ]
+                    cols_available = [c for c in cols_preferred if c in wf_df.columns]
+                    if cols_available:
+                        st.dataframe(wf_df[cols_available], width="stretch")
+                    else:
+                        st.dataframe(wf_df, width="stretch")
+                else:
+                    st.caption("Walk-forward summary CSV is empty for this frequency.")
+            else:
+                st.caption(
+                    "No walk-forward summary found for this frequency. "
+                    "Run `python -m scripts.run_walkforward_backtest --frequency "
+                    f"{freq}` after generating predictions.",
+                )
+        except Exception as exc:  # pragma: no cover - UI convenience only
+            st.error(f"Failed to load walk-forward summary: {exc}")
+
+
+# --------------------------------------------------------------------------------------
+# Tab 5: Walk-Forward Analysis - train & test per segment
+# --------------------------------------------------------------------------------------
+with tab_walkforward:
+    st.subheader("5. Walk-forward analysis (train per segment)")
+
+    from src import config as _cfg
+    from src.walkforward import (
+        TimeWindow as _WFTimeWindow,
+        generate_walkforward_windows as _generate_walkforward_windows,
+        slice_df_by_window as _slice_df_by_window,
+        infer_data_horizon as _infer_data_horizon,
+    )
+    from src.data import load_hourly_ohlc as _load_hourly_ohlc
+    from src.backtest import run_backtest_on_dataframe as _run_bt_df, _compute_backtest_metrics as _bt_metrics  # type: ignore[attr-defined]
+
+    wf_freq = st.selectbox(
+        "Frequency",
+        RESAMPLE_FREQUENCIES,
+        index=RESAMPLE_FREQUENCIES.index(FREQUENCY) if FREQUENCY in RESAMPLE_FREQUENCIES else 0,
+        key="wf_freq_select",
+    )
+
+    # Load data once to infer available horizon.
+    try:
+        df_full = _load_hourly_ohlc(wf_freq)
+    except Exception as exc:  # pragma: no cover - UI convenience only
+        st.error(f"Failed to load hourly OHLC for {wf_freq}: {exc}")
+        df_full = pd.DataFrame()
+
+    if not df_full.empty and "Time" in df_full.columns:
+        try:
+            data_t_start, data_t_end = _infer_data_horizon(df_full)
+        except Exception:
+            data_t_start = data_t_end = ""
+    else:
+        data_t_start = data_t_end = ""
+
+    col_wf1, col_wf2 = st.columns(2)
+    with col_wf1:
+        wf_t_start = st.text_input(
+            "Overall start date (YYYY-MM-DD, optional)",
+            value=data_t_start or "",
+            key="wf_t_start",
+        )
+    with col_wf2:
+        wf_t_end = st.text_input(
+            "Overall end date (YYYY-MM-DD, optional)",
+            value=data_t_end or "",
+            key="wf_t_end",
+        )
+
+    st.markdown("### Window configuration")
+    c_w1, c_w2, c_w3 = st.columns(3)
+    with c_w1:
+        wf_test_span_months = st.number_input(
+            "Test span (months)",
+            min_value=1,
+            max_value=24,
+            value=3,
+            step=1,
+            key="wf_test_span_months",
+        )
+    with c_w2:
+        wf_train_lookback_months = st.number_input(
+            "Train lookback (months)",
+            min_value=1,
+            max_value=60,
+            value=24,
+            step=1,
+            key="wf_train_lookback_months",
+        )
+    with c_w3:
+        wf_min_lookback_months = st.number_input(
+            "Min first-lookback (months)",
+            min_value=1,
+            max_value=60,
+            value=18,
+            step=1,
+            key="wf_min_lookback_months",
+        )
+
+    wf_first_test_start = st.text_input(
+        "First test start date (YYYY-MM-DD, optional)",
+        value="",
+        key="wf_first_test_start",
+    )
+
+    # Preview generated windows.
+    if st.button("Preview walk-forward windows"):
+        if df_full.empty or not data_t_start or not data_t_end:
+            st.error("Cannot generate windows: OHLC data is missing or invalid.")
+        else:
+            eff_start = wf_t_start or data_t_start
+            eff_end = wf_t_end or data_t_end
+
+            try:
+                windows = _generate_walkforward_windows(
+                    eff_start,
+                    eff_end,
+                    test_span_months=int(wf_test_span_months),
+                    train_lookback_months=int(wf_train_lookback_months),
+                    min_lookback_months=int(wf_min_lookback_months),
+                    first_test_start=wf_first_test_start or None,
+                )
+            except Exception as exc:  # pragma: no cover - UI convenience only
+                windows = []
+                st.error(f"Failed to generate windows: {exc}")
+
+            if not windows:
+                st.info("No walk-forward windows generated for the supplied horizon.")
+            else:
+                rows = []
+                for i, (tr_w, te_w) in enumerate(windows, start=1):
+                    rows.append(
+                        {
+                            "fold_idx": i,
+                            "train_start": tr_w.start,
+                            "train_end": tr_w.end,
+                            "test_start": te_w.start,
+                            "test_end": te_w.end,
+                        }
+                    )
+                st.dataframe(pd.DataFrame(rows), width="stretch")
+
+    st.markdown("### Training & backtest settings")
+    wf_tsteps = st.selectbox(
+        "TSTEPS (sequence length)",
+        TSTEPS_OPTIONS,
+        index=TSTEPS_OPTIONS.index(TSTEPS) if TSTEPS in TSTEPS_OPTIONS else 0,
+        key="wf_tsteps_select",
+    )
+
+    # Use current best hyperparameters for this (freq, tsteps) as defaults.
+    wf_hps = get_run_hyperparameters(frequency=wf_freq, tsteps=wf_tsteps)
+
+    cw1, cw2, cw3 = st.columns(3)
+    with cw1:
+        try:
+            wf_units_idx = LSTM_UNITS_OPTIONS.index(wf_hps["lstm_units"])
+        except ValueError:
+            wf_units_idx = 0
+        wf_lstm_units = st.selectbox(
+            "LSTM units",
+            LSTM_UNITS_OPTIONS,
+            index=wf_units_idx,
+            key="wf_lstm_units_select",
+        )
+
+        try:
+            wf_layers_idx = N_LSTM_LAYERS_OPTIONS.index(wf_hps["n_lstm_layers"])
+        except ValueError:
+            wf_layers_idx = 0
+        wf_n_layers = st.selectbox(
+            "LSTM layers",
+            N_LSTM_LAYERS_OPTIONS,
+            index=wf_layers_idx,
+            key="wf_lstm_layers_select",
+        )
+
+    with cw2:
+        try:
+            wf_bs_idx = BATCH_SIZE_OPTIONS.index(wf_hps["batch_size"])
+        except ValueError:
+            wf_bs_idx = 0
+        wf_batch_size = st.selectbox(
+            "Batch size",
+            BATCH_SIZE_OPTIONS,
+            index=wf_bs_idx,
+            key="wf_batch_size_select",
+        )
+
+        wf_epochs = st.slider(
+            "Epochs per fold",
+            min_value=1,
+            max_value=100,
+            value=min(50, int(wf_hps["epochs"])),
+            key="wf_epochs_slider",
+        )
+
+    with cw3:
+        lr_choices_wf = [0.0005, 0.001, 0.003, 0.01]
+        default_lr_wf = float(wf_hps["learning_rate"])
+        if default_lr_wf not in lr_choices_wf:
+            lr_choices_wf = sorted(set(lr_choices_wf + [default_lr_wf]))
+        try:
+            wf_lr_idx = lr_choices_wf.index(default_lr_wf)
+        except ValueError:
+            wf_lr_idx = 0
+        wf_lr = st.selectbox(
+            "Learning rate",
+            lr_choices_wf,
+            index=wf_lr_idx,
+            key="wf_lr_select",
+        )
+
+        try:
+            wf_stateful_idx = STATEFUL_OPTIONS.index(wf_hps["stateful"])
+        except ValueError:
+            wf_stateful_idx = 0
+        wf_stateful = st.selectbox(
+            "Stateful LSTM",
+            STATEFUL_OPTIONS,
+            index=wf_stateful_idx,
+            key="wf_stateful_select",
+        )
+
+    wf_feature_set_idx = st.selectbox(
+        "Feature set",
+        options=list(range(len(FEATURES_TO_USE_OPTIONS))),
+        index=0,
+        format_func=lambda i: f"Set {i + 1}: " + ", ".join(FEATURES_TO_USE_OPTIONS[i]),
+        key="wf_feature_set_select",
+    )
+    wf_features_to_use = FEATURES_TO_USE_OPTIONS[wf_feature_set_idx]
+
+    st.caption(
+        "For each fold: train a fresh model on the training window, then backtest on the test window using model-mode predictions."
+    )
+
+    if st.button("Run walk-forward training & backtests"):
+        if df_full.empty or not data_t_start or not data_t_end:
+            st.error("Cannot run walk-forward: OHLC data is missing or invalid for this frequency.")
+        else:
+            eff_start = wf_t_start or data_t_start
+            eff_end = wf_t_end or data_t_end
+
+            try:
+                windows = _generate_walkforward_windows(
+                    eff_start,
+                    eff_end,
+                    test_span_months=int(wf_test_span_months),
+                    train_lookback_months=int(wf_train_lookback_months),
+                    min_lookback_months=int(wf_min_lookback_months),
+                    first_test_start=wf_first_test_start or None,
+                )
+            except Exception as exc:  # pragma: no cover - UI convenience only
+                windows = []
+                st.error(f"Failed to generate windows: {exc}")
+
+            if not windows:
+                st.error("No walk-forward windows generated for the supplied horizon.")
+            else:
+                import numpy as _np
+                from src.train import train_model as _train_model
+
+                progress = st.progress(0.0)
+                status = st.empty()
+                rows: list[dict] = []
+
+                for idx, (train_w, test_w) in enumerate(windows, start=1):
+                    fold_progress = idx / len(windows)
+                    status.write(
+                        f"Fold {idx}/{len(windows)}: train [{train_w.start}, {train_w.end}) "
+                        f"→ test [{test_w.start}, {test_w.end})"
+                    )
+                    progress.progress(fold_progress * 0.9)
+
+                    # 1) Train model restricted to the training window.
+                    result = _train_model(
+                        frequency=wf_freq,
+                        tsteps=wf_tsteps,
+                        lstm_units=int(wf_lstm_units),
+                        learning_rate=float(wf_lr),
+                        epochs=int(wf_epochs),
+                        current_batch_size=int(wf_batch_size),
+                        n_lstm_layers=int(wf_n_layers),
+                        stateful=bool(wf_stateful),
+                        features_to_use=wf_features_to_use,
+                        train_start_date=train_w.start,
+                        train_end_date=train_w.end,
+                    )
+
+                    if result is None:
+                        rows.append(
+                            {
+                                "fold_idx": idx,
+                                "train_start": train_w.start,
+                                "train_end": train_w.end,
+                                "test_start": test_w.start,
+                                "test_end": test_w.end,
+                                "total_return": _np.nan,
+                                "cagr": _np.nan,
+                                "max_drawdown": _np.nan,
+                                "sharpe_ratio": _np.nan,
+                                "win_rate": _np.nan,
+                                "profit_factor": _np.nan,
+                                "n_trades": 0,
+                                "final_equity": _np.nan,
+                            }
+                        )
+                        continue
+
+                    final_val_loss, model_path, bias_path = result
+
+                    # 2) Backtest on the test window using model-mode predictions.
+                    test_df = _slice_df_by_window(df_full, test_w)
+                    if test_df.empty:
+                        rows.append(
+                            {
+                                "fold_idx": idx,
+                                "train_start": train_w.start,
+                                "train_end": train_w.end,
+                                "test_start": test_w.start,
+                                "test_end": test_w.end,
+                                "total_return": _np.nan,
+                                "cagr": _np.nan,
+                                "max_drawdown": _np.nan,
+                                "sharpe_ratio": _np.nan,
+                                "win_rate": _np.nan,
+                                "profit_factor": _np.nan,
+                                "n_trades": 0,
+                                "final_equity": _np.nan,
+                            }
+                        )
+                        continue
+
+                    bt_result = _run_bt_df(
+                        data=test_df,
+                        initial_equity=_cfg.INITIAL_EQUITY,
+                        frequency=wf_freq,
+                        prediction_mode="model",
+                    )
+                    metrics = _bt_metrics(
+                        bt_result,
+                        initial_equity=_cfg.INITIAL_EQUITY,
+                        data=test_df,
+                    )
+
+                    rows.append(
+                        {
+                            "fold_idx": idx,
+                            "train_start": train_w.start,
+                            "train_end": train_w.end,
+                            "test_start": test_w.start,
+                            "test_end": test_w.end,
+                            "total_return": metrics.get("total_return", 0.0),
+                            "cagr": metrics.get("cagr", 0.0),
+                            "max_drawdown": metrics.get("max_drawdown", 0.0),
+                            "sharpe_ratio": metrics.get("sharpe_ratio", 0.0),
+                            "win_rate": metrics.get("win_rate", 0.0),
+                            "profit_factor": metrics.get("profit_factor", 0.0),
+                            "n_trades": metrics.get("n_trades", 0),
+                            "final_equity": bt_result.final_equity,
+                        }
+                    )
+
+                progress.progress(1.0)
+                status.write("Walk-forward training & backtests complete.")
+
+                if rows:
+                    wf_df = pd.DataFrame(rows)
+                    st.subheader("Walk-forward fold results")
+                    st.dataframe(wf_df, width="stretch")
+
+                    # Save to the same convention as the CLI script but with a
+                    # distinct suffix so we don't clobber existing CSV-only runs.
+                    out_dir = Path(__file__).resolve().parents[1] / "backtests"
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                    out_path = out_dir / f"walkforward_nvda_{wf_freq}_tsteps{wf_tsteps}_with_retrain.csv"
+                    try:
+                        wf_df.to_csv(out_path, index=False)
+                        st.success(f"Saved walk-forward summary to {out_path}")
+                        st.code(str(out_path))
+                    except Exception as exc:  # pragma: no cover - UI convenience only
+                        st.error(f"Failed to save walk-forward summary: {exc}")

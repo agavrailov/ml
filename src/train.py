@@ -45,8 +45,15 @@ def train_model(
     n_lstm_layers: int | None = None,
     stateful: bool | None = None,
     features_to_use: list[str] | None = None,
+    train_start_date: str | None = None,
+    train_end_date: str | None = None,
 ):
     """Train an LSTM model for the given frequency/tsteps using tuned defaults.
+
+    When ``train_start_date`` / ``train_end_date`` are provided, restrict the
+    training+validation pool to rows with ``Time`` in the half-open interval
+    ``[train_start_date, train_end_date)``. Otherwise, fall back to the global
+    cutoff date used previously (``Time >= 2023-01-01``).
 
     Callers may override individual hyperparameters; otherwise tuned values
     (if available) or TRAINING defaults are used via ``get_run_hyperparameters``.
@@ -83,11 +90,22 @@ def train_model(
     # Use centralized data helper to load engineered feature frame.
     df_featured, feature_cols = load_hourly_features(frequency, features_to_use)
 
-    # Restrict training data to records from 2023-01-01 onwards.
-    # Adjust this cutoff when you want to change the training window.
+    # Apply explicit training window when provided; otherwise fall back to the
+    # historical cutoff used so far (Time >= 2023-01-01).
     df_featured["Time"] = pd.to_datetime(df_featured["Time"])
-    cutoff_date = pd.Timestamp("2023-01-01")
-    df_featured = df_featured[df_featured["Time"] >= cutoff_date].copy()
+    if train_start_date is not None or train_end_date is not None:
+        mask = pd.Series(True, index=df_featured.index)
+        if train_start_date is not None:
+            start_ts = pd.to_datetime(train_start_date)
+            mask &= df_featured["Time"] >= start_ts
+        if train_end_date is not None:
+            end_ts = pd.to_datetime(train_end_date)
+            mask &= df_featured["Time"] < end_ts
+        df_featured = df_featured.loc[mask].copy()
+    else:
+        # Default behaviour: keep only rows from 2023-01-01 onwards.
+        cutoff_date = pd.Timestamp("2023-01-01")
+        df_featured = df_featured[df_featured["Time"] >= cutoff_date].copy()
 
     # Split data into training and validation sets
     split_index = int(len(df_featured) * TR_SPLIT)
