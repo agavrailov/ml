@@ -44,6 +44,12 @@ from src.config import (
 )
 from scripts.generate_predictions_csv import generate_predictions_for_csv
 
+# Shared frequency across tabs, defaulting to 60min when available.
+if "global_frequency" not in st.session_state:
+    if "60min" in RESAMPLE_FREQUENCIES:
+        st.session_state["global_frequency"] = "60min"
+    else:
+        st.session_state["global_frequency"] = FREQUENCY
 
 CONFIG_PATH = Path(__file__).with_name("config.py")
 PARAMS_STATE_PATH = Path(__file__).with_name("ui_strategy_params.json")
@@ -519,12 +525,16 @@ with tab_data:
                 st.error(f"Failed to clean raw minute data: {exc}")
 
     st.markdown("### Hourly data & features")
+    _global_freq = st.session_state.get("global_frequency", CFG_FREQ)
+    if _global_freq not in RESAMPLE_FREQUENCIES:
+        _global_freq = RESAMPLE_FREQUENCIES[0]
     data_freq = st.selectbox(
         "Frequency for resampling & features",
         RESAMPLE_FREQUENCIES,
-        index=RESAMPLE_FREQUENCIES.index(CFG_FREQ) if CFG_FREQ in RESAMPLE_FREQUENCIES else 0,
+        index=RESAMPLE_FREQUENCIES.index(_global_freq),
         key="data_freq_select",
     )
+    st.session_state["global_frequency"] = data_freq
 
     col_resample, col_features = st.columns(2)
     with col_resample:
@@ -562,12 +572,16 @@ with tab_experiments:
     st.subheader("2. Hyperparameter experiments (no promotion)")
 
     # Frequency / TSTEPS for experiments.
+    _global_freq = st.session_state.get("global_frequency", FREQUENCY)
+    if _global_freq not in RESAMPLE_FREQUENCIES:
+        _global_freq = RESAMPLE_FREQUENCIES[0]
     exp_freq = st.selectbox(
         "Frequency",
         RESAMPLE_FREQUENCIES,
-        index=RESAMPLE_FREQUENCIES.index(FREQUENCY) if FREQUENCY in RESAMPLE_FREQUENCIES else 0,
+        index=RESAMPLE_FREQUENCIES.index(_global_freq),
         key="exp_freq_select",
     )
+    st.session_state["global_frequency"] = exp_freq
     try:
         exp_tsteps_idx = TSTEPS_OPTIONS.index(TSTEPS)
     except ValueError:
@@ -757,12 +771,17 @@ with tab_train:
         train_freq = FREQUENCY
         train_tsteps = TSTEPS
 
+    # Use shared global frequency as the primary default.
+    _global_freq = st.session_state.get("global_frequency", train_freq)
+    if _global_freq not in RESAMPLE_FREQUENCIES:
+        _global_freq = train_freq if train_freq in RESAMPLE_FREQUENCIES else RESAMPLE_FREQUENCIES[0]
     train_freq = st.selectbox(
         "Frequency",
         RESAMPLE_FREQUENCIES,
-        index=RESAMPLE_FREQUENCIES.index(train_freq) if train_freq in RESAMPLE_FREQUENCIES else 0,
+        index=RESAMPLE_FREQUENCIES.index(_global_freq),
         key="train_freq_select",
     )
+    st.session_state["global_frequency"] = train_freq
     try:
         train_tsteps_idx = TSTEPS_OPTIONS.index(train_tsteps)
     except ValueError:
@@ -1069,12 +1088,14 @@ with tab_train:
 with tab_backtest:
     # Allow selecting any configured resample frequency; default to the main config FREQUENCY.
     _available_freqs = getattr(cfg_mod, "RESAMPLE_FREQUENCIES", ["15min"])
-    _default_freq = getattr(cfg_mod, "FREQUENCY", _available_freqs[0])
+    _default_freq = st.session_state.get("global_frequency", getattr(cfg_mod, "FREQUENCY", _available_freqs[0]))
     try:
         _default_index = _available_freqs.index(_default_freq)
     except ValueError:
         _default_index = 0
     freq = st.selectbox("Frequency", _available_freqs, index=_default_index)
+    if freq in _available_freqs:
+        st.session_state["global_frequency"] = freq
 
     # Optional convenience: regenerate the predictions CSV for the selected
     # frequency without leaving the UI. This uses the same unified prediction
@@ -1098,7 +1119,14 @@ with tab_backtest:
     # with Value / Start / Step / Stop / Optimize. The grid is persisted to a
     # JSON sidecar so manual edits survive app reloads.
     st.subheader("Strategy parameters")
-    params_df_initial = _load_params_grid(_defaults)
+
+    # Keep the live grid in session_state so that edits made via st.data_editor
+    # are not immediately overwritten on every rerun. We still persist to disk
+    # only when "Save parameters to config.py" is clicked.
+    if "strategy_params_df" in st.session_state:
+        params_df_initial = st.session_state["strategy_params_df"].copy()
+    else:
+        params_df_initial = _load_params_grid(_defaults)
 
     params_df = st.data_editor(
         params_df_initial,
@@ -1115,6 +1143,7 @@ with tab_backtest:
             "Optimize": st.column_config.CheckboxColumn("Optimize"),
         },
     )
+    st.session_state["strategy_params_df"] = params_df
 
     # Extract current "Value" settings from the parameter grid.
     _param_values = {row["Parameter"]: row["Value"] for _, row in params_df.iterrows()}
@@ -1145,7 +1174,9 @@ with tab_backtest:
             k_atr_long=k_atr_long_val,
             k_atr_short=k_atr_short_val,
         )
-        _save_params_grid(params_df)
+        # Use the latest in-memory grid (including any unsaved edits).
+        current_params_df = st.session_state.get("strategy_params_df", params_df)
+        _save_params_grid(current_params_df)
         st.success("Saved strategy defaults and parameter grid (Value/Start/Step/Stop).")
 
     col1, col2 = st.columns(2)
@@ -1445,6 +1476,48 @@ with tab_backtest:
                     "You can now run an individual backtest with these values.",
                 )
 
+            # Export top-N Sharpe parameter sets to Walk-Forward robustness tab.
+            st.markdown("#### Export parameter sets to Walk-Forward robustness")
+            max_top_n = max(1, min(10, len(display_df)))
+            top_n_to_export = st.number_input(
+                "Top N by Sharpe to export",
+                min_value=1,
+                max_value=max_top_n,
+                value=min(3, max_top_n),
+                step=1,
+                key="opt_to_wf_top_n",
+            )
+            if st.button("Send top N by Sharpe to Walk-Forward tab"):
+                # Sort by Sharpe descending and take the top N rows.
+                best_for_export = display_df.sort_values(
+                    by="sharpe_ratio", ascending=False
+                ).head(int(top_n_to_export))
+
+                wf_rows: list[dict] = []
+                for rank, (_, row) in enumerate(best_for_export.iterrows(), start=1):
+                    wf_rows.append(
+                        {
+                            "label": f"opt_{rank}",
+                            "k_sigma_long": float(row.get("k_sigma_long", row["k_sigma_err"])),
+                            "k_sigma_short": float(row.get("k_sigma_short", row["k_sigma_err"])),
+                            "k_atr_long": float(row.get("k_atr_long", row["k_atr_min_tp"])),
+                            "k_atr_short": float(row.get("k_atr_short", row["k_atr_min_tp"])),
+                            "risk_per_trade_pct": float(row["risk_per_trade_pct"]),
+                            "reward_risk_ratio": float(row["reward_risk_ratio"]),
+                            "enabled": True,
+                        }
+                    )
+
+                if wf_rows:
+                    wf_param_df = pd.DataFrame(wf_rows)
+                    # Pre-seed the Walk-Forward tab's data_editor widget state
+                    # before it is rendered on the next rerun.
+                    st.session_state["wf_param_grid_editor"] = wf_param_df
+                    st.success(
+                        f"Exported {len(wf_rows)} parameter sets to Walk-Forward robustness tab. "
+                        "Switch to 'Walk-Forward Analysis' → 'Robustness by parameter set' to run Sharpe-based tests.",
+                    )
+
             # ------------------------------------------------------------------
             # Heatmaps: k_sigma_err (x) vs k_atr_min_tp (y) for key metrics.
             # We use the most common risk_per_trade_pct and reward_risk_ratio to
@@ -1601,7 +1674,6 @@ with tab_backtest:
 # --------------------------------------------------------------------------------------
 with tab_walkforward:
     from src import config as _cfg
-    from src.walkforward as _wf
     from src.walkforward import (
         generate_walkforward_windows as _generate_walkforward_windows,
         slice_df_by_window as _slice_df_by_window,
@@ -1612,21 +1684,18 @@ with tab_walkforward:
     import numpy as _np
     import os as _os
 
-    st.subheader("5. Walk-forward analysis")
+    st.subheader("5. Walk-forward analysis (robustness by parameter set)")
 
-    mode = st.radio(
-        "Walk-forward mode",
-        ["Train per fold", "Robustness by parameter set"],
-        horizontal=True,
-        key="wf_mode",
-    )
-
+    _global_freq = st.session_state.get("global_frequency", FREQUENCY)
+    if _global_freq not in RESAMPLE_FREQUENCIES:
+        _global_freq = RESAMPLE_FREQUENCIES[0]
     wf_freq = st.selectbox(
         "Frequency",
         RESAMPLE_FREQUENCIES,
-        index=RESAMPLE_FREQUENCIES.index(FREQUENCY) if FREQUENCY in RESAMPLE_FREQUENCIES else 0,
+        index=RESAMPLE_FREQUENCIES.index(_global_freq),
         key="wf_freq_select",
     )
+    st.session_state["global_frequency"] = wf_freq
 
     # Load data once to infer available horizon.
     try:
@@ -1731,492 +1800,256 @@ with tab_walkforward:
                 st.dataframe(pd.DataFrame(rows), width="stretch")
 
     # ----------------------------------------------------------------------------------
-    # Mode 1: Train per fold (existing behaviour)
+    # Robustness by parameter set (Sharpe across folds)
     # ----------------------------------------------------------------------------------
-    if mode == "Train per fold":
-        st.markdown("### Training & backtest settings")
-        wf_tsteps = st.selectbox(
-            "TSTEPS (sequence length)",
-            TSTEPS_OPTIONS,
-            index=TSTEPS_OPTIONS.index(TSTEPS) if TSTEPS in TSTEPS_OPTIONS else 0,
-            key="wf_tsteps_select",
-        )
+    st.markdown("### Strategy parameter sets (k_sigma, k_atr, risk, RR)")
 
-        # Use current best hyperparameters for this (freq, tsteps) as defaults.
-        wf_hps = get_run_hyperparameters(frequency=wf_freq, tsteps=wf_tsteps)
+    defaults = _load_strategy_defaults()
+    base_rows = [
+        {
+            "label": "config_defaults",
+            "k_sigma_long": defaults["k_sigma_long"],
+            "k_sigma_short": defaults["k_sigma_short"],
+            "k_atr_long": defaults["k_atr_long"],
+            "k_atr_short": defaults["k_atr_short"],
+            "risk_per_trade_pct": defaults["risk_per_trade_pct"],
+            "reward_risk_ratio": defaults["reward_risk_ratio"],
+            "enabled": True,
+        },
+    ]
 
-        cw1, cw2, cw3 = st.columns(3)
-        with cw1:
-            try:
-                wf_units_idx = LSTM_UNITS_OPTIONS.index(wf_hps["lstm_units"])
-            except ValueError:
-                wf_units_idx = 0
-            wf_lstm_units = st.selectbox(
-                "LSTM units",
-                LSTM_UNITS_OPTIONS,
-                index=wf_units_idx,
-                key="wf_lstm_units_select",
-            )
-
-            try:
-                wf_layers_idx = N_LSTM_LAYERS_OPTIONS.index(wf_hps["n_lstm_layers"])
-            except ValueError:
-                wf_layers_idx = 0
-            wf_n_layers = st.selectbox(
-                "LSTM layers",
-                N_LSTM_LAYERS_OPTIONS,
-                index=wf_layers_idx,
-                key="wf_lstm_layers_select",
-            )
-
-        with cw2:
-            try:
-                wf_bs_idx = BATCH_SIZE_OPTIONS.index(wf_hps["batch_size"])
-            except ValueError:
-                wf_bs_idx = 0
-            wf_batch_size = st.selectbox(
-                "Batch size",
-                BATCH_SIZE_OPTIONS,
-                index=wf_bs_idx,
-                key="wf_batch_size_select",
-            )
-
-            wf_epochs = st.slider(
-                "Epochs per fold",
-                min_value=1,
-                max_value=100,
-                value=min(50, int(wf_hps["epochs"])),
-                key="wf_epochs_slider",
-            )
-
-        with cw3:
-            lr_choices_wf = [0.0005, 0.001, 0.003, 0.01]
-            default_lr_wf = float(wf_hps["learning_rate"])
-            if default_lr_wf not in lr_choices_wf:
-                lr_choices_wf = sorted(set(lr_choices_wf + [default_lr_wf]))
-            try:
-                wf_lr_idx = lr_choices_wf.index(default_lr_wf)
-            except ValueError:
-                wf_lr_idx = 0
-            wf_lr = st.selectbox(
-                "Learning rate",
-                lr_choices_wf,
-                index=wf_lr_idx,
-                key="wf_lr_select",
-            )
-
-            try:
-                wf_stateful_idx = STATEFUL_OPTIONS.index(wf_hps["stateful"])
-            except ValueError:
-                wf_stateful_idx = 0
-            wf_stateful = st.selectbox(
-                "Stateful LSTM",
-                STATEFUL_OPTIONS,
-                index=wf_stateful_idx,
-                key="wf_stateful_select",
-            )
-
-        wf_feature_set_idx = st.selectbox(
-            "Feature set",
-            options=list(range(len(FEATURES_TO_USE_OPTIONS))),
-            index=0,
-            format_func=lambda i: f"Set {i + 1}: " + ", ".join(FEATURES_TO_USE_OPTIONS[i]),
-            key="wf_feature_set_select",
-        )
-        wf_features_to_use = FEATURES_TO_USE_OPTIONS[wf_feature_set_idx]
-
-        st.caption(
-            "For each fold: train a fresh model on the training window, then backtest on the test window using model-mode predictions."
-        )
-
-        if st.button("Run walk-forward training & backtests"):
-            if df_full.empty or not data_t_start or not data_t_end:
-                st.error("Cannot run walk-forward: OHLC data is missing or invalid for this frequency.")
-            else:
-                eff_start = wf_t_start or data_t_start
-                eff_end = wf_t_end or data_t_end
-
-                try:
-                    windows = _generate_walkforward_windows(
-                        eff_start,
-                        eff_end,
-                        test_span_months=int(wf_test_span_months),
-                        train_lookback_months=int(wf_train_lookback_months),
-                        min_lookback_months=int(wf_min_lookback_months),
-                        first_test_start=wf_first_test_start or None,
-                    )
-                except Exception as exc:  # pragma: no cover - UI convenience only
-                    windows = []
-                    st.error(f"Failed to generate windows: {exc}")
-
-                if not windows:
-                    st.error("No walk-forward windows generated for the supplied horizon.")
-                else:
-                    from src.train import train_model as _train_model
-
-                    progress = st.progress(0.0)
-                    status = st.empty()
-                    rows: list[dict] = []
-
-                    for idx, (train_w, test_w) in enumerate(windows, start=1):
-                        fold_progress = idx / len(windows)
-                        status.write(
-                            f"Fold {idx}/{len(windows)}: train [{train_w.start}, {train_w.end}) "
-                            f"→ test [{test_w.start}, {test_w.end})"
-                        )
-                        progress.progress(fold_progress * 0.9)
-
-                        # 1) Train model restricted to the training window.
-                        result = _train_model(
-                            frequency=wf_freq,
-                            tsteps=wf_tsteps,
-                            lstm_units=int(wf_lstm_units),
-                            learning_rate=float(wf_lr),
-                            epochs=int(wf_epochs),
-                            current_batch_size=int(wf_batch_size),
-                            n_lstm_layers=int(wf_n_layers),
-                            stateful=bool(wf_stateful),
-                            features_to_use=wf_features_to_use,
-                            train_start_date=train_w.start,
-                            train_end_date=train_w.end,
-                        )
-
-                        if result is None:
-                            rows.append(
-                                {
-                                    "fold_idx": idx,
-                                    "train_start": train_w.start,
-                                    "train_end": train_w.end,
-                                    "test_start": test_w.start,
-                                    "test_end": test_w.end,
-                                    "total_return": _np.nan,
-                                    "cagr": _np.nan,
-                                    "max_drawdown": _np.nan,
-                                    "sharpe_ratio": _np.nan,
-                                    "win_rate": _np.nan,
-                                    "profit_factor": _np.nan,
-                                    "n_trades": 0,
-                                    "final_equity": _np.nan,
-                                }
-                            )
-                            continue
-
-                        final_val_loss, model_path, bias_path = result
-
-                        # 2) Backtest on the test window using model-mode predictions.
-                        test_df = _slice_df_by_window(df_full, test_w)
-                        if test_df.empty:
-                            rows.append(
-                                {
-                                    "fold_idx": idx,
-                                    "train_start": train_w.start,
-                                    "train_end": train_w.end,
-                                    "test_start": test_w.start,
-                                    "test_end": test_w.end,
-                                    "total_return": _np.nan,
-                                    "cagr": _np.nan,
-                                    "max_drawdown": _np.nan,
-                                    "sharpe_ratio": _np.nan,
-                                    "win_rate": _np.nan,
-                                    "profit_factor": _np.nan,
-                                    "n_trades": 0,
-                                    "final_equity": _np.nan,
-                                }
-                            )
-                            continue
-
-                        bt_result = _run_bt_df(
-                            data=test_df,
-                            initial_equity=_cfg.INITIAL_EQUITY,
-                            frequency=wf_freq,
-                            prediction_mode="model",
-                        )
-                        metrics = _bt_metrics(
-                            bt_result,
-                            initial_equity=_cfg.INITIAL_EQUITY,
-                            data=test_df,
-                        )
-
-                        rows.append(
-                            {
-                                "fold_idx": idx,
-                                "train_start": train_w.start,
-                                "train_end": train_w.end,
-                                "test_start": test_w.start,
-                                "test_end": test_w.end,
-                                "total_return": metrics.get("total_return", 0.0),
-                                "cagr": metrics.get("cagr", 0.0),
-                                "max_drawdown": metrics.get("max_drawdown", 0.0),
-                                "sharpe_ratio": metrics.get("sharpe_ratio", 0.0),
-                                "win_rate": metrics.get("win_rate", 0.0),
-                                "profit_factor": metrics.get("profit_factor", 0.0),
-                                "n_trades": metrics.get("n_trades", 0),
-                                "final_equity": bt_result.final_equity,
-                            }
-                        )
-
-                    progress.progress(1.0)
-                    status.write("Walk-forward training & backtests complete.")
-
-                    if rows:
-                        wf_df = pd.DataFrame(rows)
-                        st.subheader("Walk-forward fold results")
-                        st.dataframe(wf_df, width="stretch")
-
-                        # Save to the same convention as the CLI script but with a
-                        # distinct suffix so we don't clobber existing CSV-only runs.
-                        out_dir = Path(__file__).resolve().parents[1] / "backtests"
-                        out_dir.mkdir(parents=True, exist_ok=True)
-                        out_path = out_dir / f"walkforward_nvda_{wf_freq}_tsteps{wf_tsteps}_with_retrain.csv"
-                        try:
-                            wf_df.to_csv(out_path, index=False)
-                            st.success(f"Saved walk-forward summary to {out_path}")
-                            st.code(str(out_path))
-                        except Exception as exc:  # pragma: no cover - UI convenience only
-                            st.error(f"Failed to save walk-forward summary: {exc}")
-
-    # ----------------------------------------------------------------------------------
-    # Mode 2: Robustness by parameter set (Sharpe across folds)
-    # ----------------------------------------------------------------------------------
-    if mode == "Robustness by parameter set":
-        st.markdown("### Strategy parameter sets (k_sigma, k_atr, risk, RR)")
-
-        defaults = _load_strategy_defaults()
-        base_rows = [
-            {
-                "label": "config_defaults",
-                "k_sigma_long": defaults["k_sigma_long"],
-                "k_sigma_short": defaults["k_sigma_short"],
-                "k_atr_long": defaults["k_atr_long"],
-                "k_atr_short": defaults["k_atr_short"],
-                "risk_per_trade_pct": defaults["risk_per_trade_pct"],
-                "reward_risk_ratio": defaults["reward_risk_ratio"],
-                "enabled": True,
-            },
-        ]
-
-        if "wf_param_grid" in st.session_state:
-            param_df_initial = st.session_state["wf_param_grid"].copy()
-        else:
+    # Initialize from any existing widget/state value (key "wf_param_grid_editor"),
+    # but always coerce to a DataFrame so st.data_editor sees a consistent type.
+    stored = st.session_state.get("wf_param_grid_editor", None)
+    if isinstance(stored, pd.DataFrame):
+        param_df_initial = stored
+    elif stored is not None:
+        try:
+            param_df_initial = pd.DataFrame(stored)
+        except Exception:
             param_df_initial = pd.DataFrame(base_rows)
+    else:
+        param_df_initial = pd.DataFrame(base_rows)
 
-        param_df = st.data_editor(
-            param_df_initial,
-            num_rows="dynamic",
-            key="wf_param_grid_editor",
-            width="stretch",
-            hide_index=True,
-        )
-        st.session_state["wf_param_grid"] = param_df
+    # Use a dedicated widget key ("wf_param_grid_editor") and do not write to
+    # this key elsewhere in the script after the widget is created. Streamlit
+    # manages the widget's value in session_state for us and avoids revert loops.
+    param_df = st.data_editor(
+        param_df_initial,
+        num_rows="dynamic",
+        key="wf_param_grid_editor",
+        width="stretch",
+        hide_index=True,
+    )
 
-        wf_symbol = st.text_input(
-            "Symbol label for predictions CSV & summary filename",
-            value="nvda",
-            key="wf_symbol",
-        ).strip()
+    wf_symbol = st.text_input(
+        "Symbol label for predictions CSV & summary filename",
+        value="nvda",
+        key="wf_symbol",
+    ).strip()
 
-        st.caption(
-            "Robustness mode reuses fixed model predictions (CSV) and varies only the strategy parameters per fold."
-        )
+    st.caption(
+        "Robustness mode reuses fixed model predictions (CSV) and varies only the strategy parameters per fold."
+    )
 
-        run_robust = st.button("Run robustness evaluation (Sharpe across folds)")
-        results_df: pd.DataFrame | None = None
+    run_robust = st.button("Run robustness evaluation (Sharpe across folds)")
+    results_df: pd.DataFrame | None = None
 
-        if run_robust:
-            if df_full.empty or not data_t_start or not data_t_end:
-                st.error("Cannot run walk-forward: OHLC data is missing or invalid for this frequency.")
+    if run_robust:
+        if df_full.empty or not data_t_start or not data_t_end:
+            st.error("Cannot run walk-forward: OHLC data is missing or invalid for this frequency.")
+        else:
+            eff_start = wf_t_start or data_t_start
+            eff_end = wf_t_end or data_t_end
+
+            try:
+                windows = _generate_walkforward_windows(
+                    eff_start,
+                    eff_end,
+                    test_span_months=int(wf_test_span_months),
+                    train_lookback_months=int(wf_train_lookback_months),
+                    min_lookback_months=int(wf_min_lookback_months),
+                    first_test_start=wf_first_test_start or None,
+                )
+            except Exception as exc:  # pragma: no cover - UI convenience only
+                windows = []
+                st.error(f"Failed to generate windows: {exc}")
+
+            if not windows:
+                st.error("No walk-forward windows generated for the supplied horizon.")
             else:
-                eff_start = wf_t_start or data_t_start
-                eff_end = wf_t_end or data_t_end
-
-                try:
-                    windows = _generate_walkforward_windows(
-                        eff_start,
-                        eff_end,
-                        test_span_months=int(wf_test_span_months),
-                        train_lookback_months=int(wf_train_lookback_months),
-                        min_lookback_months=int(wf_min_lookback_months),
-                        first_test_start=wf_first_test_start or None,
-                    )
-                except Exception as exc:  # pragma: no cover - UI convenience only
-                    windows = []
-                    st.error(f"Failed to generate windows: {exc}")
-
-                if not windows:
-                    st.error("No walk-forward windows generated for the supplied horizon.")
+                # Determine which parameter rows are enabled.
+                if "enabled" in param_df.columns:
+                    enabled_df = param_df[param_df["enabled"].astype(bool)].copy()
                 else:
-                    # Determine which parameter rows are enabled.
-                    if "enabled" in param_df.columns:
-                        enabled_df = param_df[param_df["enabled"].astype(bool)].copy()
+                    enabled_df = param_df.copy()
+
+                if enabled_df.empty:
+                    st.error("No parameter sets enabled. Enable at least one row in the table above.")
+                else:
+                    predictions_csv = _cfg.get_predictions_csv_path(wf_symbol.lower(), wf_freq)
+                    if not _os.path.exists(predictions_csv):
+                        st.error(
+                            f"Predictions CSV not found at {predictions_csv}. "
+                            "Generate it first (e.g. via 'Generate predictions CSV' button in the Backtest tab).",
+                        )
                     else:
-                        enabled_df = param_df.copy()
+                        progress = st.progress(0.0)
+                        status = st.empty()
+                        rows: list[dict] = []
 
-                    if enabled_df.empty:
-                        st.error("No parameter sets enabled. Enable at least one row in the table above.")
-                    else:
-                        predictions_csv = _cfg.get_predictions_csv_path(wf_symbol.lower(), wf_freq)
-                        if not _os.path.exists(predictions_csv):
-                            st.error(
-                                f"Predictions CSV not found at {predictions_csv}. "
-                                "Generate it first (e.g. via 'Generate predictions CSV' button in the Backtest tab).",
-                            )
-                        else:
-                            progress = st.progress(0.0)
-                            status = st.empty()
-                            rows: list[dict] = []
+                        total_runs = len(enabled_df) * len(windows)
+                        run_idx = 0
 
-                            total_runs = len(enabled_df) * len(windows)
-                            run_idx = 0
+                        for _, p_row in enabled_df.iterrows():
+                            label = str(p_row.get("label", "unnamed"))
+                            k_sigma_long = float(p_row["k_sigma_long"])
+                            k_sigma_short = float(p_row["k_sigma_short"])
+                            k_atr_long = float(p_row["k_atr_long"])
+                            k_atr_short = float(p_row["k_atr_short"])
+                            risk_pct = float(p_row["risk_per_trade_pct"])
+                            rr = float(p_row["reward_risk_ratio"])
 
-                            for _, p_row in enabled_df.iterrows():
-                                label = str(p_row.get("label", "unnamed"))
-                                k_sigma_long = float(p_row["k_sigma_long"])
-                                k_sigma_short = float(p_row["k_sigma_short"])
-                                k_atr_long = float(p_row["k_atr_long"])
-                                k_atr_short = float(p_row["k_atr_short"])
-                                risk_pct = float(p_row["risk_per_trade_pct"])
-                                rr = float(p_row["reward_risk_ratio"])
+                            for fold_idx, (train_w, test_w) in enumerate(windows, start=1):
+                                status.write(
+                                    f"Param set '{label}': fold {fold_idx}/{len(windows)} "
+                                    f"test [{test_w.start}, {test_w.end})"
+                                )
 
-                                for fold_idx, (train_w, test_w) in enumerate(windows, start=1):
-                                    status.write(
-                                        f"Param set '{label}': fold {fold_idx}/{len(windows)} "
-                                        f"test [{test_w.start}, {test_w.end})"
+                                test_df = _slice_df_by_window(df_full, test_w)
+                                if test_df.empty:
+                                    rows.append(
+                                        {
+                                            "param_label": label,
+                                            "fold_idx": fold_idx,
+                                            "train_start": train_w.start,
+                                            "train_end": train_w.end,
+                                            "test_start": test_w.start,
+                                            "test_end": test_w.end,
+                                            "sharpe_ratio": _np.nan,
+                                            "total_return": _np.nan,
+                                            "cagr": _np.nan,
+                                            "max_drawdown": _np.nan,
+                                            "win_rate": _np.nan,
+                                            "profit_factor": _np.nan,
+                                            "n_trades": 0,
+                                            "final_equity": _np.nan,
+                                        }
+                                    )
+                                else:
+                                    bt_result = _run_bt_df(
+                                        data=test_df,
+                                        initial_equity=_cfg.INITIAL_EQUITY,
+                                        frequency=wf_freq,
+                                        prediction_mode="csv",
+                                        predictions_csv=predictions_csv,
+                                        risk_per_trade_pct=risk_pct,
+                                        reward_risk_ratio=rr,
+                                        k_sigma_long=k_sigma_long,
+                                        k_sigma_short=k_sigma_short,
+                                        k_atr_long=k_atr_long,
+                                        k_atr_short=k_atr_short,
+                                    )
+                                    metrics = _bt_metrics(
+                                        bt_result,
+                                        initial_equity=_cfg.INITIAL_EQUITY,
+                                        data=test_df,
                                     )
 
-                                    test_df = _slice_df_by_window(df_full, test_w)
-                                    if test_df.empty:
-                                        rows.append(
-                                            {
-                                                "param_label": label,
-                                                "fold_idx": fold_idx,
-                                                "train_start": train_w.start,
-                                                "train_end": train_w.end,
-                                                "test_start": test_w.start,
-                                                "test_end": test_w.end,
-                                                "sharpe_ratio": _np.nan,
-                                                "total_return": _np.nan,
-                                                "cagr": _np.nan,
-                                                "max_drawdown": _np.nan,
-                                                "win_rate": _np.nan,
-                                                "profit_factor": _np.nan,
-                                                "n_trades": 0,
-                                                "final_equity": _np.nan,
-                                            }
-                                        )
-                                    else:
-                                        bt_result = _run_bt_df(
-                                            data=test_df,
-                                            initial_equity=_cfg.INITIAL_EQUITY,
-                                            frequency=wf_freq,
-                                            prediction_mode="csv",
-                                            predictions_csv=predictions_csv,
-                                            risk_per_trade_pct=risk_pct,
-                                            reward_risk_ratio=rr,
-                                            k_sigma_long=k_sigma_long,
-                                            k_sigma_short=k_sigma_short,
-                                            k_atr_long=k_atr_long,
-                                            k_atr_short=k_atr_short,
-                                        )
-                                        metrics = _bt_metrics(
-                                            bt_result,
-                                            initial_equity=_cfg.INITIAL_EQUITY,
-                                            data=test_df,
-                                        )
+                                    rows.append(
+                                        {
+                                            "param_label": label,
+                                            "fold_idx": fold_idx,
+                                            "train_start": train_w.start,
+                                            "train_end": train_w.end,
+                                            "test_start": test_w.start,
+                                            "test_end": test_w.end,
+                                            "sharpe_ratio": metrics.get("sharpe_ratio", 0.0),
+                                            "total_return": metrics.get("total_return", 0.0),
+                                            "cagr": metrics.get("cagr", 0.0),
+                                            "max_drawdown": metrics.get("max_drawdown", 0.0),
+                                            "win_rate": metrics.get("win_rate", 0.0),
+                                            "profit_factor": metrics.get("profit_factor", 0.0),
+                                            "n_trades": metrics.get("n_trades", 0),
+                                            "final_equity": bt_result.final_equity,
+                                        }
+                                    )
 
-                                        rows.append(
-                                            {
-                                                "param_label": label,
-                                                "fold_idx": fold_idx,
-                                                "train_start": train_w.start,
-                                                "train_end": train_w.end,
-                                                "test_start": test_w.start,
-                                                "test_end": test_w.end,
-                                                "sharpe_ratio": metrics.get("sharpe_ratio", 0.0),
-                                                "total_return": metrics.get("total_return", 0.0),
-                                                "cagr": metrics.get("cagr", 0.0),
-                                                "max_drawdown": metrics.get("max_drawdown", 0.0),
-                                                "win_rate": metrics.get("win_rate", 0.0),
-                                                "profit_factor": metrics.get("profit_factor", 0.0),
-                                                "n_trades": metrics.get("n_trades", 0),
-                                                "final_equity": bt_result.final_equity,
-                                            }
-                                        )
+                                run_idx += 1
+                                progress.progress(run_idx / max(total_runs, 1))
 
-                                    run_idx += 1
-                                    progress.progress(run_idx / max(total_runs, 1))
+                        progress.progress(1.0)
+                        status.write("Robustness evaluation complete.")
 
-                            progress.progress(1.0)
-                            status.write("Robustness evaluation complete.")
+                        if rows:
+                            results_df = pd.DataFrame(rows)
+                            st.session_state["wf_robust_results"] = results_df
 
-                            if rows:
-                                results_df = pd.DataFrame(rows)
-                                st.session_state["wf_robust_results"] = results_df
+    # Reuse latest robustness results if available and we didn't just run.
+    if results_df is None:
+        results_df = st.session_state.get("wf_robust_results")
 
-        # Reuse latest robustness results if available and we didn't just run.
-        if results_df is None:
-            results_df = st.session_state.get("wf_robust_results")
+    if results_df is not None and not results_df.empty:
+        st.subheader("Sharpe-based robustness summary")
 
-        if results_df is not None and not results_df.empty:
-            st.subheader("Sharpe-based robustness summary")
-
-            # Aggregate Sharpe statistics per parameter label.
-            sharpe_stats = (
-                results_df.groupby("param_label")["sharpe_ratio"]
-                .agg(
-                    mean_sharpe="mean",
-                    std_sharpe="std",
-                    min_sharpe="min",
-                    max_sharpe="max",
-                    n_folds="count",
-                )
-                .reset_index()
+        # Aggregate Sharpe statistics per parameter label.
+        sharpe_stats = (
+            results_df.groupby("param_label")["sharpe_ratio"]
+            .agg(
+                mean_sharpe="mean",
+                std_sharpe="std",
+                min_sharpe="min",
+                max_sharpe="max",
+                n_folds="count",
             )
-            frac_positive = (
-                results_df.assign(is_pos=results_df["sharpe_ratio"] > 0)
-                .groupby("param_label")["is_pos"]
-                .mean()
-                .reset_index(name="p_sharpe_gt_0")
+            .reset_index()
+        )
+        frac_positive = (
+            results_df.assign(is_pos=results_df["sharpe_ratio"] > 0)
+            .groupby("param_label")["is_pos"]
+            .mean()
+            .reset_index(name="p_sharpe_gt_0")
+        )
+        sharpe_stats = sharpe_stats.merge(frac_positive, on="param_label", how="left")
+        sharpe_stats["robustness_score"] = sharpe_stats["mean_sharpe"] / sharpe_stats["std_sharpe"].replace(0, _np.nan)
+
+        st.dataframe(sharpe_stats, width="stretch")
+
+        # Line chart: Sharpe per fold per parameter set.
+        st.markdown("#### Sharpe ratio per fold")
+        available_labels = sorted(results_df["param_label"].dropna().unique().tolist())
+        selected_labels = st.multiselect(
+            "Parameter sets to plot",
+            available_labels,
+            default=available_labels,
+            key="wf_sharpe_line_labels",
+        )
+
+        plot_df = results_df[results_df["param_label"].isin(selected_labels)].copy()
+        if not plot_df.empty:
+            pivot = (
+                plot_df.pivot(index="fold_idx", columns="param_label", values="sharpe_ratio")
+                .sort_index()
             )
-            sharpe_stats = sharpe_stats.merge(frac_positive, on="param_label", how="left")
-            sharpe_stats["robustness_score"] = sharpe_stats["mean_sharpe"] / sharpe_stats["std_sharpe"].replace(0, _np.nan)
+            fig, ax = plt.subplots(figsize=(10, 4))
+            for label in pivot.columns:
+                ax.plot(pivot.index, pivot[label], marker="o", label=label)
+            ax.set_xlabel("Fold index")
+            ax.set_ylabel("Sharpe ratio")
+            ax.axhline(0.0, color="black", linewidth=0.8, linestyle="--")
+            ax.set_title("Sharpe per fold by parameter set")
+            ax.legend(loc="best")
+            fig.tight_layout()
+            st.pyplot(fig)
 
-            st.dataframe(sharpe_stats, width="stretch")
-
-            # Line chart: Sharpe per fold per parameter set.
-            st.markdown("#### Sharpe ratio per fold")
-            available_labels = sorted(results_df["param_label"].dropna().unique().tolist())
-            selected_labels = st.multiselect(
-                "Parameter sets to plot",
-                available_labels,
-                default=available_labels,
-                key="wf_sharpe_line_labels",
-            )
-
-            plot_df = results_df[results_df["param_label"].isin(selected_labels)].copy()
-            if not plot_df.empty:
-                pivot = (
-                    plot_df.pivot(index="fold_idx", columns="param_label", values="sharpe_ratio")
-                    .sort_index()
-                )
-                fig, ax = plt.subplots(figsize=(10, 4))
-                for label in pivot.columns:
-                    ax.plot(pivot.index, pivot[label], marker="o", label=label)
-                ax.set_xlabel("Fold index")
-                ax.set_ylabel("Sharpe ratio")
-                ax.axhline(0.0, color="black", linewidth=0.8, linestyle="--")
-                ax.set_title("Sharpe per fold by parameter set")
-                ax.legend(loc="best")
-                fig.tight_layout()
-                st.pyplot(fig)
-
-            # Scatter: mean vs std of Sharpe.
-            st.markdown("#### Mean vs. std of Sharpe per parameter set")
-            fig2, ax2 = plt.subplots(figsize=(8, 5))
-            ax2.scatter(sharpe_stats["std_sharpe"], sharpe_stats["mean_sharpe"], alpha=0.8)
-            for _, row in sharpe_stats.iterrows():
-                ax2.text(row["std_sharpe"], row["mean_sharpe"], row["param_label"], fontsize=8)
-            ax2.set_xlabel("Sharpe std across folds (lower is better)")
-            ax2.set_ylabel("Sharpe mean across folds (higher is better)")
-            ax2.set_title("Sharpe robustness: mean vs std")
-            fig2.tight_layout()
-            st.pyplot(fig2)
+        # Scatter: mean vs std of Sharpe.
+        st.markdown("#### Mean vs. std of Sharpe per parameter set")
+        fig2, ax2 = plt.subplots(figsize=(8, 5))
+        ax2.scatter(sharpe_stats["std_sharpe"], sharpe_stats["mean_sharpe"], alpha=0.8)
+        for _, row in sharpe_stats.iterrows():
+            ax2.text(row["std_sharpe"], row["mean_sharpe"], row["param_label"], fontsize=8)
+        ax2.set_xlabel("Sharpe std across folds (lower is better)")
+        ax2.set_ylabel("Sharpe mean across folds (higher is better)")
+        ax2.set_title("Sharpe robustness: mean vs std")
+        fig2.tight_layout()
+        st.pyplot(fig2)
