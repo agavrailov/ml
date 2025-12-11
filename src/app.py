@@ -1483,7 +1483,10 @@ with tab_backtest:
             hist_df = hist_df.sort_values("timestamp", ascending=False)
         st.dataframe(hist_df, width="stretch")
 
-    elif mode == "Optimize":
+    # ----------------------------------------------------------------------------------
+    # Optimization mode UI
+    # ----------------------------------------------------------------------------------
+    if mode == "Optimize":
         ui_state = _get_ui_state()
         opt_state = ui_state.setdefault("optimization", {})
         if "history" not in opt_state:
