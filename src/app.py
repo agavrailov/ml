@@ -1992,36 +1992,18 @@ with tab_walkforward:
         },
     ]
 
-    # If the Backtest tab has just exported a new set of parameter rows, prefer
-    # that seed exactly once (we pop it so it doesn't keep overwriting manual
-    # edits). When applying a fresh seed, we must also clear the existing widget
-    # state for "wf_param_grid_editor" so that Streamlit reinitializes the
-    # data_editor with the new DataFrame instead of reusing the old value.
-    seed = st.session_state.pop("wf_param_grid_seed", None)
-    if seed is not None:
+    # Base grid: manual config/defaults that always exists.
+    stored = st.session_state.get("wf_param_grid_editor", None)
+    if isinstance(stored, pd.DataFrame):
+        param_df_initial = stored
+    elif stored is not None:
         try:
-            param_df_initial = seed if isinstance(seed, pd.DataFrame) else pd.DataFrame(seed)
+            param_df_initial = pd.DataFrame(stored)
         except Exception:
             param_df_initial = pd.DataFrame(base_rows)
-
-        # Reset the widget state so that the new seed takes effect on this run.
-        if "wf_param_grid_editor" in st.session_state:
-            del st.session_state["wf_param_grid_editor"]
     else:
-        stored = st.session_state.get("wf_param_grid_editor", None)
-        if isinstance(stored, pd.DataFrame):
-            param_df_initial = stored
-        elif stored is not None:
-            try:
-                param_df_initial = pd.DataFrame(stored)
-            except Exception:
-                param_df_initial = pd.DataFrame(base_rows)
-        else:
-            param_df_initial = pd.DataFrame(base_rows)
+        param_df_initial = pd.DataFrame(base_rows)
 
-    # Use a dedicated widget key ("wf_param_grid_editor") and do not write to
-    # this key elsewhere in the script after the widget is created. Streamlit
-    # manages the widget's value in session_state for us and avoids revert loops.
     param_df = st.data_editor(
         param_df_initial,
         num_rows="dynamic",
@@ -2029,6 +2011,29 @@ with tab_walkforward:
         width="stretch",
         hide_index=True,
     )
+
+    # Optional second grid: parameter sets exported from Optimization tab.
+    wf_seed_raw = st.session_state.get("wf_param_grid_seed")
+    wf_seed_df: pd.DataFrame | None = None
+    if wf_seed_raw is not None:
+        try:
+            wf_seed_df_initial = wf_seed_raw if isinstance(wf_seed_raw, pd.DataFrame) else pd.DataFrame(wf_seed_raw)
+        except Exception:
+            wf_seed_df_initial = None
+
+        if wf_seed_df_initial is not None and not wf_seed_df_initial.empty:
+            # Ensure an "enabled" column exists, defaulting to True.
+            if "enabled" not in wf_seed_df_initial.columns:
+                wf_seed_df_initial["enabled"] = True
+
+            st.markdown("#### Exported parameter sets from Optimization tab")
+            wf_seed_df = st.data_editor(
+                wf_seed_df_initial,
+                num_rows="dynamic",
+                key="wf_param_grid_seed_editor",
+                width="stretch",
+                hide_index=True,
+            )
 
     wf_symbol = st.text_input(
         "Symbol label for predictions CSV & summary filename",
@@ -2066,14 +2071,23 @@ with tab_walkforward:
             if not windows:
                 st.error("No walk-forward windows generated for the supplied horizon.")
             else:
-                # Determine which parameter rows are enabled.
+                # Determine which parameter rows are enabled across both grids.
                 if "enabled" in param_df.columns:
                     enabled_df = param_df[param_df["enabled"].astype(bool)].copy()
                 else:
                     enabled_df = param_df.copy()
 
+                # Append any enabled rows from the exported-seed grid.
+                if 'wf_seed_df' in locals() and wf_seed_df is not None and not wf_seed_df.empty:
+                    if "enabled" in wf_seed_df.columns:
+                        extra = wf_seed_df[wf_seed_df["enabled"].astype(bool)].copy()
+                    else:
+                        extra = wf_seed_df.copy()
+                    if not extra.empty:
+                        enabled_df = pd.concat([enabled_df, extra], ignore_index=True)
+
                 if enabled_df.empty:
-                    st.error("No parameter sets enabled. Enable at least one row in the table above.")
+                    st.error("No parameter sets enabled. Enable at least one row in the tables above.")
                 else:
                     predictions_csv = _cfg.get_predictions_csv_path(wf_symbol.lower(), wf_freq)
                     if not _os.path.exists(predictions_csv):
