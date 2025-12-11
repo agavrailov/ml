@@ -143,6 +143,43 @@ For future live trading, define an adapter interface (even if the implementation
 
 MVP can have a **no-op implementation** that just logs the intended actions.
 
+**FR-11: IBKR broker integration (paper first)**  
+When implementing a concrete broker adapter, the initial target MUST be **IBKR paper trading**, not live money:
+
+- Use an IBKR **paper account** only.
+- Support switching between `SIM` (no broker), `IBKR_PAPER`, and later `IBKR_LIVE` via explicit configuration.
+- Restrict trading to an explicit, configurable symbol universe (MVP: NVDA).
+
+**FR-12: IBKR execution behavior**  
+The IBKR-backed adapter MUST:
+
+- Map strategy signals to concrete orders (side, quantity, order type, time-in-force).
+- Support at minimum market and limit orders with DAY time-in-force.
+- Provide a way to query open orders, positions, and account summary for risk checks.
+
+**FR-13: IBKR risk & safety controls**  
+The system MUST enforce at least the following when using IBKR:
+
+- Max daily loss limit (stop sending new orders once breached).
+- Max position size per symbol (in shares and/or % of equity).
+- Per-order sanity checks (e.g., price bounds, non-zero size).
+- A manual **kill switch** that can:
+  - Stop new order submission.
+  - Optionally request position flattening and order cancellation via the broker adapter.
+
+**FR-14: IBKR connectivity & resilience**  
+The broker adapter MUST:
+
+- Detect disconnections from IBKR and stop sending new orders while disconnected.
+- Attempt reconnect with backoff and log outages.
+- On process restart, resync from IBKR as source of truth for positions, cash, and open orders.
+
+**FR-15: Auditability & observability**  
+For any broker-backed execution (paper or live):
+
+- Log all orders, fills, cancellations, and risk decisions with timestamps and IDs.
+- Keep logs and trade records sufficient to reconstruct account history for debugging.
+
 ---
 
 ## 3. Non-Functional Requirements

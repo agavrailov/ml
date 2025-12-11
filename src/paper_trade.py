@@ -66,13 +66,24 @@ class PaperTradingConfig:
 
 
 def _build_backtest_config(cfg: PaperTradingConfig, atr_like: float) -> BacktestConfig:
-    """Translate a ``PaperTradingConfig`` into a ``BacktestConfig``."""
+    """Translate a ``PaperTradingConfig`` into a ``BacktestConfig``.
+
+    ``PaperTradingConfig`` still exposes shared noise filters
+    (``k_sigma_err``, ``k_atr_min_tp``) for simplicity. Here we map them onto
+    the long/short-specific fields expected by ``StrategyConfig`` so that paper
+    trading stays aligned with the core strategy implementation.
+    """
 
     strat_cfg = StrategyConfig(
         risk_per_trade_pct=cfg.risk_per_trade_pct,
         reward_risk_ratio=cfg.reward_risk_ratio,
-        k_sigma_err=cfg.k_sigma_err,
-        k_atr_min_tp=cfg.k_atr_min_tp,
+        # Use the same shared filters for both long and short sides in the
+        # paper-trading CLI; callers who need asymmetric behavior can switch to
+        # the lower-level backtest API.
+        k_sigma_long=cfg.k_sigma_err,
+        k_sigma_short=cfg.k_sigma_err,
+        k_atr_long=cfg.k_atr_min_tp,
+        k_atr_short=cfg.k_atr_min_tp,
     )
 
     return BacktestConfig(
