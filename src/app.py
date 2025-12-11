@@ -54,6 +54,57 @@ if "global_frequency" not in st.session_state:
 CONFIG_PATH = Path(__file__).with_name("config.py")
 PARAMS_STATE_PATH = Path(__file__).with_name("ui_strategy_params.json")
 
+# UI state directory and persistence paths.
+UI_STATE_DIR = Path(__file__).resolve().parent.parent / "ui_state"
+MAX_HISTORY_ROWS = 100  # Maximum rows to keep in any history table.
+
+
+def _get_ui_state() -> dict:
+    """Return the centralized UI state dict, initializing if needed.
+
+    This provides a single source of truth for long-lived state that may be
+    persisted to JSON. The dict has well-known top-level keys for each tab.
+    """
+    if "ui_state" not in st.session_state:
+        st.session_state["ui_state"] = {
+            "data": {},
+            "experiments": {},
+            "training": {},
+            "strategy": {},
+            "backtests": {},
+            "optimization": {},
+            "walkforward": {},
+        }
+    return st.session_state["ui_state"]
+
+
+def _load_json_history(filename: str) -> list[dict]:
+    """Load a history list from JSON in UI_STATE_DIR, returning [] if missing."""
+    path = UI_STATE_DIR / filename
+    if not path.exists():
+        return []
+    try:
+        raw = path.read_text(encoding="utf-8")
+        data = json.loads(raw)
+        if isinstance(data, list):
+            return data
+        return []
+    except Exception:
+        return []
+
+
+def _save_json_history(filename: str, history: list[dict]) -> None:
+    """Save a history list to JSON in UI_STATE_DIR, creating the dir if needed."""
+    UI_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    path = UI_STATE_DIR / filename
+    try:
+        # Truncate to MAX_HISTORY_ROWS if needed (keep most recent).
+        if len(history) > MAX_HISTORY_ROWS:
+            history = history[-MAX_HISTORY_ROWS:]
+        path.write_text(json.dumps(history, indent=2), encoding="utf-8")
+    except Exception as exc:  # pragma: no cover - best-effort persistence
+        st.error(f"Failed to save history to {filename}: {exc}")
+
 
 def _load_strategy_defaults() -> dict:
     """Reload src.config and return current strategy defaults.
@@ -83,9 +134,6 @@ def _load_strategy_defaults() -> dict:
     base_k_atr_short = float(getattr(module, "K_ATR_SHORT", module.K_ATR_MIN_TP))
 
     return {
-        # Shared defaults (still used in some places)
-        "k_sigma_err": float(module.K_SIGMA_ERR),
-        "k_atr_min_tp": float(module.K_ATR_MIN_TP),
         # Side-specific defaults for UI/backtests
         "k_sigma_long": base_k_sigma_long,
         "k_sigma_short": base_k_sigma_short,
@@ -224,10 +272,16 @@ def _load_params_grid(defaults: dict) -> pd.DataFrame:
     return _build_default_params_df(defaults)
 
 
-def _save_params_grid(df: pd.DataFrame) -> None:
-    """Persist the full parameter grid (Value/Start/Step/Stop/Optimize)."""
+def _save_params_grid(df: pd.DataFrame | object) -> None:
+    """Persist the full parameter grid (Value/Start/Step/Stop/Optimize).
+
+    Be defensive about the input type: older session_state entries or callers
+    might pass a list/dict instead of a DataFrame.
+    """
 
     try:
+        if not isinstance(df, pd.DataFrame):
+            df = pd.DataFrame(df)
         records = df.to_dict(orient="records")
         PARAMS_STATE_PATH.write_text(json.dumps(records, indent=2), encoding="utf-8")
     except Exception as exc:  # pragma: no cover - best-effort persistence
@@ -571,6 +625,11 @@ with tab_data:
 with tab_experiments:
     st.subheader("2. Hyperparameter experiments (no promotion)")
 
+    ui_state = _get_ui_state()
+    exp_state = ui_state.setdefault("experiments", {})
+    if "runs" not in exp_state:
+        exp_state["runs"] = _load_json_history("experiments_runs.json")
+
     # Frequency / TSTEPS for experiments.
     _global_freq = st.session_state.get("global_frequency", FREQUENCY)
     if _global_freq not in RESAMPLE_FREQUENCIES:
@@ -716,6 +775,7 @@ with tab_experiments:
                 # Store validation loss as a scientific-notation string and only
                 # the filenames for the model and bias-correction artifacts.
                 row = {
+                    "timestamp": pd.Timestamp.utcnow().isoformat(),
                     "frequency": exp_freq,
                     "tsteps": exp_tsteps,
                     "lstm_units": int(exp_lstm_units),
@@ -729,14 +789,23 @@ with tab_experiments:
                     "model": os.path.basename(model_path),
                     "correction_path": os.path.basename(bias_path),
                 }
+                # Backwards-compatible: keep legacy session_state list, but
+                # treat ui_state.experiments.runs as the primary store.
                 st.session_state.setdefault("lstm_experiments", []).append(row)
+
+                runs: list[dict] = exp_state.get("runs", [])
+                runs.append(row)
+                if len(runs) > MAX_HISTORY_ROWS:
+                    runs = runs[-MAX_HISTORY_ROWS:]
+                exp_state["runs"] = runs
+                _save_json_history("experiments_runs.json", runs)
         except Exception as exc:  # pragma: no cover - UI convenience
             progress.progress(0.0)
             status.write("")
             st.error(f"Experiment failed: {exc}")
 
     # Experiments table with an action to load a row into the Train tab.
-    exp_rows = st.session_state.get("lstm_experiments", [])
+    exp_rows = exp_state.get("runs") or st.session_state.get("lstm_experiments", [])
     if exp_rows:
         st.markdown("### Recorded experiments")
         exp_df = pd.DataFrame(exp_rows)
@@ -754,6 +823,10 @@ with tab_experiments:
         if st.button("Load selected experiment into Train & Promote"):
             chosen = exp_rows[int(idx_to_use)]
             st.session_state["train_prefill"] = chosen
+            # Mirror into ui_state.training so the Train tab can prefer it.
+            train_state = _get_ui_state().setdefault("training", {})
+            train_state["train_prefill"] = chosen
+            _ = train_state  # silence linters about unused variable in UI code
             st.success("Loaded experiment into Train & Promote tab. Switch to that tab to train fully.")
 
 # --------------------------------------------------------------------------------------
@@ -762,8 +835,13 @@ with tab_experiments:
 with tab_train:
     st.subheader("3. Train full model & promote when better")
 
+    ui_state = _get_ui_state()
+    train_state = ui_state.setdefault("training", {})
+    if "history" not in train_state:
+        train_state["history"] = _load_json_history("training_history.json")
+
     # Prefill from last experiment if available, otherwise from current best.
-    prefill = st.session_state.get("train_prefill")
+    prefill = train_state.get("train_prefill") or st.session_state.get("train_prefill")
     if prefill:
         train_freq = prefill["frequency"]
         train_tsteps = int(prefill["tsteps"])
@@ -954,6 +1032,8 @@ with tab_train:
                 progress.progress(0.6)
                 status.write("Step 2/3: Updating best_hyperparameters.json (auto-promotion if better)...")
 
+                promoted = False
+
                 # Auto-promotion logic (same pattern as before).
                 if best_hps_path_train.exists():
                     try:
@@ -991,6 +1071,7 @@ with tab_train:
                         json.dumps(best_hps_overall, indent=4), encoding="utf-8"
                     )
                     st.info("Auto-promoted this model as new best for this Frequency/TSTEPS.")
+                    promoted = True
                 else:
                     st.info(
                         f"Existing best validation loss for (freq={freq_key}, tsteps={tsteps_key}) "
@@ -1011,10 +1092,53 @@ with tab_train:
                     f"Predictions CSV written to: {predictions_csv_path}",
                 )
                 st.code(str(predictions_csv_path))
+
+                # Record last training run and append a compact history row.
+                train_state["last_train_run"] = {
+                    "timestamp": pd.Timestamp.utcnow().isoformat(),
+                    "frequency": train_freq,
+                    "tsteps": int(train_tsteps),
+                    "lstm_units": int(train_lstm_units),
+                    "batch_size": int(train_batch_size),
+                    "learning_rate": float(train_lr),
+                    "epochs": int(train_epochs),
+                    "n_lstm_layers": int(train_n_layers),
+                    "stateful": bool(train_stateful),
+                    "features_to_use": train_features_to_use,
+                    "validation_loss": float(final_val_loss),
+                    "promoted": bool(promoted),
+                    "model_filename": os.path.basename(model_path),
+                    "bias_correction_filename": os.path.basename(bias_correction_path),
+                    "predictions_csv_path": str(predictions_csv_path),
+                }
+                history: list[dict] = train_state.get("history", [])
+                history.append(
+                    {
+                        "timestamp": train_state["last_train_run"]["timestamp"],
+                        "frequency": train_freq,
+                        "tsteps": int(train_tsteps),
+                        "validation_loss": float(final_val_loss),
+                        "promoted": bool(promoted),
+                        "model_filename": os.path.basename(model_path),
+                    }
+                )
+                if len(history) > MAX_HISTORY_ROWS:
+                    history = history[-MAX_HISTORY_ROWS:]
+                train_state["history"] = history
+                _save_json_history("training_history.json", history)
         except Exception as exc:  # pragma: no cover - UI convenience
             progress.progress(0.0)
             status.write("")
             st.error(f"Error during full training pipeline: {exc}")
+
+    # Recent training runs table.
+    train_history = train_state.get("history", [])
+    if train_history:
+        st.markdown("### Recent training runs (most recent first)")
+        train_hist_df = pd.DataFrame(train_history)
+        if "timestamp" in train_hist_df.columns:
+            train_hist_df = train_hist_df.sort_values("timestamp", ascending=False)
+        st.dataframe(train_hist_df, width="stretch")
 
     st.markdown("---")
     st.subheader("Evaluate best model")
@@ -1054,6 +1178,14 @@ with tab_train:
                 )
 
         if "best_model_path" in locals() and best_model_path is not None:
+            # Cache last evaluation in ui_state (session-only, not persisted).
+            train_state["last_evaluation"] = {
+                "frequency": train_freq,
+                "tsteps": int(train_tsteps),
+                "mae": float(mae),
+                "corr": float(corr),
+            }
+
             st.success("Evaluation complete.")
             st.write(
                 f"**MAE (log returns)**: `{mae:.6f}`  |  "
@@ -1086,6 +1218,13 @@ with tab_train:
 # Tab 4: Backtest / Strategy - existing UI
 # --------------------------------------------------------------------------------------
 with tab_backtest:
+    ui_state = _get_ui_state()
+    bt_state = ui_state.setdefault("backtests", {})
+
+    # Lazily load backtest history from disk once per session.
+    if "history" not in bt_state:
+        bt_state["history"] = _load_json_history("backtests_history.json")
+
     # Allow selecting any configured resample frequency; default to the main config FREQUENCY.
     _available_freqs = getattr(cfg_mod, "RESAMPLE_FREQUENCIES", ["15min"])
     _default_freq = st.session_state.get("global_frequency", getattr(cfg_mod, "FREQUENCY", _available_freqs[0]))
@@ -1120,11 +1259,16 @@ with tab_backtest:
     # JSON sidecar so manual edits survive app reloads.
     st.subheader("Strategy parameters")
 
-    # Keep the live grid in session_state so that edits made via st.data_editor
-    # are not immediately overwritten on every rerun. We still persist to disk
-    # only when "Save parameters to config.py" is clicked.
-    if "strategy_params_df" in st.session_state:
-        params_df_initial = st.session_state["strategy_params_df"].copy()
+    # Initialize from any existing widget value (key "strategy_params"). On the
+    # very first run, fall back to loading from disk via _load_params_grid.
+    stored_params = st.session_state.get("strategy_params", None)
+    if isinstance(stored_params, pd.DataFrame):
+        params_df_initial = stored_params
+    elif stored_params is not None:
+        try:
+            params_df_initial = pd.DataFrame(stored_params)
+        except Exception:
+            params_df_initial = _load_params_grid(_defaults)
     else:
         params_df_initial = _load_params_grid(_defaults)
 
@@ -1143,7 +1287,6 @@ with tab_backtest:
             "Optimize": st.column_config.CheckboxColumn("Optimize"),
         },
     )
-    st.session_state["strategy_params_df"] = params_df
 
     # Extract current "Value" settings from the parameter grid.
     _param_values = {row["Parameter"]: row["Value"] for _, row in params_df.iterrows()}
@@ -1154,12 +1297,6 @@ with tab_backtest:
     risk_pct_val = float(_param_values.get("risk_per_trade_pct", _defaults["risk_per_trade_pct"]))
     rr_val = float(_param_values.get("reward_risk_ratio", _defaults["reward_risk_ratio"]))
 
-    # Legacy aggregate parameters (used for reporting/heatmaps). We keep these
-    # as separate scalars derived from the shared defaults so existing result
-    # tables and plots that expect k_sigma_err / k_atr_min_tp still work, even
-    # though the UI now exposes long/short-specific knobs.
-    k_sigma_val = float(_defaults["k_sigma_err"])
-    k_atr_val = float(_defaults["k_atr_min_tp"])
 
     if st.button("Save parameters to config.py"):
         # Persist single-run defaults to config.py (used by CLIs and as base
@@ -1174,8 +1311,8 @@ with tab_backtest:
             k_atr_long=k_atr_long_val,
             k_atr_short=k_atr_short_val,
         )
-        # Use the latest in-memory grid (including any unsaved edits).
-        current_params_df = st.session_state.get("strategy_params_df", params_df)
+        # Use the latest in-memory grid from the widget (including any unsaved edits).
+        current_params_df = st.session_state.get("strategy_params", params_df)
         _save_params_grid(current_params_df)
         st.success("Saved strategy defaults and parameter grid (Value/Start/Step/Stop).")
 
@@ -1218,6 +1355,53 @@ with tab_backtest:
                 enable_longs=enable_longs_flag,
                 allow_shorts=allow_shorts_flag,
             )
+
+        # Store last run (in-session) and append a compact summary row to history.
+        bt_state["last_run"] = {
+            "inputs": {
+                "frequency": freq,
+                "start_date": start_date or None,
+                "end_date": end_date or None,
+                "trade_side": trade_side,
+                "enable_longs": enable_longs_flag,
+                "allow_shorts": allow_shorts_flag,
+                "risk_per_trade_pct": risk_pct_val,
+                "reward_risk_ratio": rr_val,
+                "k_sigma_long": k_sigma_long_val,
+                "k_sigma_short": k_sigma_short_val,
+                "k_atr_long": k_atr_long_val,
+                "k_atr_short": k_atr_short_val,
+            },
+            "metrics": metrics,
+            "equity_df": equity_df,
+        }
+
+        history: list[dict] = bt_state.get("history", [])
+        summary_row = {
+            "timestamp": pd.Timestamp.utcnow().isoformat(),
+            "frequency": freq,
+            "trade_side": trade_side,
+            "total_return": float(metrics.get("total_return", 0.0)),
+            "cagr": float(metrics.get("cagr", 0.0)),
+            "max_drawdown": float(metrics.get("max_drawdown", 0.0)),
+            "sharpe_ratio": float(metrics.get("sharpe_ratio", 0.0)),
+            "win_rate": float(metrics.get("win_rate", 0.0)),
+            "profit_factor": float(metrics.get("profit_factor", 0.0)),
+            "n_trades": int(metrics.get("n_trades", 0)),
+            "final_equity": float(metrics.get("final_equity", 0.0)),
+        }
+        history.append(summary_row)
+        # Enforce history cap and persist summaries.
+        if len(history) > MAX_HISTORY_ROWS:
+            history = history[-MAX_HISTORY_ROWS:]
+        bt_state["history"] = history
+        _save_json_history("backtests_history.json", history)
+
+    # Always render the last backtest result (if any), regardless of button state.
+    last_run = bt_state.get("last_run")
+    if last_run is not None:
+        equity_df = last_run.get("equity_df", pd.DataFrame())
+        metrics = last_run.get("metrics", {})
 
         time_col = "Time" if "Time" in equity_df.columns else "step"
 
@@ -1286,8 +1470,25 @@ with tab_backtest:
         ]
         metrics_df = pd.DataFrame(formatted_metrics, columns=["Metric", "Value"])
         st.table(metrics_df)
+    else:
+        st.info("Run a backtest to see the equity curve and metrics.")
+
+    # Backtest summary history table.
+    history_for_view = bt_state.get("history", [])
+    if history_for_view:
+        st.markdown("### Backtest history (most recent first)")
+        hist_df = pd.DataFrame(history_for_view)
+        # Sort by timestamp descending when present.
+        if "timestamp" in hist_df.columns:
+            hist_df = hist_df.sort_values("timestamp", ascending=False)
+        st.dataframe(hist_df, width="stretch")
 
     elif mode == "Optimize":
+        ui_state = _get_ui_state()
+        opt_state = ui_state.setdefault("optimization", {})
+        if "history" not in opt_state:
+            opt_state["history"] = _load_json_history("optimization_history.json")
+
         # Separate the action of running optimization from displaying results so
         # that results/plots persist even if the parameter table is edited.
         run_optimization = st.button("Run optimization")
@@ -1358,22 +1559,6 @@ with tab_backtest:
                     risk_pct = float(combo_params.get("risk_per_trade_pct", risk_pct_val))
                     rr = float(combo_params.get("reward_risk_ratio", rr_val))
 
-                    # Legacy aggregate parameters for reporting/heatmaps. We map
-                    # k_sigma_err / k_atr_min_tp to the *active* side being tested
-                    # so that "Short only" optimizations reflect short-side
-                    # parameters instead of always using long-side values.
-                    if enable_longs_flag and not allow_shorts_flag:
-                        # Long only
-                        k_sigma = k_sigma_long_combo
-                        k_atr = k_atr_long_combo
-                    elif allow_shorts_flag and not enable_longs_flag:
-                        # Short only
-                        k_sigma = k_sigma_short_combo
-                        k_atr = k_atr_short_combo
-                    else:
-                        # Long & short – keep legacy behaviour (use long side).
-                        k_sigma = k_sigma_long_combo
-                        k_atr = k_atr_long_combo
 
                     equity_df, trades_df, metrics = _run_backtest(
                         frequency=freq,
@@ -1391,9 +1576,6 @@ with tab_backtest:
 
                     results_rows.append(
                         {
-                            # Aggregated knobs (used by existing tables/heatmaps).
-                            "k_sigma_err": k_sigma,
-                            "k_atr_min_tp": k_atr,
                             # Side-specific parameters so we can distinguish long vs short.
                             "k_sigma_long": k_sigma_long_combo,
                             "k_sigma_short": k_sigma_short_combo,
@@ -1421,11 +1603,40 @@ with tab_backtest:
                     results_df = pd.DataFrame(results_rows)
                     # Sort by total_return descending by default.
                     results_df = results_df.sort_values(by="total_return", ascending=False)
-                    # Persist results so they survive subsequent UI interactions.
+                    # Persist results in-session and record a compact summary to history.
+                    opt_state["last_run"] = {
+                        "frequency": freq,
+                        "start_date": start_date or None,
+                        "end_date": end_date or None,
+                        "trade_side": trade_side,
+                        "results_df": results_df,
+                    }
                     st.session_state["optimization_results"] = results_df
+
+                    hist: list[dict] = opt_state.get("history", [])
+                    best_sharpe = float(results_df["sharpe_ratio"].max()) if "sharpe_ratio" in results_df.columns else 0.0
+                    best_total_return = float(results_df["total_return"].max()) if "total_return" in results_df.columns else 0.0
+                    hist.append(
+                        {
+                            "timestamp": pd.Timestamp.utcnow().isoformat(),
+                            "frequency": freq,
+                            "trade_side": trade_side,
+                            "n_runs": int(len(results_df)),
+                            "best_sharpe": best_sharpe,
+                            "best_total_return": best_total_return,
+                        }
+                    )
+                    if len(hist) > MAX_HISTORY_ROWS:
+                        hist = hist[-MAX_HISTORY_ROWS:]
+                    opt_state["history"] = hist
+                    _save_json_history("optimization_history.json", hist)
         else:
             # Reuse the most recent optimization results, if any.
-            results_df = st.session_state.get("optimization_results")
+            last = opt_state.get("last_run")
+            if last is not None and "results_df" in last:
+                results_df = last["results_df"]
+            else:
+                results_df = st.session_state.get("optimization_results")
 
         # If we have results (either from a new run or from session_state),
         # display the table, allow loading a row into the parameter grid, and
@@ -1455,10 +1666,10 @@ with tab_backtest:
                 # Map optimization result columns back into the strategy grid's
                 # parameter names (which use explicit long/short knobs).
                 mapping = {
-                    "k_sigma_long": float(chosen.get("k_sigma_long", chosen["k_sigma_err"])),
-                    "k_sigma_short": float(chosen.get("k_sigma_short", chosen["k_sigma_err"])),
-                    "k_atr_long": float(chosen.get("k_atr_long", chosen["k_atr_min_tp"])),
-                    "k_atr_short": float(chosen.get("k_atr_short", chosen["k_atr_min_tp"])),
+                    "k_sigma_long": float(chosen["k_sigma_long"]),
+                    "k_sigma_short": float(chosen["k_sigma_short"]),
+                    "k_atr_long": float(chosen["k_atr_long"]),
+                    "k_atr_short": float(chosen["k_atr_short"]),
                     "risk_per_trade_pct": float(chosen["risk_per_trade_pct"]),
                     "reward_risk_ratio": float(chosen["reward_risk_ratio"]),
                 }
@@ -1498,10 +1709,10 @@ with tab_backtest:
                     wf_rows.append(
                         {
                             "label": f"opt_{rank}",
-                            "k_sigma_long": float(row.get("k_sigma_long", row["k_sigma_err"])),
-                            "k_sigma_short": float(row.get("k_sigma_short", row["k_sigma_err"])),
-                            "k_atr_long": float(row.get("k_atr_long", row["k_atr_min_tp"])),
-                            "k_atr_short": float(row.get("k_atr_short", row["k_atr_min_tp"])),
+                            "k_sigma_long": float(row["k_sigma_long"]),
+                            "k_sigma_short": float(row["k_sigma_short"]),
+                            "k_atr_long": float(row["k_atr_long"]),
+                            "k_atr_short": float(row["k_atr_short"]),
                             "risk_per_trade_pct": float(row["risk_per_trade_pct"]),
                             "reward_risk_ratio": float(row["reward_risk_ratio"]),
                             "enabled": True,
@@ -1510,54 +1721,62 @@ with tab_backtest:
 
                 if wf_rows:
                     wf_param_df = pd.DataFrame(wf_rows)
-                    # Pre-seed the Walk-Forward tab's data_editor widget state
-                    # before it is rendered on the next rerun.
-                    st.session_state["wf_param_grid_editor"] = wf_param_df
+                    # Seed for the Walk-Forward tab. We use a separate key
+                    # (wf_param_grid_seed) so we never write directly to the
+                    # widget's own key (wf_param_grid_editor), which Streamlit
+                    # manages.
+                    st.session_state["wf_param_grid_seed"] = wf_param_df
                     st.success(
                         f"Exported {len(wf_rows)} parameter sets to Walk-Forward robustness tab. "
                         "Switch to 'Walk-Forward Analysis' → 'Robustness by parameter set' to run Sharpe-based tests.",
                     )
 
             # ------------------------------------------------------------------
-            # Heatmaps: k_sigma_err (x) vs k_atr_min_tp (y) for key metrics.
-            # We use the most common risk_per_trade_pct and reward_risk_ratio to
-            # select a 2D slice through the grid.
+            # Heatmaps: k_sigma (x) vs k_atr (y) for key metrics, using the
+            # active side (long or short) based on the trade_side selection.
             # ------------------------------------------------------------------
             st.subheader("Heatmaps (k_sigma vs k_atr for active side)")
-            # Aggregate over any varying risk_per_trade_pct / reward_risk_ratio so that
-            # each (k_sigma, k_atr) pair maps to a single row that matches the values
-            # in the Optimization results table. We always use the aggregated
-            # k_sigma_err / k_atr_min_tp columns, which are already side-aware
-            # (long vs short) based on the selected trade_side.
+
+            if enable_longs_flag and not allow_shorts_flag:
+                sigma_col = "k_sigma_long"
+                atr_col = "k_atr_long"
+            elif allow_shorts_flag and not enable_longs_flag:
+                sigma_col = "k_sigma_short"
+                atr_col = "k_atr_short"
+            else:
+                # Long & short  visualize long-side filters by convention.
+                sigma_col = "k_sigma_long"
+                atr_col = "k_atr_long"
+
             agg_cols = [
-                "k_sigma_err",
-                "k_atr_min_tp",
+                sigma_col,
+                atr_col,
                 "total_return",
                 "max_drawdown",
                 "sharpe_ratio",
             ]
             slice_df = (
                 results_df[agg_cols]
-                .groupby(["k_sigma_err", "k_atr_min_tp"], as_index=False)
+                .groupby([sigma_col, atr_col], as_index=False)
                 .max()
             )
 
             if not slice_df.empty:
                 sharpe_grid = slice_df.pivot(
-                    index="k_atr_min_tp",
-                    columns="k_sigma_err",
+                    index=atr_col,
+                    columns=sigma_col,
                     values="sharpe_ratio",
                 ).sort_index().sort_index(axis=1)
 
                 ret_grid = slice_df.pivot(
-                    index="k_atr_min_tp",
-                    columns="k_sigma_err",
+                    index=atr_col,
+                    columns=sigma_col,
                     values="total_return",
                 ).sort_index().sort_index(axis=1)
 
                 mdd_grid = slice_df.pivot(
-                    index="k_atr_min_tp",
-                    columns="k_sigma_err",
+                    index=atr_col,
+                    columns=sigma_col,
                     values="max_drawdown",
                 ).sort_index().sort_index(axis=1)
 
@@ -1573,9 +1792,9 @@ with tab_backtest:
                 for grid, ax, title, cmap in grids:
                     im = ax.imshow(grid.values, aspect="auto", cmap=cmap)
                     ax.set_title(title)
-                    ax.set_xlabel("k_sigma_err")
+                    ax.set_xlabel(sigma_col)
                     # Only show y-label on the first plot to reduce clutter.
-                    ax.set_ylabel("k_atr_min_tp" if ax is axes[0] else "")
+                    ax.set_ylabel(atr_col if ax is axes[0] else "")
 
                     # Tick labels from the DataFrame indices/columns.
                     ax.set_xticks(range(len(grid.columns)))
@@ -1607,72 +1826,24 @@ with tab_backtest:
                     "No 2D slice available for heatmaps with the current parameter ranges.",
                 )
 
-        # ----------------------------------------------------------------------
-        # Walk-forward summary (3-month windows)
-        # ----------------------------------------------------------------------
-        st.subheader("Walk-forward summary (3-month windows)")
-        from pathlib import Path as _Path  # local alias to avoid confusion with CONFIG_PATH
+        # Optimization summary history table.
+        opt_history = opt_state.get("history", [])
+        if opt_history:
+            st.markdown("### Optimization history (most recent first)")
+            opt_hist_df = pd.DataFrame(opt_history)
+            if "timestamp" in opt_hist_df.columns:
+                opt_hist_df = opt_hist_df.sort_values("timestamp", ascending=False)
+            st.dataframe(opt_hist_df, width="stretch")
 
-        try:
-            # We key the summary on symbol NVDA, selected frequency, and global TSTEPS.
-            from src.config import TSTEPS as _TSTEPS
-
-            wf_path = (
-                _Path(__file__).resolve().parents[1]
-                / "backtests"
-                / f"walkforward_nvda_{freq}_tsteps{_TSTEPS}.csv"
-            )
-
-            if wf_path.exists():
-                wf_df = pd.read_csv(wf_path)
-                if not wf_df.empty:
-                    # Compute overall tested coverage from test_start/test_end columns.
-                    if {"test_start", "test_end"}.issubset(wf_df.columns):
-                        try:
-                            ts = pd.to_datetime(wf_df["test_start"]).min()
-                            te = pd.to_datetime(wf_df["test_end"]).max()
-                            st.markdown(
-                                f"**Walk-forward coverage:** {ts.date().isoformat()} → {te.date().isoformat()}",
-                            )
-                        except Exception:
-                            pass
-
-                    cols_preferred = [
-                        "fold_idx",
-                        "train_start",
-                        "train_end",
-                        "test_start",
-                        "test_end",
-                        "total_return",
-                        "cagr",
-                        "max_drawdown",
-                        "sharpe_ratio",
-                        "win_rate",
-                        "profit_factor",
-                        "n_trades",
-                        "final_equity",
-                    ]
-                    cols_available = [c for c in cols_preferred if c in wf_df.columns]
-                    if cols_available:
-                        st.dataframe(wf_df[cols_available], width="stretch")
-                    else:
-                        st.dataframe(wf_df, width="stretch")
-                else:
-                    st.caption("Walk-forward summary CSV is empty for this frequency.")
-            else:
-                st.caption(
-                    "No walk-forward summary found for this frequency. "
-                    "Run `python -m scripts.run_walkforward_backtest --frequency "
-                    f"{freq}` after generating predictions.",
-                )
-        except Exception as exc:  # pragma: no cover - UI convenience only
-            st.error(f"Failed to load walk-forward summary: {exc}")
 
 
 # --------------------------------------------------------------------------------------
 # Tab 5: Walk-Forward Analysis - train per fold OR robustness by parameter set
 # --------------------------------------------------------------------------------------
 with tab_walkforward:
+    ui_state = _get_ui_state()
+    wf_state = ui_state.setdefault("walkforward", {})
+
     from src import config as _cfg
     from src.walkforward import (
         generate_walkforward_windows as _generate_walkforward_windows,
@@ -1818,18 +1989,32 @@ with tab_walkforward:
         },
     ]
 
-    # Initialize from any existing widget/state value (key "wf_param_grid_editor"),
-    # but always coerce to a DataFrame so st.data_editor sees a consistent type.
-    stored = st.session_state.get("wf_param_grid_editor", None)
-    if isinstance(stored, pd.DataFrame):
-        param_df_initial = stored
-    elif stored is not None:
+    # If the Backtest tab has just exported a new set of parameter rows, prefer
+    # that seed exactly once (we pop it so it doesn't keep overwriting manual
+    # edits). When applying a fresh seed, we must also clear the existing widget
+    # state for "wf_param_grid_editor" so that Streamlit reinitializes the
+    # data_editor with the new DataFrame instead of reusing the old value.
+    seed = st.session_state.pop("wf_param_grid_seed", None)
+    if seed is not None:
         try:
-            param_df_initial = pd.DataFrame(stored)
+            param_df_initial = seed if isinstance(seed, pd.DataFrame) else pd.DataFrame(seed)
         except Exception:
             param_df_initial = pd.DataFrame(base_rows)
+
+        # Reset the widget state so that the new seed takes effect on this run.
+        if "wf_param_grid_editor" in st.session_state:
+            del st.session_state["wf_param_grid_editor"]
     else:
-        param_df_initial = pd.DataFrame(base_rows)
+        stored = st.session_state.get("wf_param_grid_editor", None)
+        if isinstance(stored, pd.DataFrame):
+            param_df_initial = stored
+        elif stored is not None:
+            try:
+                param_df_initial = pd.DataFrame(stored)
+            except Exception:
+                param_df_initial = pd.DataFrame(base_rows)
+        else:
+            param_df_initial = pd.DataFrame(base_rows)
 
     # Use a dedicated widget key ("wf_param_grid_editor") and do not write to
     # this key elsewhere in the script after the widget is created. Streamlit
@@ -1983,11 +2168,16 @@ with tab_walkforward:
 
                         if rows:
                             results_df = pd.DataFrame(rows)
+                            wf_state["robust_results_df"] = results_df
                             st.session_state["wf_robust_results"] = results_df
 
     # Reuse latest robustness results if available and we didn't just run.
     if results_df is None:
-        results_df = st.session_state.get("wf_robust_results")
+        # Prefer ui_state-backed result, fall back to legacy session_state key.
+        if "robust_results_df" in wf_state:
+            results_df = wf_state["robust_results_df"]
+        else:
+            results_df = st.session_state.get("wf_robust_results")
 
     if results_df is not None and not results_df.empty:
         st.subheader("Sharpe-based robustness summary")
@@ -2012,6 +2202,28 @@ with tab_walkforward:
         )
         sharpe_stats = sharpe_stats.merge(frac_positive, on="param_label", how="left")
         sharpe_stats["robustness_score"] = sharpe_stats["mean_sharpe"] / sharpe_stats["std_sharpe"].replace(0, _np.nan)
+
+        # Store latest summary in-session and append a compact history row.
+        wf_state["summary_df"] = sharpe_stats
+        robust_hist: list[dict] = wf_state.get("robust_history", [])
+        if not sharpe_stats.empty:
+            best_row = sharpe_stats.sort_values("mean_sharpe", ascending=False).iloc[0]
+            worst_row = sharpe_stats.sort_values("mean_sharpe", ascending=True).iloc[0]
+            robust_hist.append(
+                {
+                    "timestamp": pd.Timestamp.utcnow().isoformat(),
+                    "frequency": wf_freq,
+                    "n_param_sets": int(len(sharpe_stats)),
+                    "best_label": str(best_row["param_label"]),
+                    "best_mean_sharpe": float(best_row["mean_sharpe"]),
+                    "worst_label": str(worst_row["param_label"]),
+                    "worst_mean_sharpe": float(worst_row["mean_sharpe"]),
+                }
+            )
+            if len(robust_hist) > MAX_HISTORY_ROWS:
+                robust_hist = robust_hist[-MAX_HISTORY_ROWS:]
+            wf_state["robust_history"] = robust_hist
+            _save_json_history("wf_robust_history.json", robust_hist)
 
         st.dataframe(sharpe_stats, width="stretch")
 
