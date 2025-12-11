@@ -28,6 +28,7 @@ from src.config import (
     BATCH_SIZE,
     FREQUENCY,
     PROCESSED_DATA_DIR,
+    MODEL_REGISTRY_DIR,
     get_scaler_params_json_path,
     LSTM_UNITS,
     LEARNING_RATE,
@@ -39,20 +40,65 @@ from src.config import (
 )
 
 
+def _find_latest_registry_model_path(*, frequency: str, tsteps: int) -> Optional[str]:
+    """Best-effort fallback to a saved model when metadata isn't available.
+
+    When ``best_hyperparameters.json`` hasn't been updated (or is missing), we
+    can still often run predictions if a model file exists in the registry.
+
+    We only consider models that match both ``frequency`` and ``tsteps`` using
+    the training naming convention:
+
+        my_lstm_model_{frequency}_tsteps{tsteps}_YYYYMMDD_HHMMSS.keras
+
+    Returns an absolute filesystem path or ``None`` if no candidate exists.
+    """
+
+    if not MODEL_REGISTRY_DIR or not os.path.isdir(MODEL_REGISTRY_DIR):
+        return None
+
+    prefix = f"my_lstm_model_{frequency}_tsteps{tsteps}_"
+    exts = (".keras", ".h5")
+
+    try:
+        names = [
+            n
+            for n in os.listdir(MODEL_REGISTRY_DIR)
+            if n.startswith(prefix) and n.lower().endswith(exts)
+        ]
+    except OSError:
+        return None
+
+    if not names:
+        return None
+
+    # Filenames embed a lexicographically sortable timestamp (YYYYMMDD_HHMMSS).
+    names.sort()
+    return os.path.abspath(os.path.join(MODEL_REGISTRY_DIR, names[-1]))
+
+
 @dataclass
 class PredictionContext:
     """Reusable context for batched LSTM predictions.
 
     Holds the non-stateful prediction model, scaler parameters, and feature
     metadata so we can run many predictions without rebuilding the model.
+
+    Notes
+    -----
+    The model is trained to predict *forward log returns* on Open prices.
+    ``bias_correction_mean_residual`` (when available) is also in log-return
+    space and should be *added* to raw model outputs before mapping back to a
+    price.
     """
 
     model: keras.Model
     scaler_params: dict
-    mean_vals: pd.Series
-    std_vals: pd.Series
+    mean_vals: Optional[pd.Series]
+    std_vals: Optional[pd.Series]
     features_to_use: List[str]
     tsteps: int
+    bias_correction_mean_residual: float = 0.0
 
 
 def build_prediction_context(
@@ -61,24 +107,55 @@ def build_prediction_context(
 ) -> PredictionContext:
     """Build and return a PredictionContext for a given (frequency, tsteps)."""
 
+    script_dir = os.path.dirname(__file__)
+
+    model_path = None
+    bias_correction_path = None
+    features_to_use_trained = None
+    lstm_units_trained = None
+    n_lstm_layers_trained = None
+
+    # Try to get the latest best model and its associated parameters
     (
-        model_path,
-        _bias_correction_path,
-        features_to_use_trained,
-        lstm_units_trained,
-        n_lstm_layers_trained,
+        best_model_path_candidate,
+        best_bias_correction_path_candidate,
+        best_features_to_use_trained_candidate,
+        best_lstm_units_trained_candidate,
+        best_n_lstm_layers_trained_candidate,
     ) = get_latest_best_model_path(target_frequency=frequency, tsteps=tsteps)
 
-    # Ensure model_path is an absolute path for robust checking when present.
-    if model_path:
-        script_dir = os.path.dirname(__file__)
-        model_path = os.path.abspath(os.path.join(script_dir, model_path))
+    if best_model_path_candidate:
+        abs_best_model_path = os.path.abspath(os.path.join(script_dir, best_model_path_candidate))
+        if os.path.exists(abs_best_model_path):
+            model_path = abs_best_model_path
+            bias_correction_path = best_bias_correction_path_candidate
+            features_to_use_trained = best_features_to_use_trained_candidate
+            lstm_units_trained = best_lstm_units_trained_candidate
+            n_lstm_layers_trained = best_n_lstm_layers_trained_candidate
 
-    # Fallback: if no best-model entry is found, try the active model pointer.
-    if not model_path or not os.path.exists(model_path):
-        active_model = get_active_model_path()
-        if active_model:
-            model_path = os.path.abspath(active_model)
+    # Fallback to active model if no best model found or path doesn't exist
+    if not model_path:
+        active_model_path_candidate = get_active_model_path(frequency=frequency, tsteps=tsteps)
+        if active_model_path_candidate:
+            abs_active_model_path = os.path.abspath(os.path.join(script_dir, active_model_path_candidate))
+            if os.path.exists(abs_active_model_path):
+                model_path = abs_active_model_path
+                # When using active model, the trained parameters are not available,
+                # so they should default to None and be picked up from best_hps or global defaults.
+                features_to_use_trained = None
+                lstm_units_trained = None
+                n_lstm_layers_trained = None
+                bias_correction_path = None  # tied to best model metadata
+
+    # Final fallback: look for the newest matching model in the registry.
+    if not model_path:
+        registry_model_path = _find_latest_registry_model_path(frequency=frequency, tsteps=tsteps)
+        if registry_model_path and os.path.exists(registry_model_path):
+            model_path = registry_model_path
+            features_to_use_trained = None
+            lstm_units_trained = None
+            n_lstm_layers_trained = None
+            bias_correction_path = None
 
     if not model_path or not os.path.exists(model_path):
         # Message includes the legacy substring "No best model found for frequency"
@@ -94,7 +171,6 @@ def build_prediction_context(
 
     best_hps: dict = {}
     # Ensure best_hps_path is an absolute path for robust checking
-    script_dir = os.path.dirname(__file__)
     best_hps_path = os.path.abspath(os.path.join(script_dir, "best_hyperparameters.json"))
 
     if os.path.exists(best_hps_path):
@@ -140,6 +216,15 @@ def build_prediction_context(
     mean_vals = pd.Series(scaler_params["mean"])
     std_vals = pd.Series(scaler_params["std"])
 
+    bias_mean_residual = 0.0
+    if bias_correction_path and os.path.exists(bias_correction_path):
+        try:
+            with open(bias_correction_path, "r") as f:
+                data = json.load(f)
+            bias_mean_residual = float(data.get("mean_residual", 0.0))
+        except Exception:
+            bias_mean_residual = 0.0
+
     return PredictionContext(
         model=prediction_model,
         scaler_params=scaler_params,
@@ -147,6 +232,7 @@ def build_prediction_context(
         std_vals=std_vals,
         features_to_use=features_to_use,
         tsteps=tsteps,
+        bias_correction_mean_residual=bias_mean_residual,
     )
 
 

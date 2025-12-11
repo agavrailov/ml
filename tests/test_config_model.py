@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.config import TRAINING, MODEL_REGISTRY_DIR, ModelConfig, get_model_config
+from src.config import TRAINING, MODEL_REGISTRY_DIR, get_model_config
 
 
 def test_get_model_config_defaults_match_training() -> None:
@@ -9,8 +9,11 @@ def test_get_model_config_defaults_match_training() -> None:
     This guards against accidental drift between the structured TrainingConfig
     and the concrete ModelConfig used by the model API.
     """
-    cfg = get_model_config()
+    # src.app._load_strategy_defaults() reloads src.config in some tests, which
+    # can invalidate a previously-imported ModelConfig class reference.
+    from src.config import ModelConfig
 
+    cfg = get_model_config()
     assert isinstance(cfg, ModelConfig)
     assert cfg.frequency == TRAINING.frequency
     assert cfg.tsteps == TRAINING.tsteps

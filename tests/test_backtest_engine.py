@@ -33,8 +33,12 @@ def test_no_trades_when_prediction_too_small_vs_noise() -> None:
     strat_cfg = StrategyConfig(
         risk_per_trade_pct=0.01,
         reward_risk_ratio=2.0,
-        k_sigma_err=0.0,
-        k_atr_min_tp=1.0,  # require usable_return / sigma_return >= 1.0
+        k_sigma_long=0.0,
+        k_sigma_short=0.0,
+        k_atr_long=1.0,  # require usable_return / sigma_return >= 1.0
+        k_atr_short=1.0,
+        enable_longs=True,
+        allow_shorts=False,
     )
     cfg = BacktestConfig(
         initial_equity=10_000.0,
@@ -69,13 +73,17 @@ def test_single_tp_trade_with_positive_pnl() -> None:
     strat_cfg = StrategyConfig(
         risk_per_trade_pct=0.01,
         reward_risk_ratio=2.0,
-        k_sigma_err=0.0,
-        k_atr_min_tp=0.1,
+        k_sigma_long=0.0,
+        k_sigma_short=0.0,
+        k_atr_long=0.1,
+        k_atr_short=0.1,
+        enable_longs=True,
+        allow_shorts=False,
     )
     cfg = BacktestConfig(
         initial_equity=10_000.0,
         strategy_config=strat_cfg,
-        model_error_sigma=0.0,
+        model_error_sigma=0.5,
         fixed_atr=0.5,
     )
 
@@ -107,13 +115,17 @@ def test_single_sl_trade_with_negative_pnl() -> None:
     strat_cfg = StrategyConfig(
         risk_per_trade_pct=0.01,
         reward_risk_ratio=2.0,
-        k_sigma_err=0.0,
-        k_atr_min_tp=0.1,
+        k_sigma_long=0.0,
+        k_sigma_short=0.0,
+        k_atr_long=0.1,
+        k_atr_short=0.1,
+        enable_longs=True,
+        allow_shorts=False,
     )
     cfg = BacktestConfig(
         initial_equity=10_000.0,
         strategy_config=strat_cfg,
-        model_error_sigma=0.0,
+        model_error_sigma=0.5,
         fixed_atr=0.5,
     )
 
@@ -145,13 +157,17 @@ def test_commission_reduces_pnl_consistently() -> None:
     strat_cfg = StrategyConfig(
         risk_per_trade_pct=0.01,
         reward_risk_ratio=2.0,
-        k_sigma_err=0.0,
-        k_atr_min_tp=0.1,
+        k_sigma_long=0.0,
+        k_sigma_short=0.0,
+        k_atr_long=0.1,
+        k_atr_short=0.1,
+        enable_longs=True,
+        allow_shorts=False,
     )
     cfg = BacktestConfig(
         initial_equity=10_000.0,
         strategy_config=strat_cfg,
-        model_error_sigma=0.0,
+        model_error_sigma=0.5,
         fixed_atr=0.5,
         commission_per_unit_per_leg=0.005,
         min_commission_per_order=0.0,
