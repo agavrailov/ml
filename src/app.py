@@ -479,6 +479,7 @@ with tab_live:
         last_decision = _latest("decision")
         last_order = _latest("order_submitted")
         last_broker_connected = _latest("broker_connected")
+        last_broker_snapshot = _latest("broker_snapshot")
         last_error = _latest("error")
 
         # Derive high-level status.
@@ -516,9 +517,27 @@ with tab_live:
                 broker_status = "STOPPED"
             st.metric("Broker", broker_status)
         with k4:
-            # Step 1 only has log-derived state; treat any submitted order as "OPEN".
-            pos_state = "OPEN" if last_order is not None else "FLAT"
-            st.metric("Position (local)", pos_state)
+            # Prefer broker snapshot when present.
+            pos_state = "UNKNOWN"
+            if last_broker_snapshot is not None:
+                try:
+                    positions = last_broker_snapshot.get("positions") or []
+                    # If any non-zero position exists, consider it OPEN.
+                    nonzero = False
+                    for p in positions:
+                        try:
+                            qty = float(p.get("quantity", 0.0))
+                            if abs(qty) > 1e-9:
+                                nonzero = True
+                                break
+                        except Exception:
+                            continue
+                    pos_state = "OPEN" if nonzero else "FLAT"
+                except Exception:
+                    pos_state = "UNKNOWN"
+            else:
+                pos_state = "OPEN" if last_order is not None else "FLAT"
+            st.metric("Position", pos_state)
         with k5:
             if last_decision is not None:
                 st.metric("Last decision", str(last_decision.get("action", "")))
@@ -529,6 +548,51 @@ with tab_live:
                 st.metric("Last order_id", str(last_order.get("order_id", "")))
             else:
                 st.metric("Last order_id", "(none)")
+
+        # Broker snapshot (Step 2): show "broker truth" derived from latest snapshot event.
+        st.markdown("### Broker snapshot")
+        if last_broker_snapshot is None:
+            st.info("No broker snapshots logged yet for this session.")
+        else:
+            try:
+                positions = last_broker_snapshot.get("positions") or []
+                open_orders = last_broker_snapshot.get("open_orders") or []
+                acct = last_broker_snapshot.get("account_summary") or {}
+
+                s1, s2, s3 = st.columns(3)
+                with s1:
+                    st.metric("Open orders", str(len(open_orders)))
+                with s2:
+                    st.metric("Positions", str(len(positions)))
+                with s3:
+                    # Prefer a common equity tag when present; otherwise show number of keys.
+                    eq = None
+                    for key in ("NetLiquidation", "EquityWithLoanValue", "TotalCashValue"):
+                        if key in acct:
+                            eq = acct.get(key)
+                            break
+                    st.metric("Account summary", f"{key}={eq}" if eq is not None else f"{len(acct)} fields")
+
+                with st.expander("Positions (latest snapshot)"):
+                    if positions:
+                        st.dataframe(pd.DataFrame(positions), width="stretch")
+                    else:
+                        st.write("(none)")
+
+                with st.expander("Open orders (latest snapshot)"):
+                    if open_orders:
+                        st.dataframe(pd.DataFrame(open_orders), width="stretch")
+                    else:
+                        st.write("(none)")
+
+                with st.expander("Account summary (latest snapshot)"):
+                    if acct:
+                        st.dataframe(pd.DataFrame([acct]), width="stretch")
+                    else:
+                        st.write("(empty)")
+
+            except Exception as exc:  # pragma: no cover - UI convenience
+                st.error(f"Failed to render broker snapshot: {exc}")
 
         # Recent decisions & orders.
         st.markdown("### Recent activity")

@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from datetime import datetime
+from dataclasses import dataclass
+
 from src.live_log import (
     append_event,
     is_kill_switch_enabled,
+    json_friendly,
     make_log_path,
     read_events,
     set_kill_switch,
@@ -46,3 +50,14 @@ def test_kill_switch_toggle(tmp_path: Path) -> None:
 
     set_kill_switch(enabled=False, live_dir=tmp_path)
     assert not is_kill_switch_enabled(tmp_path)
+
+
+def test_json_friendly_dataclass_and_datetime() -> None:
+    @dataclass
+    class Foo:
+        x: int
+
+    out = json_friendly({"t": datetime(2025, 1, 1), "foo": Foo(3)})
+    assert isinstance(out, dict)
+    assert isinstance(out["t"], str)
+    assert out["foo"]["x"] == 3

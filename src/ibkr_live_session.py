@@ -73,6 +73,9 @@ class LiveSessionConfig:
     # When None, defaults to repo_root/ui_state/live.
     log_dir: str | None = None
 
+    # Broker snapshot cadence (Step 2). Use 1 for every bar, larger to reduce noise.
+    snapshot_every_n_bars: int = 1
+
 
 def _frequency_to_bar_size_setting(freq: str) -> str:
     f = freq.lower().strip()
@@ -268,6 +271,43 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
 
         equity = float(cfg.initial_equity)
         has_open_position = False
+        bar_count = 0
+
+        def _log_broker_snapshot(*, where: str, bar_time: str | None = None) -> None:
+            """Best-effort broker snapshot for observability.
+
+            This uses the repo's Broker abstraction when available.
+            """
+
+            try:
+                positions = broker.get_positions() if hasattr(broker, "get_positions") else []
+            except Exception:
+                positions = []
+
+            try:
+                open_orders = broker.get_open_orders() if hasattr(broker, "get_open_orders") else []
+            except Exception:
+                open_orders = []
+
+            try:
+                acct = broker.get_account_summary() if hasattr(broker, "get_account_summary") else {}
+            except Exception:
+                acct = {}
+
+            _log(
+                {
+                    "type": "broker_snapshot",
+                    "run_id": run_id,
+                    "symbol": cfg.symbol,
+                    "frequency": cfg.frequency,
+                    "bar_time": bar_time,
+                    "where": where,
+                    "kill_switch_enabled": bool(is_kill_switch_enabled(live_dir)),
+                    "positions": positions,
+                    "open_orders": open_orders,
+                    "account_summary": acct,
+                }
+            )
 
         bar_size_setting = _frequency_to_bar_size_setting(cfg.frequency)
 
@@ -296,8 +336,11 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
             }
         )
 
+        # Initial snapshot (before any bars are processed).
+        _log_broker_snapshot(where="after_subscribe")
+
         def _on_bar_update(bar_list, has_new_bar: bool) -> None:  # noqa: ANN001
-            nonlocal equity, has_open_position
+            nonlocal equity, has_open_position, bar_count
 
             # Only act on completed bars.
             if not has_new_bar:
@@ -343,6 +386,11 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                         "close": float(bar["Close"]),
                     }
                 )
+
+                bar_count += 1
+                every = max(1, int(getattr(cfg, "snapshot_every_n_bars", 1)))
+                if bar_count % every == 0:
+                    _log_broker_snapshot(where="on_bar", bar_time=bar_time_iso)
 
                 predicted_price = predictor.update_and_predict(bar)
                 current_price = float(bar["Close"])
@@ -420,6 +468,9 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                         "sl_price": float(plan.sl_price),
                     }
                 )
+
+                # Snapshot immediately after submitting an order.
+                _log_broker_snapshot(where="after_order_submit", bar_time=bar_time_iso)
 
                 print(
                     f"[live] TRADE {cfg.symbol} dir={plan.direction:+d} size={plan.size:.2f} "
@@ -507,6 +558,12 @@ def main() -> None:
         default=None,
         help="Optional override for the live log directory (default: repo_root/ui_state/live).",
     )
+    p.add_argument(
+        "--snapshot-every-n-bars",
+        type=int,
+        default=1,
+        help="Emit broker_snapshot event every N bars (default: 1).",
+    )
     args = p.parse_args()
 
     cfg = LiveSessionConfig(
@@ -520,6 +577,7 @@ def main() -> None:
         run_id=args.run_id,
         log_to_disk=not bool(args.no_disk_log),
         log_dir=args.log_dir,
+        snapshot_every_n_bars=int(args.snapshot_every_n_bars),
     )
     run_live_session(cfg)
 

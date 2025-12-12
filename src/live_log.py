@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import os
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -65,6 +65,48 @@ def make_log_path(
     return d / f"live_{_safe_slug(symbol)}_{_safe_slug(frequency)}_{_safe_slug(run_id)}.jsonl"
 
 
+def json_friendly(obj: Any) -> Any:
+    """Convert common Python objects into JSON-serializable structures.
+
+    This is intentionally small and pragmatic:
+    - dataclasses -> dict
+    - datetime -> ISO string
+    - Path -> string
+    - dict/list/tuple -> recursively converted
+
+    Unknown objects are stringified as a last resort.
+    """
+
+    if obj is None:
+        return None
+
+    if isinstance(obj, (str, int, float, bool)):
+        return obj
+
+    if isinstance(obj, datetime):
+        if obj.tzinfo is None:
+            return obj.replace(tzinfo=timezone.utc).isoformat()
+        return obj.astimezone(timezone.utc).isoformat()
+
+    if isinstance(obj, Path):
+        return str(obj)
+
+    # dataclass instances
+    if hasattr(obj, "__dataclass_fields__"):
+        try:
+            return json_friendly(asdict(obj))
+        except Exception:
+            return str(obj)
+
+    if isinstance(obj, dict):
+        return {str(k): json_friendly(v) for k, v in obj.items()}
+
+    if isinstance(obj, (list, tuple)):
+        return [json_friendly(v) for v in obj]
+
+    return str(obj)
+
+
 def append_event(path: Path, event: dict[str, Any]) -> None:
     """Append a single event to a JSONL file.
 
@@ -80,7 +122,7 @@ def append_event(path: Path, event: dict[str, Any]) -> None:
 
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    line = json.dumps(event, ensure_ascii=False)
+    line = json.dumps(json_friendly(event), ensure_ascii=False)
 
     with path.open("a", encoding="utf-8", newline="\n") as f:
         f.write(line)
