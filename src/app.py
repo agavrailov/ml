@@ -414,6 +414,7 @@ with tab_live:
     from datetime import datetime, timezone
 
     from src.live_log import (
+        append_event,
         default_live_dir,
         is_kill_switch_enabled,
         kill_switch_path,
@@ -464,6 +465,41 @@ with tab_live:
         log_info = logs[selected_idx]
         log_path = log_info.path
 
+        # Session annotations (Step 3b): allow the operator to append notes to the log.
+        st.markdown("### Session notes")
+        note_key = f"live_note_{log_path.name}"
+        note_text = st.text_input(
+            "Add a note to this session (stored in the JSONL log)",
+            value="",
+            key=note_key,
+        )
+        col_note1, col_note2 = st.columns([1, 3])
+        with col_note1:
+            if st.button("Append note", key=f"append_note_btn_{log_path.name}"):
+                text = (note_text or "").strip()
+                if not text:
+                    st.warning("Note text is empty.")
+                else:
+                    try:
+                        append_event(
+                            log_path,
+                            {
+                                "type": "note",
+                                "run_id": log_info.run_id,
+                                "symbol": log_info.symbol,
+                                "frequency": log_info.frequency,
+                                "source": "ui",
+                                "message": text,
+                            },
+                        )
+                        st.success("Note appended.")
+                        # Clear field by resetting session_state.
+                        st.session_state[note_key] = ""
+                    except Exception as exc:  # pragma: no cover - UI convenience
+                        st.error(f"Failed to append note: {exc}")
+        with col_note2:
+            st.caption("Use notes for: why you paused, parameter changes, incident context, etc.")
+
         # Load recent events (bounded for UI responsiveness).
         events = read_events(log_path, max_events=2000)
 
@@ -482,33 +518,101 @@ with tab_live:
         last_broker_snapshot = _latest("broker_snapshot")
         last_error = _latest("error")
 
-        # Derive high-level status.
+        now_utc = datetime.now(timezone.utc)
+
+        def _parse_frequency_minutes(freq: str | None) -> int | None:
+            if not freq:
+                return None
+            f = str(freq).strip().lower()
+            try:
+                if f.endswith("min"):
+                    return int(f.replace("min", "").strip())
+                if f in {"1h", "1hr", "1hour"}:
+                    return 60
+                if f in {"4h", "4hr", "4hour"}:
+                    return 240
+            except Exception:
+                return None
+            return None
+
+        def _parse_dt(val: object) -> datetime | None:
+            if isinstance(val, datetime):
+                t = val
+                return t if t.tzinfo is not None else t.replace(tzinfo=timezone.utc)
+            if isinstance(val, str):
+                try:
+                    t = datetime.fromisoformat(val)
+                    return t if t.tzinfo is not None else t.replace(tzinfo=timezone.utc)
+                except Exception:
+                    return None
+            return None
+
+        # Derive high-level engine status from run_start/run_end.
         status = "UNKNOWN"
         if last_run_start is not None and last_run_end is None:
             status = "RUNNING"
         if last_run_end is not None:
             status = "STOPPED"
 
-        # Data freshness (best-effort).
-        freshness = "N/A"
-        if last_bar is not None:
-            bt = last_bar.get("bar_time")
-            if isinstance(bt, str):
-                try:
-                    t = datetime.fromisoformat(bt)
-                    if t.tzinfo is None:
-                        t = t.replace(tzinfo=timezone.utc)
-                    dt_min = (datetime.now(timezone.utc) - t).total_seconds() / 60.0
-                    freshness = f"{dt_min:.1f} min ago"
-                except Exception:
-                    freshness = bt
+        # Data freshness + STALE logic.
+        last_bar_time = _parse_dt(last_bar.get("bar_time")) if last_bar else None
+        bar_age_min: float | None = None
+        if last_bar_time is not None:
+            bar_age_min = (now_utc - last_bar_time).total_seconds() / 60.0
 
-        # KPI cards (Tier 0-ish for Step 1).
+        freq_min = None
+        if last_run_start is not None:
+            freq_min = _parse_frequency_minutes(last_run_start.get("frequency"))
+        if freq_min is None:
+            freq_min = _parse_frequency_minutes(log_info.frequency)
+
+        # If we know the bar cadence, consider STALE when we're far beyond expected.
+        # Conservative defaults: at least 5 minutes, otherwise 2x bar period.
+        stale_threshold_min = 5.0
+        if isinstance(freq_min, int) and freq_min > 0:
+            stale_threshold_min = float(max(5, 2 * freq_min))
+
+        data_feed_status = "N/A"
+        data_freshness_label = "N/A"
+        is_stale = False
+        if status == "RUNNING":
+            if bar_age_min is None:
+                data_feed_status = "NO_BARS_YET"
+            else:
+                is_stale = bar_age_min > stale_threshold_min
+                data_feed_status = "STALE" if is_stale else "OK"
+                data_freshness_label = f"{bar_age_min:.1f} min ago"
+        else:
+            if bar_age_min is not None:
+                data_freshness_label = f"{bar_age_min:.1f} min ago"
+            data_feed_status = "STOPPED"
+
+        # Snapshot freshness.
+        snap_time = _parse_dt(last_broker_snapshot.get("ts_utc")) if last_broker_snapshot else None
+        snap_age_min: float | None = None
+        if snap_time is not None:
+            snap_age_min = (now_utc - snap_time).total_seconds() / 60.0
+
+        # Prominent status banner.
+        if last_error is not None:
+            st.error("Last event is an ERROR. See the Errors section below.")
+        elif bool(is_kill_switch_enabled()):
+            st.warning("Kill switch is ENABLED: new order submissions should be blocked.")
+        elif status == "RUNNING" and is_stale:
+            st.warning(
+                f"Live session appears STALE: last bar was {data_freshness_label} (threshold {stale_threshold_min:.0f} min)."
+            )
+        elif status == "RUNNING":
+            st.success("Live session running.")
+        elif status == "STOPPED":
+            st.info("Session is stopped (log shows run_end).")
+
+        # KPI cards (Tier 0-ish).
         k1, k2, k3, k4, k5, k6 = st.columns(6)
         with k1:
             st.metric("Engine", status)
         with k2:
-            st.metric("Data freshness", freshness)
+            st.metric("Data feed", data_feed_status, delta=data_freshness_label if data_freshness_label != "N/A" else None)
         with k3:
             broker_status = "UNKNOWN"
             if last_broker_connected is not None and status == "RUNNING":
@@ -549,8 +653,18 @@ with tab_live:
             else:
                 st.metric("Last order_id", "(none)")
 
+        # Show recent notes (most recent first).
+        notes = [e for e in events if e.get("type") == "note"]
+        if notes:
+            with st.expander("Recent notes", expanded=False):
+                df_notes = pd.DataFrame(notes[-20:])
+                keep_cols = [c for c in ["ts_utc", "source", "message"] if c in df_notes.columns]
+                st.dataframe(df_notes[keep_cols].iloc[::-1], width="stretch")
+
         # Broker snapshot (Step 2): show "broker truth" derived from latest snapshot event.
         st.markdown("### Broker snapshot")
+        if snap_age_min is not None:
+            st.caption(f"Snapshot freshness: {snap_age_min:.1f} min ago")
         if last_broker_snapshot is None:
             st.info("No broker snapshots logged yet for this session.")
         else:
@@ -630,6 +744,181 @@ with tab_live:
                 st.dataframe(df[keep_cols].iloc[::-1], width="stretch")
             else:
                 st.info("No order submissions yet.")
+
+        # Charts (Step 3a): price + prediction + trade markers from the event log.
+        st.markdown("### Charts")
+        with st.expander("Price / prediction / trades", expanded=True):
+            bars = [e for e in events if e.get("type") == "bar"]
+            decisions = [e for e in events if e.get("type") == "decision"]
+            orders = [e for e in events if e.get("type") == "order_submitted"]
+
+            if not bars:
+                st.info("No bar events yet.")
+            else:
+                df_bar = pd.DataFrame(bars)
+                # Normalize bar_time.
+                if "bar_time" in df_bar.columns:
+                    try:
+                        df_bar["bar_time"] = pd.to_datetime(df_bar["bar_time"], utc=True, errors="coerce")
+                    except Exception:
+                        pass
+
+                cols = [c for c in ["bar_time", "close"] if c in df_bar.columns]
+                df_bar = df_bar[cols].copy() if cols else df_bar.copy()
+                if "bar_time" in df_bar.columns:
+                    df_bar = df_bar.dropna(subset=["bar_time"]).drop_duplicates(subset=["bar_time"], keep="last")
+                    df_bar = df_bar.sort_values("bar_time")
+
+                # Predicted price from decisions (if present).
+                df_pred = None
+                if decisions:
+                    df_d = pd.DataFrame(decisions)
+                    if "bar_time" in df_d.columns:
+                        try:
+                            df_d["bar_time"] = pd.to_datetime(df_d["bar_time"], utc=True, errors="coerce")
+                        except Exception:
+                            pass
+                    if "predicted_price" in df_d.columns and "bar_time" in df_d.columns:
+                        df_pred = (
+                            df_d[["bar_time", "predicted_price"]]
+                            .dropna(subset=["bar_time"])
+                            .drop_duplicates(subset=["bar_time"], keep="last")
+                            .sort_values("bar_time")
+                        )
+
+                plot_df = df_bar
+                if df_pred is not None and "bar_time" in plot_df.columns:
+                    plot_df = plot_df.merge(df_pred, on="bar_time", how="left")
+
+                if plot_df.empty:
+                    st.info("Not enough data to plot.")
+                else:
+                    # Use matplotlib for consistent style with the rest of the app.
+                    fig, ax = plt.subplots(figsize=(12, 4))
+                    x = plot_df["bar_time"] if "bar_time" in plot_df.columns else plot_df.index
+
+                    if "close" in plot_df.columns:
+                        ax.plot(x, plot_df["close"], label="Close", color="tab:blue")
+
+                    if "predicted_price" in plot_df.columns:
+                        ax.plot(x, plot_df["predicted_price"], label="Predicted", color="tab:orange", alpha=0.8)
+
+                    # Mark submitted orders (best-effort).
+                    if orders:
+                        df_o = pd.DataFrame(orders)
+                        if "bar_time" in df_o.columns:
+                            try:
+                                df_o["bar_time"] = pd.to_datetime(df_o["bar_time"], utc=True, errors="coerce")
+                            except Exception:
+                                pass
+                        if "bar_time" in df_o.columns and "close" in plot_df.columns and "bar_time" in plot_df.columns:
+                            # Align order times to plotted closes.
+                            tmp = plot_df[["bar_time", "close"]].merge(
+                                df_o[["bar_time", "direction"]].dropna(subset=["bar_time"]),
+                                on="bar_time",
+                                how="inner",
+                            )
+                            if not tmp.empty:
+                                # Direction +1/-1 -> marker shape.
+                                buys = tmp[tmp.get("direction", 0) >= 0]
+                                sells = tmp[tmp.get("direction", 0) < 0]
+                                if not buys.empty:
+                                    ax.scatter(buys["bar_time"], buys["close"], marker="^", color="green", s=40, label="Order (BUY)")
+                                if not sells.empty:
+                                    ax.scatter(sells["bar_time"], sells["close"], marker="v", color="red", s=40, label="Order (SELL)")
+
+                    ax.set_title("Live: Close vs Predicted with order markers")
+                    ax.set_xlabel("Time")
+                    ax.grid(True, alpha=0.3)
+                    ax.legend(loc="best")
+                    fig.tight_layout()
+                    st.pyplot(fig)
+
+        # Audit log (Tier 2): filter/search/export over the event timeline.
+        st.markdown("### Audit log")
+        import json
+
+        all_types = sorted({str(e.get("type")) for e in events if e.get("type") is not None})
+        default_types = [
+            t
+            for t in [
+                "decision",
+                "order_submitted",
+                "order_status",
+                "fill",
+                "order_rejected",
+                "error",
+                "note",
+            ]
+            if t in all_types
+        ]
+
+        col_f1, col_f2, col_f3 = st.columns([2, 1, 2])
+        with col_f1:
+            selected_types = st.multiselect("Event types", options=all_types, default=default_types)
+        with col_f2:
+            max_rows = int(st.number_input("Max rows", min_value=50, max_value=5000, value=500, step=50))
+        with col_f3:
+            order_id_query = st.text_input("Search order_id contains", value="")
+
+        filtered = [e for e in events if not selected_types or e.get("type") in set(selected_types)]
+        if order_id_query.strip():
+            q = order_id_query.strip().lower()
+            filtered = [e for e in filtered if q in str(e.get("order_id", "")).lower()]
+
+        # Keep the most recent items (timeline is stored oldest->newest).
+        filtered = filtered[-max_rows:]
+
+        st.caption(f"Filtered events: {len(filtered)} / {len(events)}")
+
+        if filtered:
+            df_a = pd.DataFrame(filtered)
+            keep_cols = [
+                c
+                for c in [
+                    "ts_utc",
+                    "type",
+                    "bar_time",
+                    "where",
+                    "order_id",
+                    "status",
+                    "fill_quantity",
+                    "filled_quantity_total",
+                    "avg_fill_price",
+                    "action",
+                    "direction",
+                    "size",
+                    "blocked_by_kill_switch",
+                    "error",
+                    "message",
+                ]
+                if c in df_a.columns
+            ]
+            if keep_cols:
+                st.dataframe(df_a[keep_cols].iloc[::-1], width="stretch")
+            else:
+                st.dataframe(df_a.iloc[::-1], width="stretch")
+
+            # Export filtered view.
+            jsonl_text = "\n".join(json.dumps(e, ensure_ascii=False) for e in filtered) + "\n"
+            st.download_button(
+                "Download filtered JSONL",
+                data=jsonl_text,
+                file_name=f"filtered_{log_path.name}",
+                mime="application/jsonl",
+            )
+            try:
+                st.download_button(
+                    "Download filtered CSV",
+                    data=df_a.to_csv(index=False),
+                    file_name=f"filtered_{log_path.stem}.csv",
+                    mime="text/csv",
+                )
+            except Exception:
+                # CSV export can fail if complex/nested objects are present.
+                pass
+        else:
+            st.info("No events match the current filters.")
 
         # Errors (Tier 2 drill-down).
         if last_error is not None:

@@ -177,7 +177,7 @@ class IBKRBrokerTws(Broker):
                     cancel_fn(t.order)
                 break
 
-    def get_open_orders(self) -> List[OrderStatus]:
+    def get_all_orders(self) -> List[OrderStatus]:
         self._ensure_connected()
 
         result: List[OrderStatus] = []
@@ -192,8 +192,6 @@ class IBKRBrokerTws(Broker):
                 continue
 
             status = getattr(status_obj, "status", "")
-            if status in {"Filled", "Cancelled"}:
-                continue
 
             side = Side.BUY if getattr(order, "action", "BUY") == "BUY" else Side.SELL
             qty = float(getattr(order, "totalQuantity", 0.0))
@@ -209,11 +207,15 @@ class IBKRBrokerTws(Broker):
                     quantity=qty,
                     filled_quantity=filled_qty,
                     avg_fill_price=float(avg_fill_price) if avg_fill_price is not None else None,
-                    status=status,
+                    status=str(status),
                 ),
             )
 
         return result
+
+    def get_open_orders(self) -> List[OrderStatus]:
+        orders = self.get_all_orders()
+        return [o for o in orders if o.status not in {"Filled", "Cancelled"}]
 
     def get_positions(self) -> List[PositionInfo]:
         self._ensure_connected()

@@ -110,6 +110,17 @@ def test_place_order_maps_to_ib_order_and_returns_order_id():
     assert order.action == "BUY"
     assert float(order.totalQuantity) == 5.0
 
+    # get_all_orders should include submitted orders.
+    all_orders = broker.get_all_orders()
+    assert len(all_orders) == 1
+    assert all_orders[0].order_id == "1"
+    assert all_orders[0].status == "Submitted"
+
+    # open orders should include it as well.
+    open_orders = broker.get_open_orders()
+    assert len(open_orders) == 1
+    assert open_orders[0].order_id == "1"
+
 
 def test_get_positions_maps_ib_positions_to_position_info():
     fake_ib = _FakeIB()

@@ -36,10 +36,18 @@ def test_simulated_broker_tracks_open_and_cancelled_orders() -> None:
     assert open_orders[0].order_id == oid
     assert open_orders[0].status == "NEW"
 
+    all_before = broker.get_all_orders()
+    assert len(all_before) == 1
+    assert all_before[0].order_id == oid
+
     broker.cancel_order(oid)
 
     open_after_cancel = broker.get_open_orders()
     assert open_after_cancel == []
+
+    all_after = broker.get_all_orders()
+    assert len(all_after) == 1
+    assert all_after[0].status == "CANCELLED"
 
 
 def test_simulated_broker_positions_and_account_summary_are_safe_defaults() -> None:

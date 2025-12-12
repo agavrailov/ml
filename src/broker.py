@@ -100,6 +100,13 @@ class Broker(Protocol):
     def cancel_order(self, order_id: str) -> None:
         """Request cancellation of an existing order (best-effort)."""
 
+    def get_all_orders(self) -> List[OrderStatus]:
+        """Return a snapshot of all known orders (including filled/cancelled).
+
+        Not all brokers can provide historical orders; for those cases, a best-effort
+        subset is acceptable.
+        """
+
     def get_open_orders(self) -> List[OrderStatus]:
         """Return a snapshot of currently open orders."""
 
@@ -154,6 +161,9 @@ class SimulatedBroker:
         if status.status in {"FILLED", "CANCELLED"}:
             return
         status.status = "CANCELLED"
+
+    def get_all_orders(self) -> List[OrderStatus]:
+        return list(self._orders.values())
 
     def get_open_orders(self) -> List[OrderStatus]:
         return [o for o in self._orders.values() if o.status not in {"FILLED", "CANCELLED"}]

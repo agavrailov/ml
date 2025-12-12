@@ -41,6 +41,105 @@ from src.live_log import (
     is_kill_switch_enabled,
     make_log_path,
 )
+
+
+def _canonical_order_status(status: object) -> str:
+    s = str(status or "").strip()
+    low = s.lower()
+    if "reject" in low:
+        return "REJECTED"
+    if "cancel" in low:
+        return "CANCELLED"
+    if "fill" in low:
+        return "FILLED"
+    if "submit" in low:
+        return "SUBMITTED"
+    if not s:
+        return "UNKNOWN"
+    return s.upper()
+
+
+def derive_order_lifecycle_events(
+    prev_state: dict[str, dict[str, object]],
+    orders: list[object],
+    *,
+    run_id: str,
+    symbol: str,
+    frequency: str,
+    where: str,
+    bar_time: str | None,
+) -> tuple[dict[str, dict[str, object]], list[dict[str, object]]]:
+    """Derive order_status/fill events by diffing broker order snapshots.
+
+    Minimal by design:
+    - Emit an `order_status` event whenever (status, filled_qty, avg_fill_price) changes.
+    - Emit a `fill` event whenever filled_quantity increases.
+    """
+
+    next_state: dict[str, dict[str, object]] = {}
+    out: list[dict[str, object]] = []
+
+    for o in orders:
+        oid = str(getattr(o, "order_id", "") or "")
+        if not oid:
+            continue
+
+        status_raw = getattr(o, "status", None)
+        status = _canonical_order_status(status_raw)
+        filled_qty = float(getattr(o, "filled_quantity", 0.0) or 0.0)
+        avg_fill_price = getattr(o, "avg_fill_price", None)
+        try:
+            avg_fill_price_f = float(avg_fill_price) if avg_fill_price is not None else None
+        except Exception:
+            avg_fill_price_f = None
+
+        prev = prev_state.get(oid) or {}
+        prev_status = str(prev.get("status", ""))
+        prev_filled = float(prev.get("filled_quantity", 0.0) or 0.0)
+
+        next_state[oid] = {
+            "status": status,
+            "filled_quantity": filled_qty,
+            "avg_fill_price": avg_fill_price_f,
+        }
+
+        if status != prev_status or abs(filled_qty - prev_filled) > 1e-9 or (avg_fill_price_f != prev.get("avg_fill_price")):
+            out.append(
+                {
+                    "type": "order_status",
+                    "run_id": run_id,
+                    "symbol": symbol,
+                    "frequency": frequency,
+                    "bar_time": bar_time,
+                    "where": where,
+                    "order_id": oid,
+                    "status": status,
+                    "filled_quantity": filled_qty,
+                    "avg_fill_price": avg_fill_price_f,
+                    # Optional passthrough metadata if present on the OrderStatus object.
+                    "side": str(getattr(o, "side", "")),
+                    "quantity": float(getattr(o, "quantity", 0.0) or 0.0),
+                }
+            )
+
+        if filled_qty > prev_filled + 1e-9:
+            out.append(
+                {
+                    "type": "fill",
+                    "run_id": run_id,
+                    "symbol": symbol,
+                    "frequency": frequency,
+                    "bar_time": bar_time,
+                    "where": where,
+                    "order_id": oid,
+                    "fill_quantity": float(filled_qty - prev_filled),
+                    "filled_quantity_total": filled_qty,
+                    "avg_fill_price": avg_fill_price_f,
+                    "side": str(getattr(o, "side", "")),
+                }
+            )
+
+    return next_state, out
 from src.live_predictor import LivePredictor, LivePredictorConfig
 from src.strategy import StrategyState, compute_tp_sl_and_size
 from src.trading_session import make_strategy_config_from_defaults, make_broker
@@ -273,11 +372,16 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
         has_open_position = False
         bar_count = 0
 
+        # Track order lifecycle across snapshots (for `order_status` / `fill` events).
+        order_state: dict[str, dict[str, object]] = {}
+
         def _log_broker_snapshot(*, where: str, bar_time: str | None = None) -> None:
             """Best-effort broker snapshot for observability.
 
             This uses the repo's Broker abstraction when available.
             """
+
+            nonlocal order_state
 
             try:
                 positions = broker.get_positions() if hasattr(broker, "get_positions") else []
@@ -288,6 +392,11 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                 open_orders = broker.get_open_orders() if hasattr(broker, "get_open_orders") else []
             except Exception:
                 open_orders = []
+
+            try:
+                all_orders = broker.get_all_orders() if hasattr(broker, "get_all_orders") else list(open_orders)
+            except Exception:
+                all_orders = list(open_orders)
 
             try:
                 acct = broker.get_account_summary() if hasattr(broker, "get_account_summary") else {}
@@ -308,6 +417,22 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                     "account_summary": acct,
                 }
             )
+
+            try:
+                order_state, lifecycle_events = derive_order_lifecycle_events(
+                    order_state,
+                    list(all_orders) if all_orders is not None else [],
+                    run_id=run_id,
+                    symbol=cfg.symbol,
+                    frequency=cfg.frequency,
+                    where=where,
+                    bar_time=bar_time,
+                )
+                for ev in lifecycle_events:
+                    _log(ev)
+            except Exception:
+                # Never let observability crash the loop.
+                pass
 
         bar_size_setting = _frequency_to_bar_size_setting(cfg.frequency)
 
@@ -451,7 +576,27 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
 
                 _log(decision_event)
 
-                order_id = submit_trade_plan(broker, plan, exec_ctx)
+                try:
+                    order_id = submit_trade_plan(broker, plan, exec_ctx)
+                except Exception as exc:  # noqa: BLE001
+                    _log(
+                        {
+                            "type": "order_rejected",
+                            "run_id": run_id,
+                            "symbol": cfg.symbol,
+                            "frequency": cfg.frequency,
+                            "bar_time": bar_time_iso,
+                            "direction": int(plan.direction),
+                            "size": float(plan.size),
+                            "tp_price": float(plan.tp_price),
+                            "sl_price": float(plan.sl_price),
+                            "error": repr(exc),
+                            "traceback": traceback.format_exc(),
+                        }
+                    )
+                    print(f"[live] Order submission failed: {exc}")
+                    return
+
                 has_open_position = True
 
                 _log(
