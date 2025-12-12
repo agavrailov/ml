@@ -176,11 +176,21 @@ def get_model_config(
 
 @dataclass(frozen=True)
 class IbConfig:
-    """IB/TWS connection and data ingestion settings."""
+    """IB/TWS connection and data ingestion settings.
+
+    Defaults are set up for **IB Gateway paper trading**:
+    - host: 127.0.0.1
+    - port: 4002
+
+    Override via environment variables:
+    - TWS_HOST
+    - TWS_PORT
+    - TWS_CLIENT_ID
+    """
 
     host: str = field(default_factory=lambda: os.getenv("TWS_HOST", "127.0.0.1"))
-    port: int = int(os.getenv("TWS_PORT", "7496"))
-    client_id: int = int(os.getenv("TWS_CLIENT_ID", "1"))
+    port: int = field(default_factory=lambda: int(os.getenv("TWS_PORT", "4002")))
+    client_id: int = field(default_factory=lambda: int(os.getenv("TWS_CLIENT_ID", "1")))
     max_concurrent_requests: int = 50
     data_batch_save_size: int = 7
     contract_details: dict = field(
