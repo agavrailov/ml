@@ -395,6 +395,11 @@ COMMISSION_PER_UNIT_PER_LEG = STRATEGY_DEFAULTS.commission_per_unit_per_leg
 MIN_COMMISSION_PER_ORDER = STRATEGY_DEFAULTS.min_commission_per_order
 INITIAL_EQUITY = STRATEGY_DEFAULTS.initial_equity
 
+# Broker backend selection for execution engines.
+# For safety, default to "SIM"; IBKR-backed engines must be explicitly opt-in.
+# Higher-level session code may also accept an explicit backend override.
+BROKER_BACKEND: str = "SIM"  # allowed: "SIM", "IBKR_TWS" (and future options)
+
 # Backtest window defaults
 BACKTEST_DEFAULT_START_DATE = BACKTEST_WINDOW.default_start_date
 BACKTEST_DEFAULT_END_DATE = BACKTEST_WINDOW.default_end_date
@@ -431,7 +436,7 @@ def get_equity_csv_path(symbol: str, frequency: str) -> str:
     """Path for equity CSV in the backtests directory."""
     return PATHS.equity_csv(symbol, frequency)
 
-def get_active_model_path():
+def get_active_model_path(frequency: str, tsteps: int):
     """Resolve the path of the currently *active* model.
 
     The active model is defined as the globally best entry in

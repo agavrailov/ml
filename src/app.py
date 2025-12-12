@@ -134,6 +134,9 @@ def _load_strategy_defaults() -> dict:
     base_k_atr_short = float(getattr(module, "K_ATR_SHORT", module.K_ATR_MIN_TP))
 
     return {
+        # Shared aliases (kept for backwards compatibility and UI expectations)
+        "k_sigma_err": float(module.K_SIGMA_ERR),
+        "k_atr_min_tp": float(module.K_ATR_MIN_TP),
         # Side-specific defaults for UI/backtests
         "k_sigma_long": base_k_sigma_long,
         "k_sigma_short": base_k_sigma_short,

@@ -94,25 +94,27 @@ This document outlines a **phased plan** for introducing trading capabilities on
 
 ---
 
-### Phase 3 – Controlled Live Trading (Optional, Post-Validation)
+### Phase 3 – Controlled Broker Trading (IBKR Paper First, Optional Live)
 
-> This phase is intentionally **beyond the MVP** and should only be attempted after extensive testing and paper trading.
+> This phase is intentionally **beyond the MVP** and should only be attempted after extensive testing and simulated/paper trading.
 
 **Goals:**
-- Enable small-scale real-money trading with strict risk controls.
+- Enable small-scale trading via a real broker adapter with strict risk controls.
+- Start with **IBKR paper** accounts; optionally progress to limited live capital.
 
 **Tasks:**
-- Implement a broker adapter and execution service.
-- Introduce configuration flags to switch between simulated and real execution.
-- Establish monitoring, alerts, and manual controls (kill switch).
+- Implement a broker adapter and execution service, with a concrete `IBKRBroker` implementation behind a generic broker interface.
+- Introduce configuration flags to switch between simulated (`SIM`), IBKR paper (`IBKR_PAPER`), and (optionally) IBKR live (`IBKR_LIVE`) execution.
+- Enforce risk controls in a dedicated `RiskManagedBroker` layer (max daily loss, max position per symbol, price sanity checks).
+- Establish monitoring, alerts, and manual controls (including a kill switch to halt new orders and optionally flatten positions).
 
 **Exit Criteria:**
-- Small, controlled live trading runs with limited capital behave as expected.
-- No critical incidents over a predefined observation period.
+- Multiple days of IBKR **paper** trading runs with limited size behave as expected and match backtest expectations.
+- For any optional live-money trial, no critical incidents over a predefined observation period.
 
 **Rollback:**
-- Switch execution back to simulated mode.
-- Disable or decommission live-trading entrypoints.
+- Switch execution back to simulated mode by configuration only.
+- Disable or decommission live-trading entrypoints and IBKR credentials if needed.
 
 ---
 

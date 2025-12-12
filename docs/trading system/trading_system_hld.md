@@ -155,6 +155,16 @@ Implementation can reuse most of the backtester core but with a different data s
   - State (positions, signals) stored in a managed database.
   - Backtesting remains local or can be containerized for parameter sweeps on cloud compute as desired.
 
+#### 3.5.1 IBKR implementation (paper-first)
+
+When the broker adapter is implemented against IBKR, the concrete design SHOULD:
+
+- Use an `IBKRBroker` implementation that connects to TWS or IB Gateway (via a library such as `ib_insync`).
+- Keep IBKR specifics isolated behind the generic broker interface used by the strategy and backtester.
+- Wrap `IBKRBroker` with a `RiskManagedBroker` responsible for enforcing max daily loss, per-symbol limits, and kill-switch behavior.
+- Reuse the same strategy interface and signal-to-order mapping as in the offline backtester and simulated paper-trading loop.
+- Treat IBKR **paper accounts** as the default target; any live-money mode must be explicitly configured and opt-in.
+
 ---
 
 ## 4. Data Flow (Phase 0 Backtest)
