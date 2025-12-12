@@ -389,10 +389,204 @@ def _run_backtest(
     )
 st.title("LSTM Backtesting & Training UI")
 
-# Five main tabs matching the end-to-end workflow.
-tab_data, tab_experiments, tab_train, tab_backtest, tab_walkforward = st.tabs(
-    ["Data", "Hyperparameter Experiments", "Train & Promote", "Backtest / Strategy", "Walk-Forward Analysis"]
+# Six main tabs matching the end-to-end workflow.
+# "Live" is intended to be the primary operational dashboard during market hours.
+tab_live, tab_data, tab_experiments, tab_train, tab_backtest, tab_walkforward = st.tabs(
+    [
+        "Live",
+        "Data",
+        "Hyperparameter Experiments",
+        "Train & Promote",
+        "Backtest / Strategy",
+        "Walk-Forward Analysis",
+    ]
 )
+
+# --------------------------------------------------------------------------------------
+# Tab 0: Live - operational dashboard (Step 1: log-derived KPIs + recent events)
+# --------------------------------------------------------------------------------------
+with tab_live:
+    st.subheader("0. Live Ops Dashboard")
+
+    from datetime import datetime, timezone
+
+    from src.live_log import (
+        default_live_dir,
+        is_kill_switch_enabled,
+        kill_switch_path,
+        list_logs,
+        read_events,
+        set_kill_switch,
+    )
+
+    live_dir = default_live_dir()
+
+    col_a, col_b, col_c = st.columns([2, 1, 1])
+    with col_a:
+        st.caption(f"Live log directory: `{live_dir}`")
+    with col_b:
+        st.caption(f"Kill switch file: `{kill_switch_path()}`")
+    with col_c:
+        # Button exists mostly as a UX affordance; any interaction causes rerun.
+        st.button("Refresh")
+
+    # Kill switch controls.
+    ks_enabled = bool(is_kill_switch_enabled())
+    cks1, cks2, cks3 = st.columns([1, 1, 2])
+    with cks1:
+        if st.button("Enable kill switch", disabled=ks_enabled):
+            set_kill_switch(enabled=True)
+            st.success("Kill switch enabled: new order submissions should be blocked.")
+    with cks2:
+        if st.button("Disable kill switch", disabled=not ks_enabled):
+            set_kill_switch(enabled=False)
+            st.success("Kill switch disabled.")
+    with cks3:
+        st.write(f"**Kill switch**: {'ENABLED' if ks_enabled else 'disabled'}")
+
+    logs = list_logs()
+    if not logs:
+        st.info(
+            "No live session logs found yet. Start a session via the CLI (e.g. "
+            "`python -m src.ibkr_live_session --symbol NVDA --frequency 60min`) "
+            "to generate a JSONL log under ui_state/live/."
+        )
+    else:
+        # Session selector.
+        options = [
+            f"{info.run_id} | {info.symbol} {info.frequency} | {info.path.name}" for info in logs
+        ]
+        selected = st.selectbox("Select session", options, index=0)
+        selected_idx = options.index(selected)
+        log_info = logs[selected_idx]
+        log_path = log_info.path
+
+        # Load recent events (bounded for UI responsiveness).
+        events = read_events(log_path, max_events=2000)
+
+        def _latest(event_type: str):
+            for e in reversed(events):
+                if e.get("type") == event_type:
+                    return e
+            return None
+
+        last_run_start = _latest("run_start")
+        last_run_end = _latest("run_end")
+        last_bar = _latest("bar")
+        last_decision = _latest("decision")
+        last_order = _latest("order_submitted")
+        last_broker_connected = _latest("broker_connected")
+        last_error = _latest("error")
+
+        # Derive high-level status.
+        status = "UNKNOWN"
+        if last_run_start is not None and last_run_end is None:
+            status = "RUNNING"
+        if last_run_end is not None:
+            status = "STOPPED"
+
+        # Data freshness (best-effort).
+        freshness = "N/A"
+        if last_bar is not None:
+            bt = last_bar.get("bar_time")
+            if isinstance(bt, str):
+                try:
+                    t = datetime.fromisoformat(bt)
+                    if t.tzinfo is None:
+                        t = t.replace(tzinfo=timezone.utc)
+                    dt_min = (datetime.now(timezone.utc) - t).total_seconds() / 60.0
+                    freshness = f"{dt_min:.1f} min ago"
+                except Exception:
+                    freshness = bt
+
+        # KPI cards (Tier 0-ish for Step 1).
+        k1, k2, k3, k4, k5, k6 = st.columns(6)
+        with k1:
+            st.metric("Engine", status)
+        with k2:
+            st.metric("Data freshness", freshness)
+        with k3:
+            broker_status = "UNKNOWN"
+            if last_broker_connected is not None and status == "RUNNING":
+                broker_status = "CONNECTED"
+            elif status == "STOPPED":
+                broker_status = "STOPPED"
+            st.metric("Broker", broker_status)
+        with k4:
+            # Step 1 only has log-derived state; treat any submitted order as "OPEN".
+            pos_state = "OPEN" if last_order is not None else "FLAT"
+            st.metric("Position (local)", pos_state)
+        with k5:
+            if last_decision is not None:
+                st.metric("Last decision", str(last_decision.get("action", "")))
+            else:
+                st.metric("Last decision", "(none)")
+        with k6:
+            if last_order is not None:
+                st.metric("Last order_id", str(last_order.get("order_id", "")))
+            else:
+                st.metric("Last order_id", "(none)")
+
+        # Recent decisions & orders.
+        st.markdown("### Recent activity")
+        col_d, col_o = st.columns(2)
+
+        with col_d:
+            st.markdown("#### Decisions")
+            dec = [e for e in events if e.get("type") == "decision"]
+            if dec:
+                df = pd.DataFrame(dec[-50:])
+                keep_cols = [
+                    c
+                    for c in [
+                        "ts_utc",
+                        "bar_time",
+                        "action",
+                        "direction",
+                        "size",
+                        "close",
+                        "predicted_price",
+                        "blocked_by_kill_switch",
+                    ]
+                    if c in df.columns
+                ]
+                st.dataframe(df[keep_cols].iloc[::-1], width="stretch")
+            else:
+                st.info("No decision events yet.")
+
+        with col_o:
+            st.markdown("#### Orders")
+            ords = [e for e in events if e.get("type") == "order_submitted"]
+            if ords:
+                df = pd.DataFrame(ords[-50:])
+                keep_cols = [c for c in ["ts_utc", "bar_time", "order_id", "direction", "size"] if c in df.columns]
+                st.dataframe(df[keep_cols].iloc[::-1], width="stretch")
+            else:
+                st.info("No order submissions yet.")
+
+        # Errors (Tier 2 drill-down).
+        if last_error is not None:
+            st.markdown("### Errors")
+            err_events = [e for e in events if e.get("type") == "error"]
+            for e in err_events[-5:][::-1]:
+                where = e.get("where", "")
+                err = e.get("error", "")
+                ts = e.get("ts_utc", "")
+                with st.expander(f"{ts} | {where} | {err}"):
+                    st.code(str(e.get("traceback", "")))
+
+        # Export/download.
+        st.markdown("### Export")
+        try:
+            raw_text = log_path.read_text(encoding="utf-8")
+            st.download_button(
+                "Download raw JSONL log",
+                data=raw_text,
+                file_name=log_path.name,
+                mime="application/jsonl",
+            )
+        except Exception as exc:  # pragma: no cover - UI convenience
+            st.error(f"Failed to read log file for download: {exc}")
 
 # --------------------------------------------------------------------------------------
 # Tab 1: Data - ingestion, cleaning, resampling, and feature preview
