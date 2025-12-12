@@ -6,6 +6,7 @@ fastapi
 uvicorn
 pydantic
 streamlit
+streamlit-autorefresh
 altair
 pytest
 ib_insync

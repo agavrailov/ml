@@ -27,7 +27,6 @@ from src.data import load_hourly_ohlc
 st.set_page_config(layout="wide")
 import src.config as cfg_mod
 from src.train import train_model
-from src.evaluate_model import evaluate_model_performance
 from src.config import (
     FREQUENCY,
     TSTEPS,
@@ -38,8 +37,8 @@ from src.config import (
     N_LSTM_LAYERS_OPTIONS,
     STATEFUL_OPTIONS,
     FEATURES_TO_USE_OPTIONS,
+    MODEL_REGISTRY_DIR,
     get_run_hyperparameters,
-    get_latest_best_model_path,
     get_predictions_csv_path,
 )
 from scripts.generate_predictions_csv import generate_predictions_for_csv
@@ -104,6 +103,170 @@ def _save_json_history(filename: str, history: list[dict]) -> None:
         path.write_text(json.dumps(history, indent=2), encoding="utf-8")
     except Exception as exc:  # pragma: no cover - best-effort persistence
         st.error(f"Failed to save history to {filename}: {exc}")
+
+
+def _filter_training_history(history: list[dict], *, frequency: str, tsteps: int) -> list[dict]:
+    """Return training history rows matching a specific (frequency, tsteps)."""
+    rows = [
+        r
+        for r in (history or [])
+        if isinstance(r, dict)
+        and r.get("frequency") == frequency
+        and int(r.get("tsteps", -1)) == int(tsteps)
+    ]
+
+    # Most-recent first.
+    return sorted(rows, key=lambda r: r.get("timestamp", ""), reverse=True)
+
+
+def _get_best_training_row(rows: list[dict]) -> dict | None:
+    """Return the row with minimal validation_loss, or None."""
+    best: dict | None = None
+    best_loss = float("inf")
+
+    for r in rows or []:
+        try:
+            loss = float(r.get("validation_loss"))
+        except Exception:
+            continue
+
+        if loss < best_loss:
+            best_loss = loss
+            best = r
+
+    return best
+
+
+_REGISTRY_MODEL_RE = re.compile(
+    r"^my_lstm_model_(?P<frequency>.+?)_tsteps(?P<tsteps>\d+)_(?P<date>\d{8})_(?P<time>\d{6})\.keras$"
+)
+
+
+def _format_timestamp_iso_seconds(ts: str | None) -> str | None:
+    """Return an ISO timestamp truncated to seconds (YYYY-MM-DDTHH:MM:SS)."""
+    if not ts:
+        return None
+    s = str(ts)
+
+    # Fast-path: keep only the first 19 chars, which correspond to seconds.
+    # Examples:
+    # - 2025-12-12T10:58:23.123456+00:00 -> 2025-12-12T10:58:23
+    # - 2025-12-12T10:58:23 -> 2025-12-12T10:58:23
+    if len(s) >= 19 and s[4] == "-" and s[10] == "T":
+        return s[:19]
+
+    try:
+        t = pd.to_datetime(s, utc=True, errors="coerce")
+        if pd.isna(t):
+            return None
+        return t.strftime("%Y-%m-%dT%H:%M:%S")
+    except Exception:
+        return None
+
+
+def _parse_registry_model_filename(filename: str) -> dict | None:
+    """Parse registry model filename into structured fields.
+
+    Expected format:
+        my_lstm_model_{frequency}_tsteps{tsteps}_{YYYYMMDD}_{HHMMSS}.keras
+    """
+    m = _REGISTRY_MODEL_RE.match(str(filename))
+    if not m:
+        return None
+
+    freq = m.group("frequency")
+    tsteps = int(m.group("tsteps"))
+    d = m.group("date")
+    tm = m.group("time")
+
+    # Format into second-resolution ISO timestamp.
+    ts_iso = f"{d[0:4]}-{d[4:6]}-{d[6:8]}T{tm[0:2]}:{tm[2:4]}:{tm[4:6]}"
+
+    return {
+        "model_filename": str(filename),
+        "frequency": freq,
+        "tsteps": tsteps,
+        "timestamp": ts_iso,
+        "stamp": f"{d}_{tm}",
+    }
+
+
+def _list_registry_models(registry_dir: Path) -> list[dict]:
+    """List all model artifacts in the model registry.
+
+    Returns rows suitable for rendering in the UI.
+    """
+    if not registry_dir.exists() or not registry_dir.is_dir():
+        return []
+
+    rows: list[dict] = []
+    for p in registry_dir.iterdir():
+        if not p.is_file():
+            continue
+        info = _parse_registry_model_filename(p.name)
+        if info is None:
+            continue
+
+        # Best-effort bias-correction inference (same stamp).
+        bias_name = f"bias_correction_{info['frequency']}_tsteps{int(info['tsteps'])}_{info['stamp']}.json"
+        bias_path = registry_dir / bias_name
+        info["bias_correction_filename"] = bias_name if bias_path.exists() else None
+
+        # Per-model metrics (validation loss, etc.)
+        metrics_name = str(info["model_filename"]).replace(".keras", ".metrics.json")
+        metrics_path = registry_dir / metrics_name
+        if metrics_path.exists():
+            try:
+                metrics = json.loads(metrics_path.read_text(encoding="utf-8") or "{}")
+                if isinstance(metrics, dict) and metrics.get("validation_loss") is not None:
+                    info["validation_loss"] = float(metrics.get("validation_loss"))
+            except Exception:
+                pass
+
+        rows.append(info)
+
+    # Sort most-recent first (timestamp is ISO so lexicographic sort works).
+    return sorted(rows, key=lambda r: r.get("timestamp", ""), reverse=True)
+
+
+def _promote_training_row(
+    *,
+    row: dict,
+    best_hps_path: Path,
+    frequency: str,
+    tsteps: int,
+) -> None:
+    """Write best_hyperparameters.json entry for (frequency, tsteps) from a history row."""
+
+    best_hps_overall: dict = {}
+    if best_hps_path.exists():
+        try:
+            content = best_hps_path.read_text(encoding="utf-8").strip()
+            best_hps_overall = json.loads(content) if content else {}
+        except json.JSONDecodeError:
+            best_hps_overall = {}
+
+    freq_key = frequency
+    tsteps_key = str(int(tsteps))
+    best_hps_overall.setdefault(freq_key, {})
+
+    # Minimal required fields + useful metadata for later resolution.
+    best_hps_overall[freq_key][tsteps_key] = {
+        "validation_loss": float(row.get("validation_loss")),
+        "model_filename": row.get("model_filename"),
+        "bias_correction_filename": row.get("bias_correction_filename"),
+        "lstm_units": row.get("lstm_units"),
+        "learning_rate": row.get("learning_rate"),
+        "epochs": row.get("epochs"),
+        "batch_size": row.get("batch_size"),
+        "n_lstm_layers": row.get("n_lstm_layers"),
+        "stateful": row.get("stateful"),
+        "optimizer_name": row.get("optimizer_name"),
+        "loss_function": row.get("loss_function"),
+        "features_to_use": row.get("features_to_use"),
+    }
+
+    best_hps_path.write_text(json.dumps(best_hps_overall, indent=4), encoding="utf-8")
 
 
 def _load_strategy_defaults() -> dict:
@@ -348,6 +511,18 @@ def _save_strategy_defaults_to_config(
             st.error(f"Failed to write config.py: {exc}")
 
 
+def _filter_backtest_history(history: list[dict], *, frequency: str) -> list[dict]:
+    """Return backtest history rows matching a specific frequency."""
+    rows = [
+        r
+        for r in (history or [])
+        if isinstance(r, dict) and r.get("frequency") == frequency
+    ]
+
+    # Most-recent first.
+    return sorted(rows, key=lambda r: r.get("timestamp", ""), reverse=True)
+
+
 def _run_backtest(
     frequency: str,
     start_date: str | None,
@@ -364,14 +539,17 @@ def _run_backtest(
     """Non-cached wrapper around run_backtest_for_ui (CSV mode by default).
 
     The UI uses precomputed per-bar predictions (CSV mode) for backtests by
-    default, which is simpler and more robust for experiments. Model mode can
-    still be enabled by calling :func:`run_backtest_for_ui` directly with
-    ``prediction_mode="model"`` when needed.
+    default, which is simpler and more robust for experiments.
     """
 
     from src.config import get_predictions_csv_path as _get_predictions_csv_path
 
     predictions_csv = _get_predictions_csv_path("nvda", frequency)
+    if predictions_csv and not os.path.exists(predictions_csv):
+        raise FileNotFoundError(
+            f"Predictions CSV not found: '{predictions_csv}'. "
+            "Use the 'Generate predictions CSV for NVDA' button first."
+        )
 
     return run_backtest_for_ui(
         frequency=frequency,
@@ -413,6 +591,14 @@ with tab_live:
 
     from datetime import datetime, timezone
 
+    try:  # optional dependency
+        from streamlit_autorefresh import st_autorefresh
+
+        _HAVE_AUTOREFRESH = True
+    except Exception:  # pragma: no cover
+        st_autorefresh = None  # type: ignore[assignment]
+        _HAVE_AUTOREFRESH = False
+
     from src.live_log import (
         append_event,
         default_live_dir,
@@ -431,8 +617,15 @@ with tab_live:
     with col_b:
         st.caption(f"Kill switch file: `{kill_switch_path()}`")
     with col_c:
-        # Button exists mostly as a UX affordance; any interaction causes rerun.
-        st.button("Refresh")
+        auto_refresh = st.checkbox("Auto-refresh", value=True)
+        if auto_refresh and _HAVE_AUTOREFRESH:
+            # Streamlit UI updates on reruns; this triggers a rerun every 30 seconds.
+            st_autorefresh(interval=30_000, key="live_autorefresh")
+        elif auto_refresh and not _HAVE_AUTOREFRESH:
+            st.caption("Auto-refresh unavailable (missing streamlit-autorefresh).")
+
+        # Manual fallback.
+        st.button("Refresh now")
 
     # Kill switch controls.
     ks_enabled = bool(is_kill_switch_enabled())
@@ -1380,190 +1573,159 @@ with tab_experiments:
             st.success("Loaded experiment into Train & Promote tab. Switch to that tab to train fully.")
 
 # --------------------------------------------------------------------------------------
-# Tab 3: Train & Promote - full training with auto-promotion when better
+# Tab 3: Train & Promote - iterative runs + explicit promotion
 # --------------------------------------------------------------------------------------
 with tab_train:
-    st.subheader("3. Train full model & promote when better")
+    st.subheader("3. Train models (per frequency) & promote")
 
     ui_state = _get_ui_state()
     train_state = ui_state.setdefault("training", {})
     if "history" not in train_state:
         train_state["history"] = _load_json_history("training_history.json")
 
-    # Prefill from last experiment if available, otherwise from current best.
+    # Prefill from last experiment if available, otherwise from defaults.
     prefill = train_state.get("train_prefill") or st.session_state.get("train_prefill")
     if prefill:
-        train_freq = prefill["frequency"]
-        train_tsteps = int(prefill["tsteps"])
+        default_freq = prefill["frequency"]
+        default_tsteps = int(prefill["tsteps"])
     else:
-        train_freq = FREQUENCY
-        train_tsteps = TSTEPS
+        default_freq = FREQUENCY
+        default_tsteps = TSTEPS
 
-    # Use shared global frequency as the primary default.
-    _global_freq = st.session_state.get("global_frequency", train_freq)
+    # Keep one shared global frequency across tabs.
+    _global_freq = st.session_state.get("global_frequency", default_freq)
     if _global_freq not in RESAMPLE_FREQUENCIES:
-        _global_freq = train_freq if train_freq in RESAMPLE_FREQUENCIES else RESAMPLE_FREQUENCIES[0]
+        _global_freq = default_freq if default_freq in RESAMPLE_FREQUENCIES else RESAMPLE_FREQUENCIES[0]
+
+    # Frequency is outside the form so changing it triggers a rerun (and thus
+    # redraws the registry table below).
     train_freq = st.selectbox(
         "Frequency",
         RESAMPLE_FREQUENCIES,
         index=RESAMPLE_FREQUENCIES.index(_global_freq),
-        key="train_freq_select",
+        key="train_freq_select_outside",
     )
     st.session_state["global_frequency"] = train_freq
-    try:
-        train_tsteps_idx = TSTEPS_OPTIONS.index(train_tsteps)
-    except ValueError:
-        train_tsteps_idx = 0
-    train_tsteps = st.selectbox(
-        "Sequence length (TSTEPS)",
-        TSTEPS_OPTIONS,
-        index=train_tsteps_idx,
-        key="train_tsteps_select",
-    )
 
-    # Resolve effective hyperparameters for this run.
-    base_hps = get_run_hyperparameters(frequency=train_freq, tsteps=train_tsteps)
-    if prefill:
-        # Override with prefill when present.
-        base_hps.update(
-            {
-                "lstm_units": int(prefill["lstm_units"]),
-                "batch_size": int(prefill["batch_size"]),
-                "learning_rate": float(prefill["learning_rate"]),
-                "epochs": int(prefill["epochs"]),
-                "n_lstm_layers": int(prefill["n_lstm_layers"]),
-                "stateful": bool(prefill["stateful"]),
-                # features_to_use is handled via index below.
-            }
-        )
-
-    c1t, c2t, c3t = st.columns(3)
-    with c1t:
-        try:
-            idx_units_t = LSTM_UNITS_OPTIONS.index(base_hps["lstm_units"])
-        except ValueError:
-            idx_units_t = 0
-        train_lstm_units = st.selectbox(
-            "LSTM units",
-            LSTM_UNITS_OPTIONS,
-            index=idx_units_t,
-            key="train_lstm_units_select",
-        )
-
-        try:
-            idx_layers_t = N_LSTM_LAYERS_OPTIONS.index(base_hps["n_lstm_layers"])
-        except ValueError:
-            idx_layers_t = 0
-        train_n_layers = st.selectbox(
-            "LSTM layers",
-            N_LSTM_LAYERS_OPTIONS,
-            index=idx_layers_t,
-            key="train_lstm_layers_select",
-        )
-
-    with c2t:
-        try:
-            idx_bs_t = BATCH_SIZE_OPTIONS.index(base_hps["batch_size"])
-        except ValueError:
-            idx_bs_t = 0
-        train_batch_size = st.selectbox(
-            "Batch size",
-            BATCH_SIZE_OPTIONS,
-            index=idx_bs_t,
-            key="train_batch_size_select",
-        )
-
-        train_epochs = st.slider(
-            "Epochs",
-            min_value=1,
-            max_value=200,
-            value=int(base_hps["epochs"]),
-            key="train_epochs_slider",
-        )
-
-    with c3t:
-        lr_choices_t = [0.0005, 0.001, 0.003, 0.01]
-        default_lr_t = float(base_hps["learning_rate"])
-        if default_lr_t not in lr_choices_t:
-            lr_choices_t = sorted(set(lr_choices_t + [default_lr_t]))
-        try:
-            idx_lr_t = lr_choices_t.index(default_lr_t)
-        except ValueError:
-            idx_lr_t = 0
-        train_lr = st.selectbox(
-            "Learning rate",
-            lr_choices_t,
-            index=idx_lr_t,
-            key="train_lr_select",
-        )
-
-        try:
-            idx_stateful_t = STATEFUL_OPTIONS.index(base_hps["stateful"])
-        except ValueError:
-            idx_stateful_t = 0
-        train_stateful = st.selectbox(
-            "Stateful LSTM",
-            STATEFUL_OPTIONS,
-            index=idx_stateful_t,
-            key="train_stateful_select",
-        )
-
-    # Feature set selection (respecting prefill when present).
-    if prefill and "features_to_use" in prefill:
-        feats_prefill = prefill["features_to_use"].split(",")
-        try:
-            train_feat_idx = next(
-                i for i, fs in enumerate(FEATURES_TO_USE_OPTIONS) if fs == feats_prefill
+    # Use a form to keep the parameter UI compact.
+    with st.form("train_run_form", clear_on_submit=False):
+        c1, c2, c3 = st.columns([1.0, 1.0, 1.0])
+        with c1:
+            try:
+                train_tsteps_idx = TSTEPS_OPTIONS.index(default_tsteps)
+            except ValueError:
+                train_tsteps_idx = 0
+            train_tsteps = st.selectbox(
+                "TSTEPS",
+                TSTEPS_OPTIONS,
+                index=train_tsteps_idx,
+                key="train_tsteps_select",
             )
-        except StopIteration:
-            train_feat_idx = 0
-    else:
-        train_feat_idx = 0
 
-    train_feature_set_idx = st.selectbox(
-        "Feature set",
-        options=list(range(len(FEATURES_TO_USE_OPTIONS))),
-        index=train_feat_idx,
-        format_func=lambda i: f"Set {i + 1}: " + ", ".join(FEATURES_TO_USE_OPTIONS[i]),
-        key="train_feature_set_select",
-    )
-    train_features_to_use = FEATURES_TO_USE_OPTIONS[train_feature_set_idx]
+        # Resolve effective hyperparameters for this run.
+        base_hps = get_run_hyperparameters(frequency=train_freq, tsteps=train_tsteps)
+        if prefill:
+            base_hps.update(
+                {
+                    "lstm_units": int(prefill.get("lstm_units", base_hps["lstm_units"])),
+                    "batch_size": int(prefill.get("batch_size", base_hps["batch_size"])),
+                    "learning_rate": float(prefill.get("learning_rate", base_hps["learning_rate"])),
+                    "epochs": int(prefill.get("epochs", base_hps["epochs"])),
+                    "n_lstm_layers": int(prefill.get("n_lstm_layers", base_hps["n_lstm_layers"])),
+                    "stateful": bool(prefill.get("stateful", base_hps["stateful"])),
+                }
+            )
 
-    # Show current best for this (frequency, tsteps).
-    st.markdown("### Current best for this Frequency / TSTEPS")
-    import os as _os
+        with c2:
+            train_lstm_units = st.selectbox(
+                "Units",
+                LSTM_UNITS_OPTIONS,
+                index=LSTM_UNITS_OPTIONS.index(base_hps["lstm_units"]) if base_hps["lstm_units"] in LSTM_UNITS_OPTIONS else 0,
+                key="train_lstm_units_select",
+            )
 
-    best_hps_path_train = Path(__file__).resolve().parents[1] / "best_hyperparameters.json"
-    best_block = None
-    if best_hps_path_train.exists():
-        try:
-            content = best_hps_path_train.read_text(encoding="utf-8").strip()
-            if content:
-                all_best = json.loads(content)
-                freq_block = all_best.get(train_freq, {})
-                best_block = freq_block.get(str(train_tsteps))
-        except json.JSONDecodeError:
-            best_block = None
+        with c3:
+            train_n_layers = st.selectbox(
+                "Layers",
+                N_LSTM_LAYERS_OPTIONS,
+                index=N_LSTM_LAYERS_OPTIONS.index(base_hps["n_lstm_layers"]) if base_hps["n_lstm_layers"] in N_LSTM_LAYERS_OPTIONS else 0,
+                key="train_lstm_layers_select",
+            )
 
-    if best_block:
-        st.write(
-            f"Best val_loss={best_block.get('validation_loss', float('inf')):.6f}, "
-            f"model={best_block.get('model_filename', '<unknown>')}"
-        )
-    else:
-        st.write("No best entry yet for this Frequency/TSTEPS.")
+        c4, c5, c6, c7 = st.columns([1.0, 1.0, 1.0, 1.4])
+        with c4:
+            train_batch_size = st.selectbox(
+                "Batch",
+                BATCH_SIZE_OPTIONS,
+                index=BATCH_SIZE_OPTIONS.index(base_hps["batch_size"]) if base_hps["batch_size"] in BATCH_SIZE_OPTIONS else 0,
+                key="train_batch_size_select",
+            )
 
-    # Full training with auto-promotion when better, plus predictions CSV.
-    if st.button("Train full model & auto-promote if better"):
+        with c5:
+            lr_choices_t = [0.0005, 0.001, 0.003, 0.01]
+            default_lr_t = float(base_hps["learning_rate"])
+            if default_lr_t not in lr_choices_t:
+                lr_choices_t = sorted(set(lr_choices_t + [default_lr_t]))
+            train_lr = st.selectbox(
+                "LR",
+                lr_choices_t,
+                index=lr_choices_t.index(default_lr_t) if default_lr_t in lr_choices_t else 0,
+                key="train_lr_select",
+            )
+
+        with c6:
+            train_epochs = st.number_input(
+                "Epochs",
+                min_value=1,
+                max_value=200,
+                value=int(base_hps["epochs"]),
+                step=1,
+                key="train_epochs_number",
+            )
+
+        with c7:
+            train_stateful = st.selectbox(
+                "Stateful",
+                STATEFUL_OPTIONS,
+                index=STATEFUL_OPTIONS.index(base_hps["stateful"]) if base_hps["stateful"] in STATEFUL_OPTIONS else 0,
+                key="train_stateful_select",
+            )
+
+        # Features are important but verbose; keep behind an expander.
+        with st.expander("Advanced: feature set", expanded=False):
+            if prefill and "features_to_use" in prefill:
+                feats_prefill = prefill["features_to_use"].split(",")
+                try:
+                    train_feat_idx = next(
+                        i for i, fs in enumerate(FEATURES_TO_USE_OPTIONS) if fs == feats_prefill
+                    )
+                except StopIteration:
+                    train_feat_idx = 0
+            else:
+                train_feat_idx = 0
+
+            train_feature_set_idx = st.selectbox(
+                "Feature set",
+                options=list(range(len(FEATURES_TO_USE_OPTIONS))),
+                index=train_feat_idx,
+                format_func=lambda i: f"Set {i + 1}: " + ", ".join(FEATURES_TO_USE_OPTIONS[i]),
+                key="train_feature_set_select",
+            )
+            train_features_to_use = FEATURES_TO_USE_OPTIONS[train_feature_set_idx]
+
+        submitted = st.form_submit_button("Train")
+
+    # Train and record a run.
+    if submitted:
         progress = st.progress(0.0)
         status = st.empty()
         try:
-            status.write("Step 1/3: Training full LSTM model...")
+            status.write("Training full LSTM model...")
             progress.progress(0.1)
 
             result = train_model(
                 frequency=train_freq,
-                tsteps=train_tsteps,
+                tsteps=int(train_tsteps),
                 lstm_units=int(train_lstm_units),
                 learning_rate=float(train_lr),
                 epochs=int(train_epochs),
@@ -1579,190 +1741,156 @@ with tab_train:
                 st.error("Training failed or not enough data.")
             else:
                 final_val_loss, model_path, bias_correction_path = result
-                progress.progress(0.6)
-                status.write("Step 2/3: Updating best_hyperparameters.json (auto-promotion if better)...")
+                progress.progress(0.7)
 
-                promoted = False
-
-                # Auto-promotion logic (same pattern as before).
-                if best_hps_path_train.exists():
-                    try:
-                        content = best_hps_path_train.read_text(encoding="utf-8").strip()
-                        best_hps_overall = json.loads(content) if content else {}
-                    except json.JSONDecodeError:
-                        best_hps_overall = {}
-                else:
-                    best_hps_overall = {}
-
-                freq_key = train_freq
-                tsteps_key = str(train_tsteps)
-                if freq_key not in best_hps_overall:
-                    best_hps_overall[freq_key] = {}
-
-                prev_best = best_hps_overall[freq_key].get(tsteps_key, {})
-                prev_loss = prev_best.get("validation_loss", float("inf"))
-
-                if final_val_loss < prev_loss:
-                    best_hps_overall[freq_key][tsteps_key] = {
-                        "validation_loss": float(final_val_loss),
-                        "model_filename": _os.path.basename(model_path),
-                        "lstm_units": int(train_lstm_units),
-                        "learning_rate": float(train_lr),
-                        "epochs": int(train_epochs),
-                        "batch_size": int(train_batch_size),
-                        "n_lstm_layers": int(train_n_layers),
-                        "stateful": bool(train_stateful),
-                        "optimizer_name": base_hps["optimizer_name"],
-                        "loss_function": base_hps["loss_function"],
-                        "features_to_use": train_features_to_use,
-                        "bias_correction_filename": _os.path.basename(bias_correction_path),
-                    }
-                    best_hps_path_train.write_text(
-                        json.dumps(best_hps_overall, indent=4), encoding="utf-8"
-                    )
-                    st.info("Auto-promoted this model as new best for this Frequency/TSTEPS.")
-                    promoted = True
-                else:
-                    st.info(
-                        f"Existing best validation loss for (freq={freq_key}, tsteps={tsteps_key}) "
-                        f"is {prev_loss:.6f}; not promoting this run.",
-                    )
-
-                progress.progress(0.8)
-                status.write("Step 3/3: Generating per-bar predictions CSV for NVDA...")
-
-                predictions_csv_path = get_predictions_csv_path("nvda", train_freq)
-                generate_predictions_for_csv(frequency=train_freq, output_path=predictions_csv_path)
-
-                progress.progress(1.0)
-                status.write("Training and prediction generation complete.")
-
-                st.success(
-                    f"Training finished. Validation loss: {final_val_loss:.6f}. "
-                    f"Predictions CSV written to: {predictions_csv_path}",
-                )
-                st.code(str(predictions_csv_path))
-
-                # Record last training run and append a compact history row.
-                train_state["last_train_run"] = {
+                # Record run.
+                row = {
                     "timestamp": pd.Timestamp.utcnow().isoformat(),
                     "frequency": train_freq,
                     "tsteps": int(train_tsteps),
+                    "validation_loss": float(final_val_loss),
+                    "model_filename": os.path.basename(model_path),
+                    "bias_correction_filename": os.path.basename(bias_correction_path) if bias_correction_path else None,
                     "lstm_units": int(train_lstm_units),
                     "batch_size": int(train_batch_size),
                     "learning_rate": float(train_lr),
                     "epochs": int(train_epochs),
                     "n_lstm_layers": int(train_n_layers),
                     "stateful": bool(train_stateful),
+                    "optimizer_name": base_hps["optimizer_name"],
+                    "loss_function": base_hps["loss_function"],
                     "features_to_use": train_features_to_use,
-                    "validation_loss": float(final_val_loss),
-                    "promoted": bool(promoted),
-                    "model_filename": os.path.basename(model_path),
-                    "bias_correction_filename": os.path.basename(bias_correction_path),
-                    "predictions_csv_path": str(predictions_csv_path),
                 }
+
                 history: list[dict] = train_state.get("history", [])
-                history.append(
-                    {
-                        "timestamp": train_state["last_train_run"]["timestamp"],
-                        "frequency": train_freq,
-                        "tsteps": int(train_tsteps),
-                        "validation_loss": float(final_val_loss),
-                        "promoted": bool(promoted),
-                        "model_filename": os.path.basename(model_path),
-                    }
-                )
+                history.append(row)
                 if len(history) > MAX_HISTORY_ROWS:
                     history = history[-MAX_HISTORY_ROWS:]
                 train_state["history"] = history
                 _save_json_history("training_history.json", history)
-        except Exception as exc:  # pragma: no cover - UI convenience
+
+                progress.progress(1.0)
+                status.write("")
+                st.success(f"Training complete. val_loss={float(final_val_loss):.6f}")
+                st.code(str(model_path))
+        except Exception as exc:  # pragma: no cover
             progress.progress(0.0)
             status.write("")
-            st.error(f"Error during full training pipeline: {exc}")
+            st.error(f"Error during training: {exc}")
 
-    # Recent training runs table.
-    train_history = train_state.get("history", [])
-    if train_history:
-        st.markdown("### Recent training runs (most recent first)")
-        train_hist_df = pd.DataFrame(train_history)
-        if "timestamp" in train_hist_df.columns:
-            train_hist_df = train_hist_df.sort_values("timestamp", ascending=False)
-        st.dataframe(train_hist_df, width="stretch")
+    # ---- Registry models table (filtered by frequency) ----
+    st.markdown("### Models in registry (filtered by frequency)")
 
-    st.markdown("---")
-    st.subheader("Evaluate best model")
+    best_hps_path_train = Path(__file__).resolve().parents[1] / "best_hyperparameters.json"
 
-    if st.button("Evaluate best model for this frequency / TSTEPS"):
-        with st.spinner("Resolving best model and running evaluation..."):
-            (
-                best_model_path,
-                bias_correction_path,
-                features_trained,
-                lstm_units_trained,
-                n_lstm_layers_trained,
-            ) = get_latest_best_model_path(target_frequency=train_freq, tsteps=train_tsteps)
+    registry_dir = Path(MODEL_REGISTRY_DIR)
+    st.caption(f"Registry: `{registry_dir}`")
 
-            if best_model_path is None:
-                st.error(
-                    f"No best model found for frequency={train_freq}, TSTEPS={train_tsteps}. "
-                    "Train at least one model first.",
+    # Build a lookup of validation_loss by model_filename from:
+    # 1) UI training history (only includes runs started from the Streamlit UI)
+    # 2) best_hyperparameters.json (best-only, but still helpful)
+    val_loss_by_model: dict[str, float] = {}
+    history_all = train_state.get("history", [])
+    for r in history_all or []:
+        try:
+            name = r.get("model_filename")
+            loss = r.get("validation_loss")
+            if name and loss is not None:
+                val_loss_by_model[str(name)] = float(loss)
+        except Exception:
+            continue
+
+    if best_hps_path_train.exists():
+        try:
+            best_data = json.loads(best_hps_path_train.read_text(encoding="utf-8") or "{}")
+            if isinstance(best_data, dict):
+                for _freq, tsteps_data in best_data.items():
+                    if not isinstance(tsteps_data, dict):
+                        continue
+                    for _t, metrics in tsteps_data.items():
+                        if not isinstance(metrics, dict):
+                            continue
+                        name = metrics.get("model_filename")
+                        if not name:
+                            continue
+                        try:
+                            loss = float(metrics.get("validation_loss"))
+                        except Exception:
+                            continue
+                        val_loss_by_model[str(name)] = loss
+        except Exception:
+            pass
+
+    # List registry contents and filter by selected frequency.
+    registry_rows = [r for r in _list_registry_models(registry_dir) if r.get("frequency") == train_freq]
+
+    if not registry_rows:
+        st.info("No models found in the registry for this frequency.")
+    else:
+        for r in registry_rows:
+            r["timestamp"] = _format_timestamp_iso_seconds(r.get("timestamp")) or r.get("timestamp")
+            name = str(r.get("model_filename", ""))
+            # Prefer per-model metrics sidecar, then fall back to UI history/best_hps lookup.
+            if r.get("validation_loss") is None:
+                r["validation_loss"] = val_loss_by_model.get(name)
+
+        # Render a compact "table" with a per-row promote button.
+        h_ts, h_loss, h_model, h_btn = st.columns([2.0, 1.0, 5.0, 0.9])
+        h_ts.markdown("**timestamp**")
+        h_loss.markdown("**val_loss**")
+        h_model.markdown("**model**")
+        h_btn.markdown("**promote**")
+
+        for r in registry_rows:
+            loss = r.get("validation_loss")
+            loss_str = f"{float(loss):.6f}" if loss is not None else "(unknown)"
+            ts_str = str(r.get("timestamp", ""))
+            model_name = str(r.get("model_filename", ""))
+
+            c_ts, c_loss, c_model, c_btn = st.columns([2.0, 1.0, 5.0, 0.9])
+            c_ts.write(ts_str)
+            c_loss.write(loss_str)
+            c_model.write(f"`{model_name}`")
+
+            if c_btn.button("↑", key=f"promote_{train_freq}_{model_name}"):
+                promote_loss = loss
+                if promote_loss is None:
+                    st.warning(
+                        "Selected model has no recorded val_loss; promoting with validation_loss=0.0."
+                    )
+                    promote_loss = 0.0
+
+                _promote_training_row(
+                    row={
+                        "validation_loss": float(promote_loss),
+                        "model_filename": model_name,
+                        "bias_correction_filename": r.get("bias_correction_filename"),
+                    },
+                    best_hps_path=best_hps_path_train,
+                    frequency=str(r.get("frequency")),
+                    tsteps=int(r.get("tsteps")),
                 )
-            else:
-                if features_trained is None:
-                    features_trained = train_features_to_use
-                n_features_trained = len(features_trained)
-                effective_lstm_units = lstm_units_trained or int(train_lstm_units)
-                effective_n_layers = n_lstm_layers_trained or int(train_n_layers)
+                st.success(f"Promoted: {model_name}")
 
-                mae, corr = evaluate_model_performance(
-                    model_path=best_model_path,
-                    frequency=train_freq,
-                    tsteps=train_tsteps,
-                    n_features=n_features_trained,
-                    lstm_units=effective_lstm_units,
-                    n_lstm_layers=effective_n_layers,
-                    stateful=bool(train_stateful),
-                    features_to_use=features_trained,
-                    bias_correction_path=bias_correction_path,
-                )
+    # Optional: show UI-recorded training runs for debugging/traceability.
+    with st.expander("UI training history (optional)", expanded=False):
+        filtered_ui = [
+            r
+            for r in (history_all or [])
+            if isinstance(r, dict) and r.get("frequency") == train_freq
+        ]
+        if not filtered_ui:
+            st.write("(none)")
+        else:
+            df_ui = pd.DataFrame(filtered_ui)
+            if "timestamp" in df_ui.columns:
+                df_ui["timestamp"] = df_ui["timestamp"].apply(_format_timestamp_iso_seconds)
+            show_cols = [c for c in ["timestamp", "validation_loss", "tsteps", "model_filename"] if c in df_ui.columns]
+            st.dataframe(df_ui[show_cols], width="stretch")
 
-        if "best_model_path" in locals() and best_model_path is not None:
-            # Cache last evaluation in ui_state (session-only, not persisted).
-            train_state["last_evaluation"] = {
-                "frequency": train_freq,
-                "tsteps": int(train_tsteps),
-                "mae": float(mae),
-                "corr": float(corr),
-            }
-
-            st.success("Evaluation complete.")
-            st.write(
-                f"**MAE (log returns)**: `{mae:.6f}`  |  "
-                f"**Correlation (actual vs predicted log returns)**: `{corr:.4f}`",
-            )
-
-            models_dir = Path(__file__).resolve().parent.parent / "models"
-            eval_plot = models_dir / "evaluation_plot.png"
-            residuals_plot = models_dir / "residuals_histogram.png"
-
-            if eval_plot.exists():
-                st.image(
-                    str(eval_plot),
-                    caption="Evaluation: actual vs predicted log returns",
-                    use_column_width=True,
-                )
-            else:
-                st.info("Evaluation plot not found on disk.")
-
-            if residuals_plot.exists():
-                st.image(
-                    str(residuals_plot),
-                    caption="Residuals distribution (log returns)",
-                    use_column_width=True,
-                )
-            else:
-                st.info("Residuals histogram not found on disk.")
+    # Clear prefill once the user has visited this tab.
+    train_state.pop("train_prefill", None)
+    st.session_state.pop("train_prefill", None)
 
 # --------------------------------------------------------------------------------------
 # Tab 4: Backtest / Strategy - existing UI
@@ -1809,18 +1937,12 @@ with tab_backtest:
     # JSON sidecar so manual edits survive app reloads.
     st.subheader("Strategy parameters")
 
-    # Initialize from any existing widget value (key "strategy_params"). On the
-    # very first run, fall back to loading from disk via _load_params_grid.
-    stored_params = st.session_state.get("strategy_params", None)
-    if isinstance(stored_params, pd.DataFrame):
-        params_df_initial = stored_params
-    elif stored_params is not None:
-        try:
-            params_df_initial = pd.DataFrame(stored_params)
-        except Exception:
-            params_df_initial = _load_params_grid(_defaults)
-    else:
-        params_df_initial = _load_params_grid(_defaults)
+    # Use the persisted (JSON) parameter grid as the base value for the editor.
+    #
+    # Note: st.data_editor stores its internal edit state in st.session_state under
+    # the widget key, which is not the same thing as the edited DataFrame.
+    # Rely on the DataFrame returned by st.data_editor instead.
+    params_df_initial = _load_params_grid(_defaults)
 
     params_df = st.data_editor(
         params_df_initial,
@@ -1849,22 +1971,29 @@ with tab_backtest:
 
 
     if st.button("Save parameters to config.py"):
-        # Persist single-run defaults to config.py (used by CLIs and as base
-        # defaults) and the full grid (Value/Start/Step/Stop/Optimize) to a
-        # JSON sidecar used only by this UI.
-        _save_strategy_defaults_to_config(
-            risk_per_trade_pct=risk_pct_val,
-            reward_risk_ratio=rr_val,
-            # Persist both long and short filters into config.py.
-            k_sigma_long=k_sigma_long_val,
-            k_sigma_short=k_sigma_short_val,
-            k_atr_long=k_atr_long_val,
-            k_atr_short=k_atr_short_val,
-        )
-        # Use the latest in-memory grid from the widget (including any unsaved edits).
-        current_params_df = st.session_state.get("strategy_params", params_df)
-        _save_params_grid(current_params_df)
-        st.success("Saved strategy defaults and parameter grid (Value/Start/Step/Stop).")
+        # Basic validation: reward:risk and risk% must be positive. If these are
+        # invalid, the strategy will reject all trades.
+        if rr_val <= 0.0:
+            st.error("Cannot save: reward_risk_ratio must be > 0.")
+        elif risk_pct_val <= 0.0:
+            st.error("Cannot save: risk_per_trade_pct must be > 0.")
+        else:
+            # Persist single-run defaults to config.py (used by CLIs and as base
+            # defaults) and the full grid (Value/Start/Step/Stop/Optimize) to a
+            # JSON sidecar used only by this UI.
+            _save_strategy_defaults_to_config(
+                risk_per_trade_pct=risk_pct_val,
+                reward_risk_ratio=rr_val,
+                # Persist both long and short filters into config.py.
+                k_sigma_long=k_sigma_long_val,
+                k_sigma_short=k_sigma_short_val,
+                k_atr_long=k_atr_long_val,
+                k_atr_short=k_atr_short_val,
+            )
+            # Persist the *edited DataFrame* returned by st.data_editor.
+            # (st.session_state["strategy_params"] may contain internal edit state.)
+            _save_params_grid(params_df)
+            st.success("Saved strategy defaults and parameter grid (Value/Start/Step/Stop).")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -1891,61 +2020,70 @@ with tab_backtest:
         allow_shorts_flag = True
 
     if mode == "Run backtest" and st.button("Run backtest"):
-        with st.spinner("Running backtest..."):
-            equity_df, trades_df, metrics = _run_backtest(
-                frequency=freq,
-                start_date=start_date or None,
-                end_date=end_date or None,
-                risk_per_trade_pct=risk_pct_val,
-                reward_risk_ratio=rr_val,
-                k_sigma_long=k_sigma_long_val,
-                k_sigma_short=k_sigma_short_val,
-                k_atr_long=k_atr_long_val,
-                k_atr_short=k_atr_short_val,
-                enable_longs=enable_longs_flag,
-                allow_shorts=allow_shorts_flag,
-            )
+        # Basic validation: reward:risk and risk% must be positive.
+        if rr_val <= 0.0:
+            st.error("reward_risk_ratio must be > 0 (otherwise the strategy rejects all trades).")
+        elif risk_pct_val <= 0.0:
+            st.error("risk_per_trade_pct must be > 0.")
+        else:
+            try:
+                with st.spinner("Running backtest..."):
+                    equity_df, trades_df, metrics = _run_backtest(
+                        frequency=freq,
+                        start_date=start_date or None,
+                        end_date=end_date or None,
+                        risk_per_trade_pct=risk_pct_val,
+                        reward_risk_ratio=rr_val,
+                        k_sigma_long=k_sigma_long_val,
+                        k_sigma_short=k_sigma_short_val,
+                        k_atr_long=k_atr_long_val,
+                        k_atr_short=k_atr_short_val,
+                        enable_longs=enable_longs_flag,
+                        allow_shorts=allow_shorts_flag,
+                    )
 
-        # Store last run (in-session) and append a compact summary row to history.
-        bt_state["last_run"] = {
-            "inputs": {
-                "frequency": freq,
-                "start_date": start_date or None,
-                "end_date": end_date or None,
-                "trade_side": trade_side,
-                "enable_longs": enable_longs_flag,
-                "allow_shorts": allow_shorts_flag,
-                "risk_per_trade_pct": risk_pct_val,
-                "reward_risk_ratio": rr_val,
-                "k_sigma_long": k_sigma_long_val,
-                "k_sigma_short": k_sigma_short_val,
-                "k_atr_long": k_atr_long_val,
-                "k_atr_short": k_atr_short_val,
-            },
-            "metrics": metrics,
-            "equity_df": equity_df,
-        }
+                # Store last run (in-session) and append a compact summary row to history.
+                bt_state["last_run"] = {
+                    "inputs": {
+                        "frequency": freq,
+                        "start_date": start_date or None,
+                        "end_date": end_date or None,
+                        "trade_side": trade_side,
+                        "enable_longs": enable_longs_flag,
+                        "allow_shorts": allow_shorts_flag,
+                        "risk_per_trade_pct": risk_pct_val,
+                        "reward_risk_ratio": rr_val,
+                        "k_sigma_long": k_sigma_long_val,
+                        "k_sigma_short": k_sigma_short_val,
+                        "k_atr_long": k_atr_long_val,
+                        "k_atr_short": k_atr_short_val,
+                    },
+                    "metrics": metrics,
+                    "equity_df": equity_df,
+                }
 
-        history: list[dict] = bt_state.get("history", [])
-        summary_row = {
-            "timestamp": pd.Timestamp.utcnow().isoformat(),
-            "frequency": freq,
-            "trade_side": trade_side,
-            "total_return": float(metrics.get("total_return", 0.0)),
-            "cagr": float(metrics.get("cagr", 0.0)),
-            "max_drawdown": float(metrics.get("max_drawdown", 0.0)),
-            "sharpe_ratio": float(metrics.get("sharpe_ratio", 0.0)),
-            "win_rate": float(metrics.get("win_rate", 0.0)),
-            "profit_factor": float(metrics.get("profit_factor", 0.0)),
-            "n_trades": int(metrics.get("n_trades", 0)),
-            "final_equity": float(metrics.get("final_equity", 0.0)),
-        }
-        history.append(summary_row)
-        # Enforce history cap and persist summaries.
-        if len(history) > MAX_HISTORY_ROWS:
-            history = history[-MAX_HISTORY_ROWS:]
-        bt_state["history"] = history
-        _save_json_history("backtests_history.json", history)
+                history: list[dict] = bt_state.get("history", [])
+                summary_row = {
+                    "timestamp": pd.Timestamp.utcnow().isoformat(),
+                    "frequency": freq,
+                    "trade_side": trade_side,
+                    "total_return": float(metrics.get("total_return", 0.0)),
+                    "cagr": float(metrics.get("cagr", 0.0)),
+                    "max_drawdown": float(metrics.get("max_drawdown", 0.0)),
+                    "sharpe_ratio": float(metrics.get("sharpe_ratio", 0.0)),
+                    "win_rate": float(metrics.get("win_rate", 0.0)),
+                    "profit_factor": float(metrics.get("profit_factor", 0.0)),
+                    "n_trades": int(metrics.get("n_trades", 0)),
+                    "final_equity": float(metrics.get("final_equity", 0.0)),
+                }
+                history.append(summary_row)
+                # Enforce history cap and persist summaries.
+                if len(history) > MAX_HISTORY_ROWS:
+                    history = history[-MAX_HISTORY_ROWS:]
+                bt_state["history"] = history
+                _save_json_history("backtests_history.json", history)
+            except Exception as exc:  # pragma: no cover - UI path only
+                st.error(f"Backtest failed: {exc}")
 
     # Always render the last backtest result (if any), regardless of button state.
     last_run = bt_state.get("last_run")
@@ -2023,15 +2161,29 @@ with tab_backtest:
     else:
         st.info("Run a backtest to see the equity curve and metrics.")
 
-    # Backtest summary history table.
-    history_for_view = bt_state.get("history", [])
+    # Backtest summary history table (filtered by selected frequency).
+    history_all = bt_state.get("history", [])
+    history_for_view = _filter_backtest_history(history_all, frequency=freq)
+
+    st.markdown(f"### Backtest history for `{freq}` (most recent first)")
     if history_for_view:
-        st.markdown("### Backtest history (most recent first)")
         hist_df = pd.DataFrame(history_for_view)
-        # Sort by timestamp descending when present.
         if "timestamp" in hist_df.columns:
+            hist_df["timestamp"] = hist_df["timestamp"].apply(_format_timestamp_iso_seconds)
             hist_df = hist_df.sort_values("timestamp", ascending=False)
         st.dataframe(hist_df, width="stretch")
+    else:
+        st.caption("No backtests recorded for this frequency yet.")
+
+    with st.expander("Show all backtest history (all frequencies)", expanded=False):
+        if history_all:
+            df_all = pd.DataFrame(history_all)
+            if "timestamp" in df_all.columns:
+                df_all["timestamp"] = df_all["timestamp"].apply(_format_timestamp_iso_seconds)
+                df_all = df_all.sort_values("timestamp", ascending=False)
+            st.dataframe(df_all, width="stretch")
+        else:
+            st.write("(none)")
 
     # ----------------------------------------------------------------------------------
     # Optimization mode UI

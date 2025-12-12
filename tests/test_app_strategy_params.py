@@ -225,6 +225,8 @@ def test_run_backtest_uses_csv_predictions(monkeypatch, tmp_path: Path) -> None:
 
     # Arrange: fake predictions CSV path and capture calls to the engine.
     fake_csv_path = tmp_path / "nvda_15min_predictions.csv"
+    # Newer UI code validates that the predictions CSV exists.
+    fake_csv_path.write_text("Time,predicted_price\n", encoding="utf-8")
 
     def fake_get_predictions_csv_path(symbol: str, frequency: str) -> Path:
         # Ensure the helper always uses the NVDA symbol and the provided freq.

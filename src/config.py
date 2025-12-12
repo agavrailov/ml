@@ -4,6 +4,7 @@ import os
 import json
 from dataclasses import dataclass, field
 from datetime import datetime, time
+from pathlib import Path
 from typing import List
 
 # --- Base paths ---
@@ -98,7 +99,7 @@ class TrainingConfig:
     loss_function: str = "mse"
 
     # Search spaces / options
-    resample_frequencies: List[str] = field(default_factory=lambda: ["15min", "30min", "60min", "240min"])
+    resample_frequencies: List[str] = field(default_factory=lambda: ["1min", "5min", "15min", "30min", "60min", "240min"])
     tsteps_options: List[int] = field(default_factory=lambda: [5, 8, 16, 24, 48])
     lstm_units_options: List[int] = field(default_factory=lambda: [32, 64, 128, 256])
     batch_size_options: List[int] = field(default_factory=lambda: [64, 128, 256])
@@ -228,16 +229,16 @@ class StrategyDefaultsConfig:
     """
 
     # Core risk and reward parameters
-    risk_per_trade_pct: float = 0.01  # 2% of equity per trade
-    reward_risk_ratio: float = 2.5
+    risk_per_trade_pct: float = 0.001  # 1% of equity per trade
+    reward_risk_ratio: float = 0.1
 
     # Long/short-specific noise / filter parameters
     # How much of the model residual sigma_err we subtract from the predicted move.
-    k_sigma_long: float = 0.7
-    k_sigma_short: float = 0.8999999999999999
+    k_sigma_long: float = 0.1
+    k_sigma_short: float = 0.1
     # Minimum TP distance / SNR threshold as a multiple of ATR.
-    k_atr_long: float = 0.7
-    k_atr_short: float = 0.9999999999999999
+    k_atr_long: float = 0.1
+    k_atr_short: float = 0.1
 
     # Backwards-compatible shared aliases (used by older code / configs)
     @property
@@ -315,8 +316,9 @@ def load_tuned_hyperparameters(
             if not content:
                 return {}
             best_hps_data = json.loads(content)
-    except json.JSONDecodeError:
-        # If the file is corrupted or partially written, ignore it and use defaults
+    except (OSError, json.JSONDecodeError):
+        # If the file is missing/unreadable/corrupted (or partially written),
+        # ignore it and use defaults.
         return {}
 
     freq_block = best_hps_data.get(frequency, {})
@@ -333,24 +335,33 @@ def get_run_hyperparameters(
     Start from TRAINING defaults and, if a tuned entry for (frequency, tsteps)
     exists in ``best_hyperparameters.json``, override the defaults with tuned
     values.
+
+    Note: tuned JSON files sometimes contain explicit ``null`` values. Treat
+    those as "missing" so the TRAINING defaults remain in effect.
     """
     freq = frequency or TRAINING.frequency
     steps = tsteps or TRAINING.tsteps
 
     tuned = load_tuned_hyperparameters(freq, steps, best_hps_path=best_hps_path)
 
+    def _coalesce_tuned(key: str, default):
+        value = tuned.get(key)
+        return default if value is None else value
+
     return {
         "frequency": freq,
         "tsteps": steps,
-        "lstm_units": tuned.get("lstm_units", TRAINING.lstm_units),
-        "batch_size": tuned.get("batch_size", TRAINING.batch_size),
-        "learning_rate": tuned.get("learning_rate", TRAINING.learning_rate),
-        "epochs": tuned.get("epochs", TRAINING.epochs),
-        "n_lstm_layers": tuned.get("n_lstm_layers", TRAINING.n_lstm_layers),
-        "stateful": tuned.get("stateful", TRAINING.stateful),
-        "optimizer_name": tuned.get("optimizer_name", TRAINING.optimizer_name),
-        "loss_function": tuned.get("loss_function", TRAINING.loss_function),
-        "features_to_use": tuned.get("features_to_use", TRAINING.features_to_use_options[0]),
+        "lstm_units": _coalesce_tuned("lstm_units", TRAINING.lstm_units),
+        "batch_size": _coalesce_tuned("batch_size", TRAINING.batch_size),
+        "learning_rate": _coalesce_tuned("learning_rate", TRAINING.learning_rate),
+        "epochs": _coalesce_tuned("epochs", TRAINING.epochs),
+        "n_lstm_layers": _coalesce_tuned("n_lstm_layers", TRAINING.n_lstm_layers),
+        "stateful": _coalesce_tuned("stateful", TRAINING.stateful),
+        "optimizer_name": _coalesce_tuned("optimizer_name", TRAINING.optimizer_name),
+        "loss_function": _coalesce_tuned("loss_function", TRAINING.loss_function),
+        "features_to_use": _coalesce_tuned(
+            "features_to_use", TRAINING.features_to_use_options[0]
+        ),
     }
 
 
@@ -482,55 +493,153 @@ def get_active_model_path(frequency: str, tsteps: int):
 
     return None
 
+def get_latest_model_path(frequency: str | None = None, tsteps: int | None = None) -> str | None:
+    """Return the newest model artifact in the registry.
+
+    Models are expected to follow the naming convention:
+
+        my_lstm_model_{frequency}_tsteps{tsteps}_{timestamp}.keras
+
+    If ``frequency`` and/or ``tsteps`` are provided, only models matching those
+    attributes are considered.
+    """
+
+    if not os.path.isdir(MODEL_REGISTRY_DIR):
+        return None
+
+    def _matches(name: str) -> bool:
+        if not (name.startswith("my_lstm_model_") and name.endswith(".keras") and "_tsteps" in name):
+            return False
+
+        # Example: my_lstm_model_1min_tsteps5_20250101_000000.keras
+        rest = name[len("my_lstm_model_") : -len(".keras")]
+        try:
+            freq_part, after_freq = rest.split("_tsteps", 1)
+        except ValueError:
+            return False
+
+        # after_freq starts with the integer tsteps, then "_" then timestamp.
+        digits = "".join(ch for ch in after_freq if ch.isdigit())
+        if not digits:
+            return False
+
+        # The first contiguous digits are tsteps; remaining digits belong to timestamp.
+        # We only need tsteps for filtering.
+        # Example after_freq: "5_20250101_000000" -> digits: "520250101000000"
+        # So parse tsteps as the leading digits before the first underscore.
+        tsteps_str = after_freq.split("_", 1)[0]
+        if not tsteps_str.isdigit():
+            return False
+
+        if frequency is not None and freq_part != frequency:
+            return False
+        if tsteps is not None and int(tsteps_str) != int(tsteps):
+            return False
+
+        return True
+
+    candidates: list[str] = []
+    for fname in os.listdir(MODEL_REGISTRY_DIR):
+        if _matches(fname):
+            candidates.append(fname)
+
+    if not candidates:
+        return None
+
+    # Prefer lexicographic ordering because timestamp is YYYYMMDD_HHMMSS.
+    latest_fname = sorted(candidates)[-1]
+    return os.path.join(MODEL_REGISTRY_DIR, latest_fname)
+
+
 def get_latest_best_model_path(target_frequency=None, tsteps=None):
     """Resolve the best model for a given (frequency, tsteps).
 
-    This consults ``best_hyperparameters.json`` **in the project root** (``BASE_DIR``)
-    instead of the current working directory, so it behaves consistently when
-    called from scripts, CLIs, or notebooks located in subdirectories.
+    Primary source of truth is ``best_hyperparameters.json`` in the project root
+    (``BASE_DIR``). If that file is missing/empty/malformed OR contains no
+    matching entry, we fall back to the latest matching model in
+    ``MODEL_REGISTRY_DIR``.
 
     Returns a tuple ``(model_path, bias_correction_path, features_to_use_trained,
-    lstm_units_trained, n_lstm_layers_trained)``. Any element can be ``None``
-    if the corresponding information is not available.
+    lstm_units_trained, n_lstm_layers_trained)``.
     """
-    best_hps_path = os.path.join(BASE_DIR, 'best_hyperparameters.json')
+
+    def _fallback_latest() -> tuple[str | None, str | None, None, None, None]:
+        latest = get_latest_model_path(frequency=target_frequency, tsteps=tsteps)
+        if latest is None:
+            return None, None, None, None, None
+
+        # Best-effort bias-correction inference (same timestamp).
+        bias_path = None
+        fname = os.path.basename(latest)
+        stamp = None
+        if fname.startswith("my_lstm_model_") and fname.endswith(".keras") and "_tsteps" in fname:
+            core = fname[:-len(".keras")]
+            parts = core.split("_")
+            # Expect ... _tsteps{tsteps}_{YYYYMMDD}_{HHMMSS}
+            if len(parts) >= 3:
+                # last 2 parts should be YYYYMMDD and HHMMSS
+                stamp = "_".join(parts[-2:])
+
+        if stamp and target_frequency is not None and tsteps is not None:
+            cand = os.path.join(
+                MODEL_REGISTRY_DIR,
+                f"bias_correction_{target_frequency}_tsteps{int(tsteps)}_{stamp}.json",
+            )
+            if os.path.exists(cand):
+                bias_path = cand
+
+        return latest, bias_path, None, None, None
+
+    best_hps_path = os.path.join(BASE_DIR, "best_hyperparameters.json")
     if not os.path.exists(best_hps_path):
-        return None, None, None, None, None
+        return _fallback_latest()
 
-    # Handle empty or malformed JSON defensively so prediction code can
-    # fall back to training defaults.
-    with open(best_hps_path, 'r') as f:
-        content = f.read().strip()
+    # Handle empty or malformed JSON defensively.
+    try:
+        content = Path(best_hps_path).read_text(encoding="utf-8").strip()
         if not content:
-            return None, None, None, None, None
-        try:
-            best_hps_data = json.loads(content)
-        except json.JSONDecodeError:
-            return None, None, None, None, None
+            return _fallback_latest()
+        best_hps_data = json.loads(content)
+    except Exception:
+        return _fallback_latest()
 
-    best_loss = float('inf')
+    best_loss = float("inf")
     best_model_filename = None
     best_bias_correction_filename = None
     features_to_use_trained = None
     lstm_units_trained = None
     n_lstm_layers_trained = None
-    
-    for freq, tsteps_data in best_hps_data.items():
+
+    for freq, tsteps_data in (best_hps_data or {}).items():
         if target_frequency and freq != target_frequency:
             continue
+        if not isinstance(tsteps_data, dict):
+            continue
+
         for tstep_val_str, metrics in tsteps_data.items():
-            current_tsteps = int(tstep_val_str)
-            if tsteps and current_tsteps != tsteps:
+            try:
+                current_tsteps = int(tstep_val_str)
+            except Exception:
                 continue
-            
-            if metrics['validation_loss'] < best_loss:
-                best_loss = metrics['validation_loss']
-                best_model_filename = metrics['model_filename']
-                best_bias_correction_filename = metrics.get('bias_correction_filename')
-                features_to_use_trained = metrics.get('features_to_use')
-                lstm_units_trained = metrics.get('lstm_units')
-                n_lstm_layers_trained = metrics.get('n_lstm_layers')
-    
+            if tsteps and current_tsteps != int(tsteps):
+                continue
+            if not isinstance(metrics, dict):
+                continue
+
+            # Coerce to float so stringified JSON values don't break selection.
+            try:
+                loss = float(metrics.get("validation_loss", float("inf")))
+            except Exception:
+                loss = float("inf")
+
+            if loss < best_loss:
+                best_loss = loss
+                best_model_filename = metrics.get("model_filename")
+                best_bias_correction_filename = metrics.get("bias_correction_filename")
+                features_to_use_trained = metrics.get("features_to_use")
+                lstm_units_trained = metrics.get("lstm_units")
+                n_lstm_layers_trained = metrics.get("n_lstm_layers")
+
     model_path = None
     bias_correction_path = None
 
@@ -538,6 +647,9 @@ def get_latest_best_model_path(target_frequency=None, tsteps=None):
         model_path = os.path.join(MODEL_REGISTRY_DIR, best_model_filename)
     if best_bias_correction_filename:
         bias_correction_path = os.path.join(MODEL_REGISTRY_DIR, best_bias_correction_filename)
+
+    if model_path is None:
+        return _fallback_latest()
 
     return model_path, bias_correction_path, features_to_use_trained, lstm_units_trained, n_lstm_layers_trained
 

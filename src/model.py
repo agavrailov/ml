@@ -1,4 +1,5 @@
 import os
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple
@@ -196,6 +197,29 @@ def train_and_save_model(
         f"my_lstm_model_{frequency}_tsteps{tsteps}_{timestamp}.keras",
     )
     model.save(model_path)
+
+    # Persist per-model metrics next to the model artifact so UIs can show
+    # validation loss for *every* registry model (not just the promoted/best one).
+    metrics_path = model_path[: -len(".keras")] + ".metrics.json"
+    try:
+        Path(metrics_path).write_text(
+            json.dumps(
+                {
+                    "model_filename": os.path.basename(model_path),
+                    "frequency": frequency,
+                    "tsteps": int(tsteps),
+                    "epochs": int(epochs),
+                    "batch_size": int(batch_size),
+                    "validation_loss": float(final_val_loss),
+                    "saved_utc": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S"),
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except Exception:
+        # Best-effort: metrics are helpful for the UI but should not fail training.
+        pass
 
     # Log a compact summary record for this training run.
     log_experiment(

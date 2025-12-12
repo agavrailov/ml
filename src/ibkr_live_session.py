@@ -177,7 +177,14 @@ class LiveSessionConfig:
 
 
 def _frequency_to_bar_size_setting(freq: str) -> str:
-    f = freq.lower().strip()
+    # Normalize common spellings used across the repo (e.g. "5min") and tolerate
+    # whitespace (e.g. "5 min").
+    f = freq.lower().strip().replace(" ", "")
+
+    if f in {"1min", "1m"}:
+        return "1 min"
+    if f in {"5min", "5m"}:
+        return "5 mins"
     if f in {"15min", "15m"}:
         return "15 mins"
     if f in {"30min", "30m"}:
@@ -301,6 +308,12 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
     run_id = cfg.run_id or create_run_id()
     if cfg.log_to_disk:
         log_path = make_log_path(symbol=cfg.symbol, frequency=cfg.frequency, run_id=run_id, live_dir=live_dir)
+
+    # IMPORTANT: this function establishes two independent connections by default:
+    # - `ib` here (market data / event loop)
+    # - the Broker instance (when backend=IBKR_TWS, it creates its own ib_insync.IB)
+    # Ensure we always disconnect both so clientIds are released even on Ctrl+C.
+    broker: object | None = None
 
     def _log(event: dict) -> None:  # noqa: ANN001
         if log_path is None:
@@ -656,6 +669,16 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
         raise
 
     finally:
+        # Disconnect broker first (it may own a separate IB connection).
+        try:
+            if broker is not None:
+                disc = getattr(broker, "disconnect", None)
+                if callable(disc):
+                    disc()
+        except Exception:
+            pass
+
+        # Disconnect the market-data IB connection.
         try:
             ib.disconnect()
         except Exception:

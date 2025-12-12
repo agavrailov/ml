@@ -8,17 +8,20 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.config import get_latest_model_path, MODEL_REGISTRY_DIR, BASE_DIR
 
-def promote_model():
-    """Promote the latest model in the registry as the active/best model.
 
+def promote_model(*, frequency: str | None = None, tsteps: int | None = None) -> None:
+    """Promote the latest model in the registry as the active/best model.
     This updates ``best_hyperparameters.json`` so that helpers like
     :func:`get_latest_best_model_path` and :func:`get_active_model_path` resolve
     this model as the globally best one.
     """
-    print("Attempting to promote the latest model...")
+    if frequency is None and tsteps is None:
+        print("Attempting to promote the latest model...")
+    else:
+        print(f"Attempting to promote latest model for frequency={frequency}, tsteps={tsteps}...")
 
-    # 1. Find the latest model
-    latest_model_path = get_latest_model_path()
+    # 1. Find the latest model (optionally filtered)
+    latest_model_path = get_latest_model_path(frequency=frequency, tsteps=tsteps)
 
     if latest_model_path is None:
         print(f"Error: No models found in the registry at '{MODEL_REGISTRY_DIR}'.")
@@ -45,9 +48,9 @@ def promote_model():
             freq_part, after_freq = rest.split("_tsteps", 1)
             freq_key = freq_part
             # after_freq starts with the integer tsteps, then an underscore.
-            tsteps_digits = "".join(ch for ch in after_freq if ch.isdigit())
-            if tsteps_digits:
-                tsteps_key = tsteps_digits
+            tsteps_str = after_freq.split("_", 1)[0]
+            if tsteps_str.isdigit():
+                tsteps_key = tsteps_str
         except ValueError:
             freq_key = None
             tsteps_key = None
@@ -89,5 +92,21 @@ def promote_model():
         print(f"Details: {e}")
 
 if __name__ == "__main__":
-    from datetime import datetime
-    promote_model()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Promote a model from the registry.")
+    parser.add_argument(
+        "--frequency",
+        type=str,
+        default=None,
+        help="Optional resample frequency filter (e.g. 1min, 15min, 60min).",
+    )
+    parser.add_argument(
+        "--tsteps",
+        type=int,
+        default=None,
+        help="Optional TSTEPS filter.",
+    )
+
+    args = parser.parse_args()
+    promote_model(frequency=args.frequency, tsteps=args.tsteps)

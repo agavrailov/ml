@@ -22,15 +22,18 @@ from src.train import train_model
 from src.evaluate_model import evaluate_model_performance
 
 def load_experiment_parameters(experiment_id, results_file='experiment_results.json'):
-    """
-    Loads the parameters of a specific experiment from the results file.
-    """
+    """Loads parameters for a specific experiment from a JSON results file."""
     if not os.path.exists(results_file):
         print(f"Error: Results file '{results_file}' not found.")
         return None
 
-    with open(results_file, 'r') as f:
-        results = json.load(f)
+    try:
+        with open(results_file, 'r') as f:
+            results = json.load(f)
+    except FileNotFoundError:
+        # The file can disappear between exists() and open(), or exists() may be mocked.
+        print(f"Error: Results file '{results_file}' not found.")
+        return None
 
     for exp in results:
         if exp.get('experiment_id') == experiment_id:
