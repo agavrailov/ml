@@ -523,6 +523,18 @@ def _filter_backtest_history(history: list[dict], *, frequency: str) -> list[dic
     return sorted(rows, key=lambda r: r.get("timestamp", ""), reverse=True)
 
 
+def _filter_optimization_history(history: list[dict], *, frequency: str) -> list[dict]:
+    """Return optimization history rows matching a specific frequency."""
+    rows = [
+        r
+        for r in (history or [])
+        if isinstance(r, dict) and r.get("frequency") == frequency
+    ]
+
+    # Most-recent first.
+    return sorted(rows, key=lambda r: r.get("timestamp", ""), reverse=True)
+
+
 def _run_backtest(
     frequency: str,
     start_date: str | None,
@@ -568,6 +580,22 @@ def _run_backtest(
         enable_longs=enable_longs,
         allow_shorts=allow_shorts,
     )
+
+
+def _set_optimization_running(is_running: bool) -> None:
+    # Used to prevent Live-tab auto-refresh from interrupting long-running
+    # optimization runs.
+    st.session_state["optimization_running"] = bool(is_running)
+
+
+def _start_optimization() -> None:
+    _set_optimization_running(True)
+
+
+def _stop_optimization() -> None:
+    _set_optimization_running(False)
+
+
 st.title("LSTM Backtesting & Training UI")
 
 # Six main tabs matching the end-to-end workflow.
@@ -617,8 +645,15 @@ with tab_live:
     with col_b:
         st.caption(f"Kill switch file: `{kill_switch_path()}`")
     with col_c:
-        auto_refresh = st.checkbox("Auto-refresh", value=True)
-        if auto_refresh and _HAVE_AUTOREFRESH:
+        optimization_running = bool(st.session_state.get("optimization_running", False))
+        auto_refresh = st.checkbox(
+            "Auto-refresh",
+            value=(not optimization_running),
+            disabled=optimization_running,
+        )
+        if optimization_running:
+            st.caption("Auto-refresh is temporarily disabled while optimization is running.")
+        elif auto_refresh and _HAVE_AUTOREFRESH:
             # Streamlit UI updates on reruns; this triggers a rerun every 30 seconds.
             st_autorefresh(interval=30_000, key="live_autorefresh")
         elif auto_refresh and not _HAVE_AUTOREFRESH:
@@ -2196,145 +2231,152 @@ with tab_backtest:
 
         # Separate the action of running optimization from displaying results so
         # that results/plots persist even if the parameter table is edited.
-        run_optimization = st.button("Run optimization")
+        #
+        # IMPORTANT: We set a session_state flag via on_click so the Live tab's
+        # auto-refresh can be disabled before this run starts executing.
+        run_optimization = st.button("Run optimization", on_click=_start_optimization)
         results_df = None
 
         if run_optimization:
-            st.write("Running grid search over parameter ranges...")
+            try:
+                st.write("Running grid search over parameter ranges...")
 
-            # Build value ranges for each parameter based on Start/Stop/Step.
-            param_ranges: dict[str, list[float]] = {}
-            for _, row in params_df.iterrows():
-                name = row["Parameter"]
-                optimize = bool(row.get("Optimize", True))
+                # Build value ranges for each parameter based on Start/Stop/Step.
+                param_ranges: dict[str, list[float]] = {}
+                for _, row in params_df.iterrows():
+                    name = row["Parameter"]
+                    optimize = bool(row.get("Optimize", True))
 
-                # If not optimizing this parameter, keep it fixed at the current Value.
-                if not optimize:
-                    param_ranges[name] = [float(row["Value"])]
-                    continue
+                    # If not optimizing this parameter, keep it fixed at the current Value.
+                    if not optimize:
+                        param_ranges[name] = [float(row["Value"])]
+                        continue
 
-                start = float(row["Start"])
-                stop = float(row["Stop"])
-                step = float(row["Step"])
+                    start = float(row["Start"])
+                    stop = float(row["Stop"])
+                    step = float(row["Step"])
 
-                values: list[float] = []
-                if step > 0 and stop >= start:
-                    current = start
-                    # Cap iterations defensively to avoid infinite loops.
-                    for _ in range(1000):
-                        if current > stop + 1e-9:
-                            break
-                        values.append(float(current))
-                        current += step
-                # Fallback: if range is invalid, just use the current Value.
-                if not values:
-                    values = [float(row["Value"])]
+                    values: list[float] = []
+                    if step > 0 and stop >= start:
+                        current = start
+                        # Cap iterations defensively to avoid infinite loops.
+                        for _ in range(1000):
+                            if current > stop + 1e-9:
+                                break
+                            values.append(float(current))
+                            current += step
+                    # Fallback: if range is invalid, just use the current Value.
+                    if not values:
+                        values = [float(row["Value"])]
 
-                param_ranges[name] = values
+                    param_ranges[name] = values
 
-            # Compute total combinations.
-            from itertools import product
+                # Compute total combinations.
+                from itertools import product
 
-            total_runs = 1
-            for vals in param_ranges.values():
-                total_runs *= max(len(vals), 1)
+                total_runs = 1
+                for vals in param_ranges.values():
+                    total_runs *= max(len(vals), 1)
 
-            max_runs = 200
-            if total_runs > max_runs:
-                st.error(
-                    f"Grid is too large ({total_runs} runs). Reduce ranges or steps (limit = {max_runs}).",
-                )
-            else:
-                progress = st.progress(0.0)
-                results_rows: list[dict] = []
-                names = list(param_ranges.keys())
-                all_values = [param_ranges[n] for n in names]
-
-                run_idx = 0
-                for combo in product(*all_values):
-                    combo_params = dict(zip(names, combo))
-
-                    # Extract per-combination parameter values, falling back to
-                    # the current grid "Value" when a given knob is not
-                    # optimized.
-                    k_sigma_long_combo = float(combo_params.get("k_sigma_long", k_sigma_long_val))
-                    k_sigma_short_combo = float(combo_params.get("k_sigma_short", k_sigma_short_val))
-                    k_atr_long_combo = float(combo_params.get("k_atr_long", k_atr_long_val))
-                    k_atr_short_combo = float(combo_params.get("k_atr_short", k_atr_short_val))
-                    risk_pct = float(combo_params.get("risk_per_trade_pct", risk_pct_val))
-                    rr = float(combo_params.get("reward_risk_ratio", rr_val))
-
-
-                    equity_df, trades_df, metrics = _run_backtest(
-                        frequency=freq,
-                        start_date=start_date or None,
-                        end_date=end_date or None,
-                        risk_per_trade_pct=risk_pct,
-                        reward_risk_ratio=rr,
-                        k_sigma_long=k_sigma_long_combo,
-                        k_sigma_short=k_sigma_short_combo,
-                        k_atr_long=k_atr_long_combo,
-                        k_atr_short=k_atr_short_combo,
-                        enable_longs=enable_longs_flag,
-                        allow_shorts=allow_shorts_flag,
+                max_runs = 200
+                if total_runs > max_runs:
+                    st.error(
+                        f"Grid is too large ({total_runs} runs). Reduce ranges or steps (limit = {max_runs}).",
                     )
+                else:
+                    progress = st.progress(0.0)
+                    results_rows: list[dict] = []
+                    names = list(param_ranges.keys())
+                    all_values = [param_ranges[n] for n in names]
 
-                    results_rows.append(
-                        {
-                            # Side-specific parameters so we can distinguish long vs short.
-                            "k_sigma_long": k_sigma_long_combo,
-                            "k_sigma_short": k_sigma_short_combo,
-                            "k_atr_long": k_atr_long_combo,
-                            "k_atr_short": k_atr_short_combo,
-                            # Risk/return configuration.
-                            "risk_per_trade_pct": risk_pct,
-                            "reward_risk_ratio": rr,
-                            # Performance metrics.
-                            "total_return": metrics.get("total_return", 0.0),
-                            "cagr": metrics.get("cagr", 0.0),
-                            "max_drawdown": metrics.get("max_drawdown", 0.0),
-                            "sharpe_ratio": metrics.get("sharpe_ratio", 0.0),
-                            "profit_factor": metrics.get("profit_factor", 0.0),
-                            "win_rate": metrics.get("win_rate", 0.0),
-                            "n_trades": metrics.get("n_trades", 0),
-                            "final_equity": metrics.get("final_equity", 0.0),
-                        }
-                    )
+                    run_idx = 0
+                    for combo in product(*all_values):
+                        combo_params = dict(zip(names, combo))
 
-                    run_idx += 1
-                    progress.progress(run_idx / total_runs)
+                        # Extract per-combination parameter values, falling back to
+                        # the current grid "Value" when a given knob is not
+                        # optimized.
+                        k_sigma_long_combo = float(combo_params.get("k_sigma_long", k_sigma_long_val))
+                        k_sigma_short_combo = float(combo_params.get("k_sigma_short", k_sigma_short_val))
+                        k_atr_long_combo = float(combo_params.get("k_atr_long", k_atr_long_val))
+                        k_atr_short_combo = float(combo_params.get("k_atr_short", k_atr_short_val))
+                        risk_pct = float(combo_params.get("risk_per_trade_pct", risk_pct_val))
+                        rr = float(combo_params.get("reward_risk_ratio", rr_val))
 
-                if results_rows:
-                    results_df = pd.DataFrame(results_rows)
-                    # Sort by total_return descending by default.
-                    results_df = results_df.sort_values(by="total_return", ascending=False)
-                    # Persist results in-session and record a compact summary to history.
-                    opt_state["last_run"] = {
-                        "frequency": freq,
-                        "start_date": start_date or None,
-                        "end_date": end_date or None,
-                        "trade_side": trade_side,
-                        "results_df": results_df,
-                    }
-                    st.session_state["optimization_results"] = results_df
+                        equity_df, trades_df, metrics = _run_backtest(
+                            frequency=freq,
+                            start_date=start_date or None,
+                            end_date=end_date or None,
+                            risk_per_trade_pct=risk_pct,
+                            reward_risk_ratio=rr,
+                            k_sigma_long=k_sigma_long_combo,
+                            k_sigma_short=k_sigma_short_combo,
+                            k_atr_long=k_atr_long_combo,
+                            k_atr_short=k_atr_short_combo,
+                            enable_longs=enable_longs_flag,
+                            allow_shorts=allow_shorts_flag,
+                        )
 
-                    hist: list[dict] = opt_state.get("history", [])
-                    best_sharpe = float(results_df["sharpe_ratio"].max()) if "sharpe_ratio" in results_df.columns else 0.0
-                    best_total_return = float(results_df["total_return"].max()) if "total_return" in results_df.columns else 0.0
-                    hist.append(
-                        {
-                            "timestamp": pd.Timestamp.utcnow().isoformat(),
+                        results_rows.append(
+                            {
+                                # Side-specific parameters so we can distinguish long vs short.
+                                "k_sigma_long": k_sigma_long_combo,
+                                "k_sigma_short": k_sigma_short_combo,
+                                "k_atr_long": k_atr_long_combo,
+                                "k_atr_short": k_atr_short_combo,
+                                # Risk/return configuration.
+                                "risk_per_trade_pct": risk_pct,
+                                "reward_risk_ratio": rr,
+                                # Performance metrics.
+                                "total_return": metrics.get("total_return", 0.0),
+                                "cagr": metrics.get("cagr", 0.0),
+                                "max_drawdown": metrics.get("max_drawdown", 0.0),
+                                "sharpe_ratio": metrics.get("sharpe_ratio", 0.0),
+                                "profit_factor": metrics.get("profit_factor", 0.0),
+                                "win_rate": metrics.get("win_rate", 0.0),
+                                "n_trades": metrics.get("n_trades", 0),
+                                "final_equity": metrics.get("final_equity", 0.0),
+                            }
+                        )
+
+                        run_idx += 1
+                        progress.progress(run_idx / total_runs)
+
+                    if results_rows:
+                        results_df = pd.DataFrame(results_rows)
+                        # Sort by total_return descending by default.
+                        results_df = results_df.sort_values(by="total_return", ascending=False)
+                        # Persist results in-session and record a compact summary to history.
+                        opt_state["last_run"] = {
                             "frequency": freq,
+                            "start_date": start_date or None,
+                            "end_date": end_date or None,
                             "trade_side": trade_side,
-                            "n_runs": int(len(results_df)),
-                            "best_sharpe": best_sharpe,
-                            "best_total_return": best_total_return,
+                            "results_df": results_df,
                         }
-                    )
-                    if len(hist) > MAX_HISTORY_ROWS:
-                        hist = hist[-MAX_HISTORY_ROWS:]
-                    opt_state["history"] = hist
-                    _save_json_history("optimization_history.json", hist)
+                        st.session_state["optimization_results"] = results_df
+
+                        hist: list[dict] = opt_state.get("history", [])
+                        best_sharpe = float(results_df["sharpe_ratio"].max()) if "sharpe_ratio" in results_df.columns else 0.0
+                        best_total_return = float(results_df["total_return"].max()) if "total_return" in results_df.columns else 0.0
+                        hist.append(
+                            {
+                                "timestamp": pd.Timestamp.utcnow().isoformat(),
+                                "frequency": freq,
+                                "trade_side": trade_side,
+                                "n_runs": int(len(results_df)),
+                                "best_sharpe": best_sharpe,
+                                "best_total_return": best_total_return,
+                            }
+                        )
+                        if len(hist) > MAX_HISTORY_ROWS:
+                            hist = hist[-MAX_HISTORY_ROWS:]
+                        opt_state["history"] = hist
+                        _save_json_history("optimization_history.json", hist)
+            finally:
+                # Defensive: if anything throws during the grid search, ensure we
+                # re-enable Live auto-refresh.
+                _stop_optimization()
         else:
             # Reuse the most recent optimization results, if any.
             last = opt_state.get("last_run")
@@ -2531,14 +2573,29 @@ with tab_backtest:
                     "No 2D slice available for heatmaps with the current parameter ranges.",
                 )
 
-        # Optimization summary history table.
-        opt_history = opt_state.get("history", [])
-        if opt_history:
-            st.markdown("### Optimization history (most recent first)")
-            opt_hist_df = pd.DataFrame(opt_history)
+        # Optimization summary history table (filtered by selected frequency).
+        opt_history_all = opt_state.get("history", [])
+        opt_history_for_view = _filter_optimization_history(opt_history_all, frequency=freq)
+
+        st.markdown(f"### Optimization history for `{freq}` (most recent first)")
+        if opt_history_for_view:
+            opt_hist_df = pd.DataFrame(opt_history_for_view)
             if "timestamp" in opt_hist_df.columns:
+                opt_hist_df["timestamp"] = opt_hist_df["timestamp"].apply(_format_timestamp_iso_seconds)
                 opt_hist_df = opt_hist_df.sort_values("timestamp", ascending=False)
             st.dataframe(opt_hist_df, width="stretch")
+        else:
+            st.caption("No optimizations recorded for this frequency yet.")
+
+        with st.expander("Show all optimization history (all frequencies)", expanded=False):
+            if opt_history_all:
+                df_all = pd.DataFrame(opt_history_all)
+                if "timestamp" in df_all.columns:
+                    df_all["timestamp"] = df_all["timestamp"].apply(_format_timestamp_iso_seconds)
+                    df_all = df_all.sort_values("timestamp", ascending=False)
+                st.dataframe(df_all, width="stretch")
+            else:
+                st.write("(none)")
 
 
 

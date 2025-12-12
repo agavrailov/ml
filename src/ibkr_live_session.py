@@ -26,12 +26,13 @@ Note: requires ib_insync installed and a running TWS/IB Gateway.
 from __future__ import annotations
 
 import argparse
+import threading
 import time
 import traceback
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from src.config import IB as IbConfig
 from src.execution import ExecutionContext, submit_trade_plan
@@ -298,6 +299,55 @@ def _connect_with_unique_client_id(
     )
 
 
+def _attach_ib_error_logging(
+    ib,  # noqa: ANN001
+    *,
+    log_fn: Callable[[dict], None],
+    run_id: str,
+    symbol: str,
+    frequency: str,
+) -> Callable[[], None]:
+    """Attach a best-effort IB error handler for observability.
+
+    In practice, "no data" situations (permissions, data farms, pacing) often show up
+    only via errorEvent callbacks.
+
+    Returns a detach function.
+    """
+
+    err_event = getattr(ib, "errorEvent", None)
+    if err_event is None:
+        return lambda: None
+
+    def _on_error(reqId, errorCode, errorString, contract=None):  # noqa: ANN001,N803
+        ev = {
+            "type": "ib_error",
+            "run_id": run_id,
+            "symbol": symbol,
+            "frequency": frequency,
+            "req_id": int(reqId) if reqId is not None else None,
+            "error_code": int(errorCode) if errorCode is not None else None,
+            "error": str(errorString),
+        }
+        log_fn(ev)
+        # Keep console printing lightweight but actionable.
+        print(f"[live][ib_error] code={ev['error_code']} reqId={ev['req_id']} {ev['error']}")
+
+    try:
+        err_event += _on_error
+    except Exception:
+        return lambda: None
+
+    def _detach() -> None:
+        # Avoid augmented-assignment to a closure variable (would require `nonlocal`).
+        try:
+            ib.errorEvent -= _on_error
+        except Exception:
+            pass
+
+    return _detach
+
+
 def run_live_session(cfg: LiveSessionConfig) -> None:
     if not _HAVE_IB:
         raise RuntimeError("ib_insync is required; install it with 'pip install ib-insync'")
@@ -345,6 +395,8 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
         f"(preferred clientId={preferred_client_id})",
     )
 
+    detach_ib_error_logger: Callable[[], None] | None = None
+
     try:
         connected_client_id = _connect_with_unique_client_id(
             ib,
@@ -361,6 +413,15 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                 "port": int(IbConfig.port),
                 "client_id": int(connected_client_id),
             }
+        )
+
+        # Critical for diagnosing "connected but no data".
+        detach_ib_error_logger = _attach_ib_error_logging(
+            ib,
+            log_fn=_log,
+            run_id=run_id,
+            symbol=cfg.symbol,
+            frequency=cfg.frequency,
         )
 
         contract = Stock(cfg.symbol, "SMART", "USD")  # type: ignore[call-arg]
@@ -462,6 +523,35 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
             keepUpToDate=True,
         )
 
+        # Note: this initial batch is returned synchronously by ib_insync, but our
+        # main handler only logs completed *new* bars. Log the initial snapshot so
+        # "no bar events" doesn't hide the initial state.
+        try:
+            initial_n_bars = int(len(bars)) if bars is not None else 0
+        except Exception:
+            # Unit tests (and some ib_insync fakes) may return a bars object without __len__.
+            initial_n_bars = 0
+        initial_last_bar_time = None
+        try:
+            if bars and len(bars) > 0:
+                initial_last_bar_time = str(getattr(bars[-1], "date", None))
+        except Exception:
+            initial_last_bar_time = None
+
+        _log(
+            {
+                "type": "data_initial",
+                "run_id": run_id,
+                "symbol": cfg.symbol,
+                "frequency": cfg.frequency,
+                "n_bars": initial_n_bars,
+                "last_bar_time": initial_last_bar_time,
+            }
+        )
+        print(
+            f"[live] Initial historical bars received: n={initial_n_bars} last={initial_last_bar_time}"
+        )
+
         print(f"[live] Subscribed to keepUpToDate bars ({bar_size_setting}) for {cfg.symbol}.")
         _log(
             {
@@ -477,8 +567,22 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
         # Initial snapshot (before any bars are processed).
         _log_broker_snapshot(where="after_subscribe")
 
+        # Lightweight liveness tracking for "connected but silent" scenarios.
+        liveness = {
+            "last_update_monotonic": time.monotonic(),
+            "last_bar_time": None,
+            "last_has_new_bar": None,
+        }
+
         def _on_bar_update(bar_list, has_new_bar: bool) -> None:  # noqa: ANN001
             nonlocal equity, has_open_position, bar_count
+
+            # Track liveness even for in-progress bar updates.
+            try:
+                liveness["last_update_monotonic"] = time.monotonic()
+                liveness["last_has_new_bar"] = bool(has_new_bar)
+            except Exception:
+                pass
 
             # Only act on completed bars.
             if not has_new_bar:
@@ -502,6 +606,11 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                         bar_time_iso = str(bar_time_raw)
                 except Exception:
                     bar_time_iso = None
+
+                try:
+                    liveness["last_bar_time"] = bar_time_iso
+                except Exception:
+                    pass
 
                 bar = {
                     "Time": bar_time_raw,
@@ -653,6 +762,39 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
 
         bars.updateEvent += _on_bar_update
 
+        # Heartbeat: log status periodically and warn if no updates arrive.
+        hb_stop = threading.Event()
+
+        def _heartbeat() -> None:
+            while not hb_stop.wait(30.0):
+                try:
+                    age = float(time.monotonic() - float(liveness.get("last_update_monotonic", 0.0)))
+                except Exception:
+                    age = -1.0
+
+                _log(
+                    {
+                        "type": "heartbeat",
+                        "run_id": run_id,
+                        "symbol": cfg.symbol,
+                        "frequency": cfg.frequency,
+                        "bar_count": int(bar_count),
+                        "seconds_since_last_update": age,
+                        "last_has_new_bar": liveness.get("last_has_new_bar"),
+                        "last_bar_time": liveness.get("last_bar_time"),
+                    }
+                )
+
+                # If we haven't received *any* bar updates for a while, surface it.
+                if age >= 0 and age > 300:
+                    print(
+                        f"[live] WARNING: no bar updates received for {age:.0f}s. "
+                        "Check TWS/Gateway logs for market data/permissions errors."
+                    )
+
+        hb_thread = threading.Thread(target=_heartbeat, name="ibkr_live_heartbeat", daemon=True)
+        hb_thread.start()
+
         print("[live] Running event loop (Ctrl+C to stop)...")
         ib.run()
 
@@ -669,6 +811,25 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
         raise
 
     finally:
+        # Stop heartbeat thread (if started).
+        try:
+            if "hb_stop" in locals():
+                hb_stop.set()
+        except Exception:
+            pass
+        try:
+            if "hb_thread" in locals() and hb_thread is not None:
+                hb_thread.join(timeout=1.0)
+        except Exception:
+            pass
+
+        # Detach IB error logger (if attached).
+        try:
+            if detach_ib_error_logger is not None:
+                detach_ib_error_logger()
+        except Exception:
+            pass
+
         # Disconnect broker first (it may own a separate IB connection).
         try:
             if broker is not None:

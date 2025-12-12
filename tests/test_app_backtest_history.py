@@ -75,6 +75,17 @@ def test_filter_backtest_history_by_frequency_sorts_desc() -> None:
     assert [r["timestamp"] for r in filtered] == ["2025-01-03T00:00:00", "2025-01-01T00:00:00"]
 
 
+def test_filter_optimization_history_by_frequency_sorts_desc() -> None:
+    rows = [
+        {"timestamp": "2025-02-01T00:00:00", "frequency": "1min", "n_runs": 10},
+        {"timestamp": "2025-02-02T00:00:00", "frequency": "60min", "n_runs": 20},
+        {"timestamp": "2025-02-03T00:00:00", "frequency": "1min", "n_runs": 30},
+    ]
+
+    filtered = app._filter_optimization_history(rows, frequency="1min")
+    assert [r["timestamp"] for r in filtered] == ["2025-02-03T00:00:00", "2025-02-01T00:00:00"]
+
+
 def test_run_backtest_raises_when_predictions_csv_missing(monkeypatch) -> None:
     # Force config.get_predictions_csv_path to return a known path.
     import src.config as cfg
