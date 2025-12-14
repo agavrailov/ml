@@ -304,13 +304,12 @@ with tab_data:
 
 with tab_experiments:
     from src.ui.page_modules import experiments_page
-    from src.train import train_model
 
     experiments_page.render_experiments_tab(
         st=st,
         pd=pd,
         os=os,
-        train_model=train_model,
+        train_model=None,  # Lazy-loaded inside the page module
         FREQUENCY=FREQUENCY,
         TSTEPS=TSTEPS,
         RESAMPLE_FREQUENCIES=RESAMPLE_FREQUENCIES,

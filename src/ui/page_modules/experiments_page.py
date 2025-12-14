@@ -9,7 +9,7 @@ def render_experiments_tab(
     st,
     pd,
     os,
-    train_model,
+    train_model,  # Deprecated: now lazy-loaded to avoid TensorFlow import on page load
     FREQUENCY: str,
     TSTEPS: int,
     RESAMPLE_FREQUENCIES: list[str],
@@ -145,7 +145,9 @@ def render_experiments_tab(
             status.write("Running short training experiment...")
             progress.progress(0.1)
 
-            result = train_model(
+            # Lazy import: only load TensorFlow when user actually runs training
+            from src.train import train_model as _train_model
+            result = _train_model(
                 frequency=exp_freq,
                 tsteps=exp_tsteps,
                 lstm_units=int(exp_lstm_units),

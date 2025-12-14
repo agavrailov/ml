@@ -41,10 +41,8 @@ from src.config import (
     get_predictions_csv_path,
 )
 from src.strategy import StrategyConfig
-from src.predict import (
-    build_prediction_context,
-    predict_sequence_batch,
-)
+# Lazy import: predict module loads TensorFlow, only needed for model-mode backtests
+# from src.predict import build_prediction_context, predict_sequence_batch
 from src.data_processing import add_features
 from src.data_utils import apply_standard_scaler
 from src.bias_correction import (
@@ -292,6 +290,8 @@ def _make_model_prediction_provider(data: pd.DataFrame, frequency: str) -> tuple
 
     # Build prediction context: model + scaler + feature metadata.
     print("Building prediction context and running batched model predictions...", flush=True)
+    # Lazy import: only load TensorFlow when actually running model predictions
+    from src.predict import build_prediction_context, predict_sequence_batch
     ctx = build_prediction_context(frequency=frequency, tsteps=TSTEPS)
 
     df = data.copy()
