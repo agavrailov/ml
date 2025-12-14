@@ -264,11 +264,6 @@ def render_walkforward_tab(
                 if res_path.exists():
                     try:
                         res_obj = _job_store.read_json(res_path)
-                        res = _WalkForwardResult(**res_obj)
-                    except Exception:
-                        res = None
-
-                    if res is not None:
                         summary = res_obj.get("summary", {})
                         st.success(
                             f"Walk-forward complete: {summary.get('n_param_sets', 0)} param sets, "
@@ -307,6 +302,8 @@ def render_walkforward_tab(
                                 wf_state["robust_history"] = robust_hist
                                 save_json_history("wf_robust_history.json", robust_hist)
                                 recorded.append(active_job_id)
+                    except Exception as exc:
+                        st.error(f"Failed to load walk-forward results: {exc}")
 
     # Launch new walk-forward job.
     run_robust = st.button("Run robustness evaluation (Sharpe across folds)")
@@ -396,8 +393,10 @@ def render_walkforward_tab(
     results_df = wf_state.get("robust_results_df")
     sharpe_stats = wf_state.get("summary_df")
 
-    if results_df is not None and not results_df.empty and sharpe_stats is not None:
-        st.subheader("Sharpe-based robustness summary")
+    if results_df is not None and not results_df.empty and sharpe_stats is not None and not sharpe_stats.empty:
+        st.markdown("---")
+        st.subheader("Walk-forward results")
+        st.markdown("### Sharpe-based robustness summary")
         st.dataframe(sharpe_stats, width="stretch")
 
         # Line chart: Sharpe per fold per parameter set.

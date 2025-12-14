@@ -24,3 +24,4 @@ experiments/experiments_log.jsonl
 data/processed/missing_trading_days.json
 *.json
 *.jsonl
+runs

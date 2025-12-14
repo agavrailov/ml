@@ -105,6 +105,10 @@ class OptimizeRequest:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "OptimizeRequest":
+        return cls(**d)
+
 
 @dataclass(frozen=True)
 class OptimizeResult:
@@ -131,6 +135,10 @@ class WalkForwardRequest:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "WalkForwardRequest":
+        return cls(**d)
 
 
 @dataclass(frozen=True)
