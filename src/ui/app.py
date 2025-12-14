@@ -2,6 +2,13 @@
 
 This is the main entry point for the Streamlit UI. It sets up the application
 and delegates to page modules for rendering each tab.
+
+Navigation approach:
+- Uses horizontal tabs (st.tabs) for single-page navigation
+- Page modules are in src/ui/page_modules/ (NOT src/ui/pages/) to prevent
+  Streamlit's auto-discovery which would create unwanted sidebar navigation
+- All state persists naturally across tabs without page reloads
+- Trade-off: No URL routing (tabs not bookmarkable), but faster UX
 """
 
 from __future__ import annotations
@@ -64,7 +71,13 @@ from src.ui.registry import (
 from src.core.config_resolver import get_strategy_defaults, save_strategy_defaults
 
 # Configure Streamlit page
-st.set_page_config(layout="wide")
+# Note: sidebar is hidden since we use tabs instead of multipage
+st.set_page_config(
+    page_title="LSTM Trading System",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
 
 # Initialize global frequency in session state
 if "global_frequency" not in st.session_state:
@@ -258,12 +271,12 @@ tab_live, tab_data, tab_experiments, tab_train, tab_backtest, tab_walkforward = 
 )
 
 with tab_live:
-    from src.ui.pages import live_page
+    from src.ui.page_modules import live_page
 
     live_page.render_live_tab(st=st, pd=pd, plt=plt)
 
 with tab_data:
-    from src.ui.pages import data_page
+    from src.ui.page_modules import data_page
 
     data_page.render_data_tab(
         st=st,
@@ -279,7 +292,7 @@ with tab_data:
     )
 
 with tab_experiments:
-    from src.ui.pages import experiments_page
+    from src.ui.page_modules import experiments_page
 
     experiments_page.render_experiments_tab(
         st=st,
@@ -303,7 +316,7 @@ with tab_experiments:
     )
 
 with tab_train:
-    from src.ui.pages import train_page
+    from src.ui.page_modules import train_page
 
     train_page.render_train_tab(
         st=st,
@@ -332,7 +345,7 @@ with tab_train:
     )
 
 with tab_backtest:
-    from src.ui.pages import backtest_page
+    from src.ui.page_modules import backtest_page
     import src.config as cfg_mod
 
     backtest_page.render_backtest_tab(
@@ -360,7 +373,7 @@ with tab_backtest:
     )
 
 with tab_walkforward:
-    from src.ui.pages import walkforward_page
+    from src.ui.page_modules import walkforward_page
 
     walkforward_page.render_walkforward_tab(
         st=st,

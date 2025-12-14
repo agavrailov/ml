@@ -1,24 +1,24 @@
-from __future__ import annotations
+"""Tests for src.ui.app entrypoint.
 
-from pathlib import Path
+After Phase 3 completion, src.ui.app directly orchestrates tabs without delegation.
+This test validates that the module imports successfully and has expected structure.
+"""
+
+from __future__ import annotations
 
 import src.ui.app as ui_app
 
 
-def test_ui_app_delegates_to_legacy_app(monkeypatch):
-    called = {}
+def test_ui_app_imports_successfully():
+    """src.ui.app should import without errors."""
+    assert ui_app is not None
 
-    def _fake_run_path(path, run_name=None):
-        called["path"] = path
-        called["run_name"] = run_name
-        return {}
 
-    monkeypatch.setattr(ui_app.runpy, "run_path", _fake_run_path)
-
-    ui_app.main()
-
-    assert called["run_name"] == "__main__"
-
-    legacy_path = Path(called["path"]).resolve()
-    assert legacy_path.name == "app.py"
-    assert legacy_path.parent.name == "src"
+def test_ui_app_has_expected_helpers():
+    """src.ui.app should have helper functions for parameter management."""
+    assert hasattr(ui_app, "_build_default_params_df")
+    assert hasattr(ui_app, "_load_params_grid")
+    assert hasattr(ui_app, "_save_params_grid")
+    assert hasattr(ui_app, "_save_strategy_defaults_to_config")
+    assert hasattr(ui_app, "_load_strategy_defaults")
+    assert hasattr(ui_app, "_run_backtest")

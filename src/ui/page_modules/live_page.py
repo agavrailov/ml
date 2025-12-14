@@ -1,3 +1,9 @@
+"""Live ops dashboard page.
+
+Reads live trading events from JSONL logs and presents an observability dashboard.
+Event schemas are defined in src.live.contracts.
+"""
+
 from __future__ import annotations
 
 

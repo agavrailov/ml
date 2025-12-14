@@ -1,21 +1,19 @@
-"""IBKR/TWS live session runner.
+"""IBKR/TWS live session runner (CLI shim).
 
-This is a minimal wiring layer that:
-- Connects to IBKR TWS / IB Gateway via ib_insync.
-- Subscribes to a keepUpToDate historical bar stream (so we get OHLC bars).
-- For each new completed bar, calls LivePredictor.update_and_predict(...).
-- Feeds the result into the existing strategy/execution pipeline.
+This module provides a CLI interface to the live trading engine.
+It parses command-line arguments and delegates to src.live.engine.
 
-This is intentionally MVP-level:
-- It uses placeholder ATR/sigma values (same pattern as trading_session.py).
-- It only tracks "has_open_position" locally.
-- It submits only the entry order (MARKET) via the configured broker.
+The core logic is in src.live.engine, which:
+- Connects to IBKR TWS / IB Gateway via ib_insync
+- Subscribes to a keepUpToDate historical bar stream
+- For each new completed bar, calls LivePredictor.update_and_predict()
+- Feeds the result into the strategy/execution pipeline
+- Writes typed events to JSONL log (see src.live.contracts)
 
-Observability
-- Writes an append-only JSONL event log under ui_state/live/ by default.
-  This allows the Streamlit UI to present a live ops dashboard.
+Observability:
+- Writes an append-only JSONL event log under ui_state/live/ by default
 - Supports a file-based kill switch (ui_state/live/KILL_SWITCH) that disables
-  new order submissions.
+  new order submissions without stopping the daemon
 
 Usage example:
     python -m src.ibkr_live_session --symbol NVDA --frequency 60min --backend IBKR_TWS
@@ -857,6 +855,7 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
 
 
 def main() -> None:
+    """CLI entrypoint - parse args and delegate to src.live.engine."""
     p = argparse.ArgumentParser(description="IBKR/TWS live session runner (bar-by-bar model predictions).")
     p.add_argument("--symbol", type=str, default="NVDA")
     p.add_argument("--frequency", type=str, default="60min")
@@ -895,7 +894,10 @@ def main() -> None:
     )
     args = p.parse_args()
 
-    cfg = LiveSessionConfig(
+    # Import here to allow lazy loading
+    from src.live.engine import LiveEngineConfig, run as run_engine
+
+    cfg = LiveEngineConfig(
         symbol=args.symbol,
         frequency=args.frequency,
         tsteps=int(args.tsteps),
@@ -908,7 +910,7 @@ def main() -> None:
         log_dir=args.log_dir,
         snapshot_every_n_bars=int(args.snapshot_every_n_bars),
     )
-    run_live_session(cfg)
+    run_engine(cfg)
 
 
 if __name__ == "__main__":  # pragma: no cover
