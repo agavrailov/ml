@@ -45,15 +45,18 @@ def inject_custom_css(st) -> None:
         /* Card containers */
         .metric-card {
             background: linear-gradient(135deg, var(--primary-color) 0%, var(--primary-dark) 100%);
-            padding: 1.5rem;
-            border-radius: 0.75rem;
+            padding: 0.4rem 0.7rem;
+            border-radius: 0.4rem;
             color: white;
             box-shadow: var(--card-shadow);
             transition: transform 0.2s, box-shadow 0.2s;
-            margin-bottom: 1rem;
+            margin-bottom: 0.4rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
         }
         .metric-card:hover {
-            transform: translateY(-2px);
+            transform: translateY(-1px);
             box-shadow: var(--card-shadow-hover);
         }
         
@@ -64,20 +67,20 @@ def inject_custom_css(st) -> None:
         .metric-card-neutral { background: linear-gradient(135deg, #718096 0%, #4a5568 100%); }
         
         .metric-value {
-            font-size: 2.5rem;
+            font-size: 1rem;
             font-weight: 700;
             line-height: 1;
-            margin-top: 0.5rem;
         }
         .metric-label {
-            font-size: 0.875rem;
+            font-size: 1rem;
             opacity: 0.9;
             text-transform: uppercase;
-            letter-spacing: 0.05em;
+            letter-spacing: 0.03em;
+            line-height: 1;
         }
         .metric-trend {
-            font-size: 0.875rem;
-            margin-top: 0.5rem;
+            font-size: 0.65rem;
+            opacity: 0.85;
         }
         
         /* Status badges */
@@ -175,18 +178,15 @@ def render_metric_card(
         value: Metric value (will be formatted)
         trend: Optional trend text (e.g., "+12.5% vs last")
         color: Card color scheme
-        icon: Optional emoji icon
+        icon: Optional emoji icon (ignored for compact single-line cards)
     """
     color_class = f"metric-card-{color}"
-    icon_html = f'<span style="font-size: 2rem; margin-right: 0.5rem;">{icon}</span>' if icon else ""
-    trend_html = f'<div class="metric-trend">{trend}</div>' if trend else ""
+    trend_html = f'<span class="metric-trend" style="margin-left: 0.3rem;">({trend})</span>' if trend else ""
     
     st.markdown(f"""
     <div class="metric-card {color_class}">
-        {icon_html}
-        <div class="metric-label">{label}</div>
-        <div class="metric-value">{value}</div>
-        {trend_html}
+        <span class="metric-label">{label}</span>
+        <span><span class="metric-value">{value}</span>{trend_html}</span>
     </div>
     """, unsafe_allow_html=True)
 
@@ -421,64 +421,220 @@ def render_optimization_summary(st, result: dict[str, Any]) -> None:
 # BACKTEST COMPONENTS
 # =============================================================================
 
+def render_backtest_results_table(
+    st,
+    pd,
+    results: list[dict[str, any]] | pd.DataFrame,
+    title: str = "Results",
+    max_rows: int | None = None,
+    enable_actions: bool = False,
+    on_retest: Callable[[list[dict]], None] | None = None,
+    on_add_to_wf: Callable[[list[dict]], None] | None = None,
+) -> None:
+    """Render a backtest results table with configurable columns and actions.
+    
+    This component is reused for both:
+    - Single backtest results history
+    - Optimization results (grid search runs)
+    
+    Args:
+        st: Streamlit module
+        pd: Pandas module
+        results: List of result dicts or DataFrame with backtest metrics
+        title: Table section title
+        max_rows: Optional limit on displayed rows (None = show all)
+        enable_actions: Whether to show row action buttons
+        on_retest: Callback(list[row_dict]) - load parameters and switch to backtest tab
+        on_add_to_wf: Callback(list[row_dict]) - add parameters to walk-forward table
+    """
+    if isinstance(results, list):
+        if not results:
+            st.info(f"No {title.lower()} available")
+            return
+        df_results = pd.DataFrame(results)
+    else:
+        df_results = results
+    
+    if df_results.empty:
+        st.info(f"No {title.lower()} available")
+        return
+    
+    # Make a copy to avoid modifying original data
+    df_results = df_results.copy()
+    
+    # Format timestamp if present
+    if "timestamp" in df_results.columns:
+        df_results["timestamp"] = pd.to_datetime(df_results["timestamp"]).dt.strftime("%Y-%m-%d %H:%M")
+        df_results = df_results.sort_values("timestamp", ascending=False)
+    
+    # Convert fractional percentages to whole percentages for display
+    for col in ["total_return", "cagr", "max_drawdown", "win_rate"]:
+        if col in df_results.columns:
+            df_results[col] = df_results[col] * 100
+    
+    # Add selection column if actions are enabled
+    if enable_actions:
+        df_results.insert(0, "Select", False)
+    
+    # Define display columns in preferred order
+    display_cols = ["Select"] if enable_actions else []
+    display_cols += [
+        "timestamp",
+        "k_sigma_long",
+        "k_sigma_short",
+        "k_atr_long",
+        "k_atr_short",
+        "risk_per_trade_pct",
+        "reward_risk_ratio",
+        "sharpe_ratio",
+        "total_return",
+        "cagr",
+        "max_drawdown",
+        "win_rate",
+        "profit_factor",
+        "n_trades",
+        "final_equity",
+    ]
+    
+    # Only include columns that exist
+    display_cols = [c for c in display_cols if c in df_results.columns]
+    df_display = df_results[display_cols]
+    
+    # Apply max_rows limit if specified
+    if max_rows and len(df_display) > max_rows:
+        df_display = df_display.head(max_rows)
+    
+    # Column configuration for formatting
+    column_config = {
+        "Select": st.column_config.CheckboxColumn("✓", width="small", default=False),
+        "timestamp": st.column_config.TextColumn("Time"),
+        "k_sigma_long": st.column_config.NumberColumn("k_σ_L", format="%.3f"),
+        "k_sigma_short": st.column_config.NumberColumn("k_σ_S", format="%.3f"),
+        "k_atr_long": st.column_config.NumberColumn("k_atr_L", format="%.3f"),
+        "k_atr_short": st.column_config.NumberColumn("k_atr_S", format="%.3f"),
+        "risk_per_trade_pct": st.column_config.NumberColumn("Risk %", format="%.2f"),
+        "reward_risk_ratio": st.column_config.NumberColumn("R:R", format="%.2f"),
+        "sharpe_ratio": st.column_config.NumberColumn("Sharpe", format="%.2f"),
+        "total_return": st.column_config.NumberColumn("Return", format="%.2f%%"),
+        "cagr": st.column_config.NumberColumn("CAGR", format="%.2f%%"),
+        "max_drawdown": st.column_config.NumberColumn("DD", format="%.2f%%"),
+        "win_rate": st.column_config.NumberColumn("Win%", format="%.1f%%"),
+        "profit_factor": st.column_config.NumberColumn("PF", format="%.2f"),
+        "n_trades": st.column_config.NumberColumn("Trades", format="%d"),
+        "final_equity": st.column_config.NumberColumn("Equity", format="$%.0f"),
+    }
+    
+    # Render table with data_editor for checkbox support first
+    if enable_actions:
+        table_key = f"results_table_{title.replace(' ', '_').replace('(', '').replace(')', '')}"
+        
+        edited_df = st.data_editor(
+            df_display,
+            width='stretch',
+            hide_index=True,
+            column_config=column_config,
+            disabled=[col for col in df_display.columns if col != "Select"],
+            key=f"{table_key}_editor",
+        )
+        
+        # Get selected rows
+        selected_rows = edited_df[edited_df["Select"] == True]
+        n_selected = len(selected_rows)
+        
+        # Convert selected rows to list of dicts (excluding Select column)
+        selected_data = selected_rows.drop(columns=["Select"]).to_dict('records') if n_selected > 0 else []
+        
+        # Action buttons above - after table render so we have selection state
+        col_action1, col_action2, col_info = st.columns([1, 1, 3])
+        
+        with col_action1:
+            if on_retest:
+                # Backtest requires exactly 1 row selected
+                backtest_disabled = (n_selected != 1)
+                backtest_label = "↻ Backtest" if n_selected == 0 else (
+                    "↻ Backtest" if n_selected == 1 else "↻ Backtest (select 1 only)"
+                )
+                if st.button(
+                    backtest_label,
+                    key=f"{table_key}_retest",
+                    use_container_width=True,
+                    disabled=backtest_disabled,
+                    help="Load parameters from selected row (select exactly 1 row)",
+                ):
+                    on_retest(selected_data)
+        
+        with col_action2:
+            if on_add_to_wf:
+                add_wf_disabled = (n_selected == 0)
+                add_wf_label = "→ Add to WF" if n_selected == 0 else f"→ Add {n_selected} to WF"
+                if st.button(
+                    add_wf_label,
+                    key=f"{table_key}_addwf",
+                    use_container_width=True,
+                    disabled=add_wf_disabled,
+                    help="Add selected rows to walk-forward parameter sets",
+                ):
+                    on_add_to_wf(selected_data)
+        
+        with col_info:
+            if n_selected > 0:
+                st.caption(f"✓ {n_selected} row(s) selected")
+            else:
+                st.caption(f"Select rows to enable actions")
+    else:
+        # No actions - use regular dataframe
+        st.dataframe(
+            df_display,
+            width='stretch',
+            hide_index=True,
+            column_config=column_config,
+        )
+
 def render_backtest_metrics(
     st,
     pd,
     metrics: dict[str, Any],
 ) -> None:
-    """Render backtest metrics in a professional grid layout.
+    """Render backtest metrics in a compact vertical layout for sidebar.
     
     Args:
         st: Streamlit module
         pd: Pandas module
         metrics: Dict of backtest metrics
     """
-    st.markdown("### 📊 Performance Metrics")
+    st.markdown("### 📊 Metrics")
     
-    # Top row: Key metrics
-    col1, col2, col3, col4 = st.columns(4)
+    # Compact vertical layout - single line cards
+    total_return = metrics.get("total_return", 0.0) * 100
+    color = "success" if total_return > 0 else "danger"
+    render_metric_card(st, "Return", f"{total_return:.1f}%", color=color)
     
-    with col1:
-        total_return = metrics.get("total_return", 0.0) * 100
-        color = "success" if total_return > 0 else "danger"
-        render_metric_card(st, "Total Return", f"{total_return:.1f}%", color=color, icon="💰")
+    sharpe = metrics.get("sharpe_ratio", 0.0)
+    color = "success" if sharpe > 1.0 else "warning" if sharpe > 0 else "danger"
+    render_metric_card(st, "Sharpe", f"{sharpe:.2f}", color=color)
     
-    with col2:
-        sharpe = metrics.get("sharpe_ratio", 0.0)
-        color = "success" if sharpe > 1.0 else "warning" if sharpe > 0 else "danger"
-        render_metric_card(st, "Sharpe Ratio", f"{sharpe:.2f}", color=color, icon="📈")
+    max_dd = metrics.get("max_drawdown", 0.0) * 100
+    color = "success" if max_dd > -10 else "warning" if max_dd > -20 else "danger"
+    render_metric_card(st, "Drawdown", f"{max_dd:.1f}%", color=color)
     
-    with col3:
-        max_dd = metrics.get("max_drawdown", 0.0) * 100
-        color = "success" if max_dd > -10 else "warning" if max_dd > -20 else "danger"
-        render_metric_card(st, "Max Drawdown", f"{max_dd:.1f}%", color=color, icon="📉")
+    win_rate = metrics.get("win_rate", 0.0) * 100
+    color = "success" if win_rate > 50 else "warning" if win_rate > 40 else "neutral"
+    render_metric_card(st, "Win Rate", f"{win_rate:.1f}%", color=color)
     
-    with col4:
-        win_rate = metrics.get("win_rate", 0.0) * 100
-        color = "success" if win_rate > 50 else "warning" if win_rate > 40 else "neutral"
-        render_metric_card(st, "Win Rate", f"{win_rate:.1f}%", color=color, icon="🎯")
+    cagr = metrics.get("cagr", 0.0) * 100
+    render_metric_card(st, "CAGR", f"{cagr:.1f}%", color="info")
     
-    # Second row: Additional metrics
-    col5, col6, col7, col8 = st.columns(4)
+    profit_factor = metrics.get("profit_factor", 0.0)
+    render_metric_card(st, "Profit Factor", f"{profit_factor:.2f}", color="info")
     
-    with col5:
-        cagr = metrics.get("cagr", 0.0) * 100
-        render_metric_card(st, "CAGR", f"{cagr:.1f}%", color="info", icon="📊")
+    n_trades = metrics.get("n_trades", 0)
+    render_metric_card(st, "Trades", str(n_trades), color="neutral")
     
-    with col6:
-        profit_factor = metrics.get("profit_factor", 0.0)
-        render_metric_card(st, "Profit Factor", f"{profit_factor:.2f}", color="info", icon="⚖️")
-    
-    with col7:
-        n_trades = metrics.get("n_trades", 0)
-        render_metric_card(st, "Total Trades", str(n_trades), color="neutral", icon="🔄")
-    
-    with col8:
-        final_equity = metrics.get("final_equity", 0.0)
-        render_metric_card(st, "Final Equity", f"${final_equity:,.0f}", color="primary", icon="💵")
+    final_equity = metrics.get("final_equity", 0.0)
+    render_metric_card(st, "Final Equity", f"${final_equity:,.0f}", color="primary")
     
     # Detailed metrics table
-    with st.expander("📋 Detailed Metrics"):
+    with st.expander("📋 Details"):
         metrics_display = [
             ("Period", metrics.get("period", "N/A")),
             ("Total Return", f"{metrics.get('total_return', 0)*100:.2f}%"),
@@ -541,20 +697,20 @@ def render_equity_chart(
     ax_equity.set_facecolor("none")
     ax_price.set_facecolor("none")
     
-    # Plot equity
-    ax_equity.plot(x, equity_to_plot["equity"], color="#667eea", linewidth=2.5, label="Portfolio Equity")
+    # Plot equity with thinner line
+    ax_equity.plot(x, equity_to_plot["equity"], color="#667eea", linewidth=1.5, label="Portfolio Equity")
     ax_equity.set_ylabel("Equity ($)", color="#667eea", fontsize=12, fontweight="bold")
     ax_equity.tick_params(axis="y", labelcolor="#667eea")
     ax_equity.grid(True, alpha=0.2, linestyle="--")
     
-    # Plot price if available
+    # Plot price if available with thinner line
     if "price" in equity_to_plot.columns:
         ax_price.plot(
             x,
             equity_to_plot["price"],
             color="#48bb78",
             alpha=0.6,
-            linewidth=2,
+            linewidth=1.2,
             label="NVDA Price",
         )
         ax_price.set_ylabel("NVDA Price ($)", color="#48bb78", fontsize=12, fontweight="bold")

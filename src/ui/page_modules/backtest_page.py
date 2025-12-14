@@ -307,11 +307,16 @@ def render_backtest_tab(
             equity_df = last_run.get("equity_df", pd.DataFrame())
             metrics = last_run.get("metrics", {})
 
-            # Use component for metrics display
-            components.render_backtest_metrics(st, pd, metrics)
+            # Two-column layout: chart on left (larger), metrics on right (compact)
+            col_chart, col_metrics = st.columns([3, 1])
             
-            # Use component for equity chart
-            components.render_equity_chart(st, plt, pd, equity_df, title="Equity vs NVDA Price")
+            with col_chart:
+                # Use component for equity chart
+                components.render_equity_chart(st, plt, pd, equity_df, title="Equity vs NVDA Price")
+            
+            with col_metrics:
+                # Use component for metrics display
+                components.render_backtest_metrics(st, pd, metrics)
         else:
             st.info("→ Run a backtest to see results")
 
@@ -322,52 +327,58 @@ def render_backtest_tab(
         history_all = bt_state.get("history", [])
         history_for_view = filter_backtest_history(history_all, frequency=freq)
 
-        with st.container(border=True):
-            if history_for_view:
-                df_results = pd.DataFrame(history_for_view)
-                if "timestamp" in df_results.columns:
-                    df_results["timestamp"] = df_results["timestamp"].apply(format_timestamp)
-                    df_results = df_results.sort_values("timestamp", ascending=False)
-                
-                # Select and order columns as requested
-                display_cols = [
-                    "timestamp",
-                    "trade_side",
-                    "k_sigma_long",
-                    "k_sigma_short",
-                    "k_atr_long",
-                    "k_atr_short",
-                    "risk_per_trade_pct",
-                    "reward_risk_ratio",
-                    "sharpe_ratio",
-                    "cagr",
-                    "max_drawdown",
-                    "n_trades",
-                    "final_equity",
-                ]
-                # Only include columns that exist in the dataframe
-                display_cols = [c for c in display_cols if c in df_results.columns]
-                
-                st.dataframe(
-                    df_results[display_cols],
-                    width='stretch',
-                    hide_index=True,
-                    column_config={
-                        "k_sigma_long": st.column_config.NumberColumn("k_σ_long", format="%.3f"),
-                        "k_sigma_short": st.column_config.NumberColumn("k_σ_short", format="%.3f"),
-                        "k_atr_long": st.column_config.NumberColumn("k_atr_long", format="%.3f"),
-                        "k_atr_short": st.column_config.NumberColumn("k_atr_short", format="%.3f"),
-                        "risk_per_trade_pct": st.column_config.NumberColumn("Risk %", format="%.2f%%"),
-                        "reward_risk_ratio": st.column_config.NumberColumn("R:R", format="%.2f"),
-                        "sharpe_ratio": st.column_config.NumberColumn("Sharpe", format="%.2f"),
-                        "cagr": st.column_config.NumberColumn("CAGR", format="%.2f%%"),
-                        "max_drawdown": st.column_config.NumberColumn("Drawdown", format="%.2f%%"),
-                        "n_trades": st.column_config.NumberColumn("Trades", format="%d"),
-                        "final_equity": st.column_config.NumberColumn("Final Equity", format="$%.2f"),
-                    }
-                )
+        def on_backtest_retest(rows: list[dict]) -> None:
+            """Load parameters from first selected row and prepare for retest."""
+            if not rows:
+                return
+            
+            # Use first selected row
+            row = rows[0]
+            
+            # Update parameter grid with selected values
+            for _, param_row in params_df.iterrows():
+                param_name = param_row["Parameter"]
+                if param_name in row:
+                    params_df.loc[params_df["Parameter"] == param_name, "Value"] = row[param_name]
+            save_params_grid(params_df)
+            st.success(f"✓ Loaded parameters from backtest result. Click 'Run Backtest' to retest.")
+            st.rerun()
+        
+        def on_backtest_add_to_wf(rows: list[dict]) -> None:
+            """Add selected backtest parameters to walk-forward table."""
+            if not rows:
+                return
+            
+            wf_entries = []
+            for idx, row in enumerate(rows):
+                wf_entry = {
+                    "label": f"bt_{pd.Timestamp.now().strftime('%H%M%S')}_{idx+1}",
+                    "k_sigma_long": float(row.get("k_sigma_long", 0)),
+                    "k_sigma_short": float(row.get("k_sigma_short", 0)),
+                    "k_atr_long": float(row.get("k_atr_long", 0)),
+                    "k_atr_short": float(row.get("k_atr_short", 0)),
+                    "risk_per_trade_pct": float(row.get("risk_per_trade_pct", 0)),
+                    "reward_risk_ratio": float(row.get("reward_risk_ratio", 0)),
+                    "enabled": True,
+                }
+                wf_entries.append(wf_entry)
+            
+            # Add to walk-forward session state
+            if "wf_param_grid_seed" not in st.session_state:
+                st.session_state["wf_param_grid_seed"] = pd.DataFrame(wf_entries)
             else:
-                st.caption(f"No backtest results yet for {freq}")
+                existing = st.session_state["wf_param_grid_seed"]
+                st.session_state["wf_param_grid_seed"] = pd.concat([existing, pd.DataFrame(wf_entries)], ignore_index=True)
+            st.success(f"✓ Added {len(wf_entries)} parameter set(s) to Walk-Forward")
+
+        with st.container(border=True):
+            components.render_backtest_results_table(
+                st, pd, history_for_view, 
+                title=f"Backtest results for {freq}",
+                enable_actions=True,
+                on_retest=on_backtest_retest,
+                on_add_to_wf=on_backtest_add_to_wf,
+            )
 
     # ─────────────────────────────────────────────────────────────────────────
     # TAB 2: OPTIMIZATION
@@ -376,8 +387,6 @@ def render_backtest_tab(
         st.markdown("#### Run Optimization")
         
         opt_state = ui_state.setdefault("optimization", {})
-        if "history" not in opt_state:
-            opt_state["history"] = load_json_history("optimization_history.json")
 
         # Use out-of-process job system
         from src.core.contracts import OptimizeResult as _OptimizeResult
@@ -504,26 +513,6 @@ def render_backtest_tab(
                             if results_csv_path.exists():
                                 results_df = pd.read_csv(results_csv_path)
 
-                                # Record to history (once per job)
-                                recorded = opt_state.setdefault("recorded_job_ids", [])
-                                if active_job_id not in recorded:
-                                    hist: list[dict] = opt_state.get("history", [])
-                                    hist.append(
-                                        {
-                                            "timestamp": pd.Timestamp.utcnow().isoformat(),
-                                            "frequency": freq,
-                                            "trade_side": trade_side,
-                                            "n_runs": res.summary.get("n_runs", 0),
-                                            "best_sharpe": res.summary.get("best_sharpe", 0.0),
-                                            "best_total_return": res.summary.get("best_total_return", 0.0),
-                                        }
-                                    )
-                                    if len(hist) > MAX_HISTORY_ROWS:
-                                        hist = hist[-MAX_HISTORY_ROWS:]
-                                    opt_state["history"] = hist
-                                    save_json_history("optimization_history.json", hist)
-                                    recorded.append(active_job_id)
-
                                 # Store results for rendering below
                                 opt_state["last_run"] = {
                                     "frequency": freq,
@@ -543,13 +532,60 @@ def render_backtest_tab(
             results_df = last["results_df"]
 
         if results_df is not None and not results_df.empty:
-            display_df = results_df.reset_index(drop=True)
+            display_df = results_df.reset_index(drop=True).sort_values("sharpe_ratio", ascending=False)
             
-            # Show top results
-            st.dataframe(
-                display_df.sort_values("sharpe_ratio", ascending=False).head(20),
-                width='stretch',
-                hide_index=True
+            def on_opt_retest(rows: list[dict]) -> None:
+                """Load parameters from first selected optimization run."""
+                if not rows:
+                    return
+                
+                # Use first selected row
+                row = rows[0]
+                
+                # Update parameter grid with selected values
+                for _, param_row in params_df.iterrows():
+                    param_name = param_row["Parameter"]
+                    if param_name in row:
+                        params_df.loc[params_df["Parameter"] == param_name, "Value"] = row[param_name]
+                save_params_grid(params_df)
+                st.success(f"✓ Loaded parameters from optimization result. Switch to Backtest tab to run.")
+                st.rerun()
+            
+            def on_opt_add_to_wf(rows: list[dict]) -> None:
+                """Add selected optimization parameters to walk-forward table."""
+                if not rows:
+                    return
+                
+                wf_entries = []
+                for idx, row in enumerate(rows):
+                    wf_entry = {
+                        "label": f"opt_{pd.Timestamp.now().strftime('%H%M%S')}_{idx+1}",
+                        "k_sigma_long": float(row.get("k_sigma_long", 0)),
+                        "k_sigma_short": float(row.get("k_sigma_short", 0)),
+                        "k_atr_long": float(row.get("k_atr_long", 0)),
+                        "k_atr_short": float(row.get("k_atr_short", 0)),
+                        "risk_per_trade_pct": float(row.get("risk_per_trade_pct", 0)),
+                        "reward_risk_ratio": float(row.get("reward_risk_ratio", 0)),
+                        "enabled": True,
+                    }
+                    wf_entries.append(wf_entry)
+                
+                # Add to walk-forward session state
+                if "wf_param_grid_seed" not in st.session_state:
+                    st.session_state["wf_param_grid_seed"] = pd.DataFrame(wf_entries)
+                else:
+                    existing = st.session_state["wf_param_grid_seed"]
+                    st.session_state["wf_param_grid_seed"] = pd.concat([existing, pd.DataFrame(wf_entries)], ignore_index=True)
+                st.success(f"✓ Added {len(wf_entries)} parameter set(s) to Walk-Forward")
+            
+            # Show top results using reusable component
+            components.render_backtest_results_table(
+                st, pd, display_df, 
+                title="Optimization runs", 
+                max_rows=20,
+                enable_actions=True,
+                on_retest=on_opt_retest,
+                on_add_to_wf=on_opt_add_to_wf,
             )
 
             # Actions: load best result or select specific
@@ -735,28 +771,3 @@ def render_backtest_tab(
         else:
             st.info("→ Run an optimization to see results")
         
-        st.divider()
-        
-        # Optimization history
-        st.markdown("#### Optimization History")
-        opt_history_all = opt_state.get("history", [])
-        opt_history_for_view = filter_optimization_history(opt_history_all, frequency=freq)
-
-        components.render_history_table(
-            st,
-            pd,
-            history=opt_history_for_view,
-            title=f"Results for {freq}",
-            columns=["timestamp", "trade_side", "n_runs", "best_sharpe", "best_total_return"],
-            on_row_select=None
-        )
-
-        with st.expander("▼ All Optimization History (All Frequencies)", expanded=False):
-            if opt_history_all:
-                df_all = pd.DataFrame(opt_history_all)
-                if "timestamp" in df_all.columns:
-                    df_all["timestamp"] = df_all["timestamp"].apply(format_timestamp)
-                    df_all = df_all.sort_values("timestamp", ascending=False)
-                st.dataframe(df_all, width='stretch')
-            else:
-                st.caption("No history yet")
