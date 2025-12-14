@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 def test_filter_training_history_by_freq_and_tsteps() -> None:
-    import src.app as app
+    from src.ui.formatting import filter_training_history
 
     history = [
         {"timestamp": "2025-01-01T00:00:00", "frequency": "1min", "tsteps": 5, "validation_loss": 2.0},
@@ -14,13 +14,13 @@ def test_filter_training_history_by_freq_and_tsteps() -> None:
         {"timestamp": "2025-01-04T00:00:00", "frequency": "1min", "tsteps": 5, "validation_loss": 0.1},
     ]
 
-    rows = app._filter_training_history(history, frequency="1min", tsteps=5)
+    rows = filter_training_history(history, frequency="1min", tsteps=5)
 
     assert [r["timestamp"] for r in rows] == ["2025-01-04T00:00:00", "2025-01-01T00:00:00"]
 
 
 def test_get_best_training_row_min_validation_loss() -> None:
-    import src.app as app
+    from src.ui.formatting import get_best_training_row
 
     rows = [
         {"validation_loss": 2.0, "model_filename": "a.keras"},
@@ -28,13 +28,13 @@ def test_get_best_training_row_min_validation_loss() -> None:
         {"validation_loss": 0.8, "model_filename": "c.keras"},
     ]
 
-    best = app._get_best_training_row(rows)
+    best = get_best_training_row(rows)
     assert best is not None
     assert best["model_filename"] == "b.keras"
 
 
 def test_promote_training_row_writes_best_hyperparameters_json(tmp_path: Path) -> None:
-    import src.app as app
+    from src.ui.registry import promote_training_row
 
     best_hps_path = tmp_path / "best_hyperparameters.json"
 
@@ -53,7 +53,7 @@ def test_promote_training_row_writes_best_hyperparameters_json(tmp_path: Path) -
         "features_to_use": ["Open"],
     }
 
-    app._promote_training_row(row=row, best_hps_path=best_hps_path, frequency="1min", tsteps=5)
+    promote_training_row(row=row, best_hps_path=best_hps_path, frequency="1min", tsteps=5)
 
     data = json.loads(best_hps_path.read_text(encoding="utf-8"))
     assert data["1min"]["5"]["validation_loss"] == 0.123
@@ -61,9 +61,9 @@ def test_promote_training_row_writes_best_hyperparameters_json(tmp_path: Path) -
 
 
 def test_parse_registry_model_filename_extracts_fields() -> None:
-    import src.app as app
+    from src.ui.registry import parse_registry_model_filename
 
-    info = app._parse_registry_model_filename(
+    info = parse_registry_model_filename(
         "my_lstm_model_60min_tsteps5_20251211_235959.keras"
     )
 
@@ -75,7 +75,7 @@ def test_parse_registry_model_filename_extracts_fields() -> None:
 
 
 def test_list_registry_models_lists_and_sorts_and_adds_bias_filename(tmp_path: Path) -> None:
-    import src.app as app
+    from src.ui.registry import list_registry_models
 
     reg = tmp_path / "registry"
     reg.mkdir()
@@ -94,7 +94,7 @@ def test_list_registry_models_lists_and_sorts_and_adds_bias_filename(tmp_path: P
     bias = reg / "bias_correction_60min_tsteps5_20251211_000000.json"
     bias.write_text("{}", encoding="utf-8")
 
-    rows = app._list_registry_models(reg)
+    rows = list_registry_models(reg)
 
     assert [r["model_filename"] for r in rows] == [m2.name, m1.name]
     assert rows[0]["bias_correction_filename"] == bias.name
@@ -104,9 +104,9 @@ def test_list_registry_models_lists_and_sorts_and_adds_bias_filename(tmp_path: P
 
 
 def test_format_timestamp_iso_seconds_truncates() -> None:
-    import src.app as app
+    from src.ui.formatting import format_timestamp
 
     assert (
-        app._format_timestamp_iso_seconds("2025-12-12T10:58:23.123456+00:00")
+        format_timestamp("2025-12-12T10:58:23.123456+00:00")
         == "2025-12-12T10:58:23"
     )

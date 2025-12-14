@@ -222,9 +222,94 @@ def render_walkforward_tab(
         "Robustness mode reuses fixed model predictions (CSV) and varies only the strategy parameters per fold."
     )
 
-    run_robust = st.button("Run robustness evaluation (Sharpe across folds)")
-    results_df: pd.DataFrame | None = None
+    # Use out-of-process job system (prevents Streamlit reruns from interrupting).
+    from src.core.contracts import WalkForwardResult as _WalkForwardResult
+    from src.jobs import store as _job_store
+    from src.jobs.types import JobType as _JobType
+    import subprocess as _subprocess
+    import sys as _sys
+    import uuid as _uuid
 
+    active_job_id = wf_state.get("active_job_id")
+
+    # Poll active job status.
+    if active_job_id:
+        st.markdown(f"### Active walk-forward job: `{active_job_id}`")
+        st.caption(f"Run dir: `{_job_store.run_dir(active_job_id)}`")
+        st.caption(f"Log: `{_job_store.artifacts_dir(active_job_id) / 'run.log'}`")
+
+        st.button("Refresh walk-forward job status", key="wf_job_refresh")
+
+        job_status = _job_store.read_status(active_job_id)
+        if job_status is None:
+            st.info("Job status not written yet.")
+        else:
+            st.write(
+                {
+                    "state": job_status.state,
+                    "created_at_utc": job_status.created_at_utc,
+                    "started_at_utc": job_status.started_at_utc,
+                    "finished_at_utc": job_status.finished_at_utc,
+                    "error": job_status.error,
+                }
+            )
+
+            if job_status.state == "FAILED":
+                if job_status.traceback:
+                    with st.expander("Show traceback", expanded=False):
+                        st.code(job_status.traceback)
+
+            if job_status.state == "SUCCEEDED":
+                res_path = _job_store.result_path(active_job_id)
+                if res_path.exists():
+                    try:
+                        res_obj = _job_store.read_json(res_path)
+                        res = _WalkForwardResult(**res_obj)
+                    except Exception:
+                        res = None
+
+                    if res is not None:
+                        summary = res_obj.get("summary", {})
+                        st.success(
+                            f"Walk-forward complete: {summary.get('n_param_sets', 0)} param sets, "
+                            f"{summary.get('n_folds', 0)} folds"
+                        )
+
+                        # Load results from CSVs.
+                        results_csv_path = _job_store.artifacts_dir(active_job_id) / "results.csv"
+                        summary_csv_path = _job_store.artifacts_dir(active_job_id) / "summary.csv"
+
+                        if results_csv_path.exists():
+                            results_df = pd.read_csv(results_csv_path)
+                            wf_state["robust_results_df"] = results_df
+
+                        if summary_csv_path.exists():
+                            sharpe_stats = pd.read_csv(summary_csv_path)
+                            wf_state["summary_df"] = sharpe_stats
+
+                            # Record to history (once per job).
+                            recorded = wf_state.setdefault("recorded_job_ids", [])
+                            if active_job_id not in recorded:
+                                robust_hist: list[dict] = wf_state.get("robust_history", [])
+                                robust_hist.append(
+                                    {
+                                        "timestamp": pd.Timestamp.utcnow().isoformat(),
+                                        "frequency": wf_freq,
+                                        "n_param_sets": summary.get("n_param_sets", 0),
+                                        "best_label": summary.get("best_label", ""),
+                                        "best_mean_sharpe": summary.get("best_mean_sharpe", 0.0),
+                                        "worst_label": summary.get("worst_label", ""),
+                                        "worst_mean_sharpe": summary.get("worst_mean_sharpe", 0.0),
+                                    }
+                                )
+                                if len(robust_hist) > MAX_HISTORY_ROWS:
+                                    robust_hist = robust_hist[-MAX_HISTORY_ROWS:]
+                                wf_state["robust_history"] = robust_hist
+                                save_json_history("wf_robust_history.json", robust_hist)
+                                recorded.append(active_job_id)
+
+    # Launch new walk-forward job.
+    run_robust = st.button("Run robustness evaluation (Sharpe across folds)")
     if run_robust:
         if df_full.empty or not data_t_start or not data_t_end:
             st.error("Cannot run walk-forward: OHLC data is missing or invalid for this frequency.")
@@ -232,197 +317,87 @@ def render_walkforward_tab(
             eff_start = wf_t_start or data_t_start
             eff_end = wf_t_end or data_t_end
 
-            try:
-                windows = _generate_walkforward_windows(
-                    eff_start,
-                    eff_end,
-                    test_span_months=int(wf_test_span_months),
-                    train_lookback_months=int(wf_train_lookback_months),
-                    min_lookback_months=int(wf_min_lookback_months),
-                    first_test_start=wf_first_test_start or None,
-                )
-            except Exception as exc:  # pragma: no cover - UI convenience only
-                windows = []
-                st.error(f"Failed to generate windows: {exc}")
-
-            if not windows:
-                st.error("No walk-forward windows generated for the supplied horizon.")
+            # Determine which parameter rows are enabled across both grids.
+            if "enabled" in param_df.columns:
+                enabled_df = param_df[param_df["enabled"].astype(bool)].copy()
             else:
-                # Determine which parameter rows are enabled across both grids.
-                if "enabled" in param_df.columns:
-                    enabled_df = param_df[param_df["enabled"].astype(bool)].copy()
+                enabled_df = param_df.copy()
+
+            # Append any enabled rows from the exported-seed grid.
+            if wf_seed_df is not None and not wf_seed_df.empty:
+                if "enabled" in wf_seed_df.columns:
+                    extra = wf_seed_df[wf_seed_df["enabled"].astype(bool)].copy()
                 else:
-                    enabled_df = param_df.copy()
+                    extra = wf_seed_df.copy()
+                if not extra.empty:
+                    enabled_df = pd.concat([enabled_df, extra], ignore_index=True)
 
-                # Append any enabled rows from the exported-seed grid.
-                if wf_seed_df is not None and not wf_seed_df.empty:
-                    if "enabled" in wf_seed_df.columns:
-                        extra = wf_seed_df[wf_seed_df["enabled"].astype(bool)].copy()
-                    else:
-                        extra = wf_seed_df.copy()
-                    if not extra.empty:
-                        enabled_df = pd.concat([enabled_df, extra], ignore_index=True)
-
-                if enabled_df.empty:
+            if enabled_df.empty:
+                st.error(
+                    "No parameter sets enabled. Enable at least one row in the tables above."
+                )
+            else:
+                predictions_csv = _cfg.get_predictions_csv_path(wf_symbol.lower(), wf_freq)
+                if not _os.path.exists(predictions_csv):
                     st.error(
-                        "No parameter sets enabled. Enable at least one row in the tables above."
+                        f"Predictions CSV not found at {predictions_csv}. "
+                        "Generate it first (e.g. via 'Generate predictions CSV' button in the Backtest tab).",
                     )
                 else:
-                    predictions_csv = _cfg.get_predictions_csv_path(wf_symbol.lower(), wf_freq)
-                    if not _os.path.exists(predictions_csv):
-                        st.error(
-                            f"Predictions CSV not found at {predictions_csv}. "
-                            "Generate it first (e.g. via 'Generate predictions CSV' button in the Backtest tab).",
+                    try:
+                        job_id = _uuid.uuid4().hex
+
+                        # Convert enabled_df to list of parameter set dicts.
+                        parameter_sets = enabled_df.to_dict(orient="records")
+
+                        request_obj = {
+                            "frequency": wf_freq,
+                            "symbol": wf_symbol.lower(),
+                            "t_start": eff_start or None,
+                            "t_end": eff_end or None,
+                            "test_span_months": int(wf_test_span_months),
+                            "train_lookback_months": int(wf_train_lookback_months),
+                            "min_lookback_months": int(wf_min_lookback_months),
+                            "first_test_start": wf_first_test_start or None,
+                            "predictions_csv": str(predictions_csv),
+                            "parameter_sets": parameter_sets,
+                        }
+
+                        _job_store.write_request(job_id, request_obj)
+
+                        log_path = _job_store.artifacts_dir(job_id) / "run.log"
+                        log_path.parent.mkdir(parents=True, exist_ok=True)
+                        with open(log_path, "a", encoding="utf-8") as log_f:
+                            _subprocess.Popen(
+                                [
+                                    _sys.executable,
+                                    "-m",
+                                    "src.jobs.run",
+                                    "--job-id",
+                                    job_id,
+                                    "--job-type",
+                                    _JobType.WALKFORWARD.value,
+                                    "--request",
+                                    str(_job_store.request_path(job_id)),
+                                ],
+                                stdout=log_f,
+                                stderr=_subprocess.STDOUT,
+                            )
+
+                        wf_state["active_job_id"] = job_id
+                        st.success(
+                            f"Started walk-forward job `{job_id}`. "
+                            "Use 'Refresh walk-forward job status' to monitor progress."
                         )
-                    else:
-                        progress = st.progress(0.0)
-                        status = st.empty()
-                        rows: list[dict] = []
+                    except Exception as exc:  # pragma: no cover
+                        st.error(f"Error starting walk-forward job: {exc}")
 
-                        total_runs = len(enabled_df) * len(windows)
-                        run_idx = 0
+    # Render results (persists across reruns).
+    results_df = wf_state.get("robust_results_df")
+    sharpe_stats = wf_state.get("summary_df")
 
-                        for _, p_row in enabled_df.iterrows():
-                            label = str(p_row.get("label", "unnamed"))
-                            k_sigma_long = float(p_row["k_sigma_long"])
-                            k_sigma_short = float(p_row["k_sigma_short"])
-                            k_atr_long = float(p_row["k_atr_long"])
-                            k_atr_short = float(p_row["k_atr_short"])
-                            risk_pct = float(p_row["risk_per_trade_pct"])
-                            rr = float(p_row["reward_risk_ratio"])
-
-                            for fold_idx, (train_w, test_w) in enumerate(windows, start=1):
-                                status.write(
-                                    f"Param set '{label}': fold {fold_idx}/{len(windows)} "
-                                    f"test [{test_w.start}, {test_w.end})"
-                                )
-
-                                test_df = _slice_df_by_window(df_full, test_w)
-                                if test_df.empty:
-                                    rows.append(
-                                        {
-                                            "param_label": label,
-                                            "fold_idx": fold_idx,
-                                            "train_start": train_w.start,
-                                            "train_end": train_w.end,
-                                            "test_start": test_w.start,
-                                            "test_end": test_w.end,
-                                            "sharpe_ratio": _np.nan,
-                                            "total_return": _np.nan,
-                                            "cagr": _np.nan,
-                                            "max_drawdown": _np.nan,
-                                            "win_rate": _np.nan,
-                                            "profit_factor": _np.nan,
-                                            "n_trades": 0,
-                                            "final_equity": _np.nan,
-                                        }
-                                    )
-                                else:
-                                    bt_result = _run_bt_df(
-                                        data=test_df,
-                                        initial_equity=_cfg.INITIAL_EQUITY,
-                                        frequency=wf_freq,
-                                        prediction_mode="csv",
-                                        predictions_csv=predictions_csv,
-                                        risk_per_trade_pct=risk_pct,
-                                        reward_risk_ratio=rr,
-                                        k_sigma_long=k_sigma_long,
-                                        k_sigma_short=k_sigma_short,
-                                        k_atr_long=k_atr_long,
-                                        k_atr_short=k_atr_short,
-                                    )
-                                    metrics = _bt_metrics(
-                                        bt_result,
-                                        initial_equity=_cfg.INITIAL_EQUITY,
-                                        data=test_df,
-                                    )
-
-                                    rows.append(
-                                        {
-                                            "param_label": label,
-                                            "fold_idx": fold_idx,
-                                            "train_start": train_w.start,
-                                            "train_end": train_w.end,
-                                            "test_start": test_w.start,
-                                            "test_end": test_w.end,
-                                            "sharpe_ratio": metrics.get("sharpe_ratio", 0.0),
-                                            "total_return": metrics.get("total_return", 0.0),
-                                            "cagr": metrics.get("cagr", 0.0),
-                                            "max_drawdown": metrics.get("max_drawdown", 0.0),
-                                            "win_rate": metrics.get("win_rate", 0.0),
-                                            "profit_factor": metrics.get("profit_factor", 0.0),
-                                            "n_trades": metrics.get("n_trades", 0),
-                                            "final_equity": bt_result.final_equity,
-                                        }
-                                    )
-
-                                run_idx += 1
-                                progress.progress(run_idx / max(total_runs, 1))
-
-                        progress.progress(1.0)
-                        status.write("Robustness evaluation complete.")
-
-                        if rows:
-                            results_df = pd.DataFrame(rows)
-                            wf_state["robust_results_df"] = results_df
-                            st.session_state["wf_robust_results"] = results_df
-
-    # Reuse latest robustness results if available and we didn't just run.
-    if results_df is None:
-        # Prefer ui_state-backed result, fall back to legacy session_state key.
-        if "robust_results_df" in wf_state:
-            results_df = wf_state["robust_results_df"]
-        else:
-            results_df = st.session_state.get("wf_robust_results")
-
-    if results_df is not None and not results_df.empty:
+    if results_df is not None and not results_df.empty and sharpe_stats is not None:
         st.subheader("Sharpe-based robustness summary")
-
-        # Aggregate Sharpe statistics per parameter label.
-        sharpe_stats = (
-            results_df.groupby("param_label")["sharpe_ratio"]
-            .agg(
-                mean_sharpe="mean",
-                std_sharpe="std",
-                min_sharpe="min",
-                max_sharpe="max",
-                n_folds="count",
-            )
-            .reset_index()
-        )
-        frac_positive = (
-            results_df.assign(is_pos=results_df["sharpe_ratio"] > 0)
-            .groupby("param_label")["is_pos"]
-            .mean()
-            .reset_index(name="p_sharpe_gt_0")
-        )
-        sharpe_stats = sharpe_stats.merge(frac_positive, on="param_label", how="left")
-        sharpe_stats["robustness_score"] = sharpe_stats["mean_sharpe"] / sharpe_stats[
-            "std_sharpe"
-        ].replace(0, _np.nan)
-
-        # Store latest summary in-session and append a compact history row.
-        wf_state["summary_df"] = sharpe_stats
-        robust_hist: list[dict] = wf_state.get("robust_history", [])
-        if not sharpe_stats.empty:
-            best_row = sharpe_stats.sort_values("mean_sharpe", ascending=False).iloc[0]
-            worst_row = sharpe_stats.sort_values("mean_sharpe", ascending=True).iloc[0]
-            robust_hist.append(
-                {
-                    "timestamp": pd.Timestamp.utcnow().isoformat(),
-                    "frequency": wf_freq,
-                    "n_param_sets": int(len(sharpe_stats)),
-                    "best_label": str(best_row["param_label"]),
-                    "best_mean_sharpe": float(best_row["mean_sharpe"]),
-                    "worst_label": str(worst_row["param_label"]),
-                    "worst_mean_sharpe": float(worst_row["mean_sharpe"]),
-                }
-            )
-            if len(robust_hist) > MAX_HISTORY_ROWS:
-                robust_hist = robust_hist[-MAX_HISTORY_ROWS:]
-            wf_state["robust_history"] = robust_hist
-            save_json_history("wf_robust_history.json", robust_hist)
-
         st.dataframe(sharpe_stats, width="stretch")
 
         # Line chart: Sharpe per fold per parameter set.

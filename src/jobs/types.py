@@ -8,7 +8,9 @@ from typing import Any, Literal
 class JobType(str, Enum):
     BACKTEST = "backtest"
     TRAIN = "train"
-    # Future: OPTIMIZE = "optimize", PREDICT_CSV = "predict_csv", WALK_FORWARD = "walkforward"
+    OPTIMIZE = "optimize"
+    WALKFORWARD = "walkforward"
+    # Future: PREDICT_CSV = "predict_csv"
 
 
 JobState = Literal["QUEUED", "RUNNING", "SUCCEEDED", "FAILED"]

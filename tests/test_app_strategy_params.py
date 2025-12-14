@@ -4,7 +4,7 @@ from pathlib import Path
 import pandas as pd
 
 from src import config as cfg
-import src.app as app
+from src.ui import app
 
 
 def test_load_strategy_defaults_matches_config_module() -> None:

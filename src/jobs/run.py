@@ -4,7 +4,7 @@ import argparse
 import traceback
 from pathlib import Path
 
-from src.core.contracts import BacktestRequest, TrainRequest
+from src.core.contracts import BacktestRequest, OptimizeRequest, TrainRequest, WalkForwardRequest
 from src.jobs.handlers import backtest_job
 from src.jobs.store import read_json, utc_now_iso, write_request, write_status
 from src.jobs.types import JobStatus, JobType
@@ -51,6 +51,16 @@ def main() -> None:
 
             req = TrainRequest.from_dict(payload)
             _train_job.run(job_id, req)
+        elif job_type == JobType.OPTIMIZE:
+            from src.jobs.handlers import optimize_job as _optimize_job
+
+            req = OptimizeRequest.from_dict(payload)
+            _optimize_job.run(job_id, req)
+        elif job_type == JobType.WALKFORWARD:
+            from src.jobs.handlers import walkforward_job as _walkforward_job
+
+            req = WalkForwardRequest.from_dict(payload)
+            _walkforward_job.run(job_id, req)
         else:
             raise ValueError(f"Unsupported job_type: {job_type}")
 

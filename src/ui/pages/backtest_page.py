@@ -336,177 +336,155 @@ def render_backtest_tab(
         if "history" not in opt_state:
             opt_state["history"] = load_json_history("optimization_history.json")
 
-        # Separate the action of running optimization from displaying results so
-        # that results/plots persist even if the parameter table is edited.
-        #
-        # IMPORTANT: We set a session_state flag via on_click so the Live tab's
-        # auto-refresh can be disabled before this run starts executing.
-        run_optimization = st.button("Run optimization", on_click=start_optimization)
-        results_df = None
+        # Use out-of-process job system (prevents Streamlit reruns from interrupting).
+        from src.core.contracts import OptimizeResult as _OptimizeResult
+        from src.jobs import store as _job_store
+        from src.jobs.types import JobType as _JobType
+        import subprocess as _subprocess
+        import sys as _sys
+        import uuid as _uuid
 
+        active_job_id = opt_state.get("active_job_id")
+
+        # Poll active job status.
+        if active_job_id:
+            st.markdown(f"### Active optimization job: `{active_job_id}`")
+            st.caption(f"Run dir: `{_job_store.run_dir(active_job_id)}`")
+            st.caption(f"Log: `{_job_store.artifacts_dir(active_job_id) / 'run.log'}`")
+
+            st.button("Refresh optimization job status", key="opt_job_refresh")
+
+            job_status = _job_store.read_status(active_job_id)
+            if job_status is None:
+                st.info("Job status not written yet.")
+            else:
+                st.write(
+                    {
+                        "state": job_status.state,
+                        "created_at_utc": job_status.created_at_utc,
+                        "started_at_utc": job_status.started_at_utc,
+                        "finished_at_utc": job_status.finished_at_utc,
+                        "error": job_status.error,
+                    }
+                )
+
+                if job_status.state == "FAILED":
+                    stop_optimization()
+                    if job_status.traceback:
+                        with st.expander("Show traceback", expanded=False):
+                            st.code(job_status.traceback)
+
+                if job_status.state == "SUCCEEDED":
+                    stop_optimization()
+                    res_path = _job_store.result_path(active_job_id)
+                    if res_path.exists():
+                        try:
+                            res_obj = _job_store.read_json(res_path)
+                            res = _OptimizeResult(**res_obj)
+                        except Exception:
+                            res = None
+
+                        if res is not None:
+                            st.success(f"Optimization complete: {res.summary.get('n_runs', 0)} runs")
+
+                            # Load results from CSV.
+                            results_csv_path = _job_store.artifacts_dir(active_job_id) / "results.csv"
+                            if results_csv_path.exists():
+                                results_df = pd.read_csv(results_csv_path)
+
+                                # Record to history (once per job).
+                                recorded = opt_state.setdefault("recorded_job_ids", [])
+                                if active_job_id not in recorded:
+                                    hist: list[dict] = opt_state.get("history", [])
+                                    hist.append(
+                                        {
+                                            "timestamp": pd.Timestamp.utcnow().isoformat(),
+                                            "frequency": freq,
+                                            "trade_side": trade_side,
+                                            "n_runs": res.summary.get("n_runs", 0),
+                                            "best_sharpe": res.summary.get("best_sharpe", 0.0),
+                                            "best_total_return": res.summary.get("best_total_return", 0.0),
+                                        }
+                                    )
+                                    if len(hist) > MAX_HISTORY_ROWS:
+                                        hist = hist[-MAX_HISTORY_ROWS:]
+                                    opt_state["history"] = hist
+                                    save_json_history("optimization_history.json", hist)
+                                    recorded.append(active_job_id)
+
+                                # Store results for rendering below.
+                                opt_state["last_run"] = {
+                                    "frequency": freq,
+                                    "start_date": start_date or None,
+                                    "end_date": end_date or None,
+                                    "trade_side": trade_side,
+                                    "results_df": results_df,
+                                }
+
+        # Launch new optimization job.
+        run_optimization = st.button("Run optimization", on_click=start_optimization)
         if run_optimization:
             try:
-                st.write("Running grid search over parameter ranges...")
-
-                # Build value ranges for each parameter based on Start/Stop/Step.
-                param_ranges: dict[str, list[float]] = {}
+                # Build param_grid from params_df.
+                param_grid: dict[str, dict[str, float] | float] = {}
                 for _, row in params_df.iterrows():
                     name = row["Parameter"]
                     optimize = bool(row.get("Optimize", True))
 
-                    # If not optimizing this parameter, keep it fixed at the current Value.
                     if not optimize:
-                        param_ranges[name] = [float(row["Value"])]
-                        continue
-
-                    start = float(row["Start"])
-                    stop = float(row["Stop"])
-                    step = float(row["Step"])
-
-                    values: list[float] = []
-                    if step > 0 and stop >= start:
-                        current = start
-                        # Cap iterations defensively to avoid infinite loops.
-                        for _ in range(1000):
-                            if current > stop + 1e-9:
-                                break
-                            values.append(float(current))
-                            current += step
-                    # Fallback: if range is invalid, just use the current Value.
-                    if not values:
-                        values = [float(row["Value"])]
-
-                    param_ranges[name] = values
-
-                # Compute total combinations.
-                from itertools import product
-
-                total_runs = 1
-                for vals in param_ranges.values():
-                    total_runs *= max(len(vals), 1)
-
-                max_runs = 200
-                if total_runs > max_runs:
-                    st.error(
-                        f"Grid is too large ({total_runs} runs). Reduce ranges or steps (limit = {max_runs}).",
-                    )
-                else:
-                    progress = st.progress(0.0)
-                    results_rows: list[dict] = []
-                    names = list(param_ranges.keys())
-                    all_values = [param_ranges[n] for n in names]
-
-                    run_idx = 0
-                    for combo in product(*all_values):
-                        combo_params = dict(zip(names, combo))
-
-                        # Extract per-combination parameter values, falling back to
-                        # the current grid "Value" when a given knob is not
-                        # optimized.
-                        k_sigma_long_combo = float(
-                            combo_params.get("k_sigma_long", k_sigma_long_val)
-                        )
-                        k_sigma_short_combo = float(
-                            combo_params.get("k_sigma_short", k_sigma_short_val)
-                        )
-                        k_atr_long_combo = float(
-                            combo_params.get("k_atr_long", k_atr_long_val)
-                        )
-                        k_atr_short_combo = float(
-                            combo_params.get("k_atr_short", k_atr_short_val)
-                        )
-                        risk_pct = float(combo_params.get("risk_per_trade_pct", risk_pct_val))
-                        rr = float(combo_params.get("reward_risk_ratio", rr_val))
-
-                        equity_df, trades_df, metrics = run_backtest(
-                            frequency=freq,
-                            start_date=start_date or None,
-                            end_date=end_date or None,
-                            risk_per_trade_pct=risk_pct,
-                            reward_risk_ratio=rr,
-                            k_sigma_long=k_sigma_long_combo,
-                            k_sigma_short=k_sigma_short_combo,
-                            k_atr_long=k_atr_long_combo,
-                            k_atr_short=k_atr_short_combo,
-                            enable_longs=enable_longs_flag,
-                            allow_shorts=allow_shorts_flag,
-                        )
-
-                        results_rows.append(
-                            {
-                                # Side-specific parameters so we can distinguish long vs short.
-                                "k_sigma_long": k_sigma_long_combo,
-                                "k_sigma_short": k_sigma_short_combo,
-                                "k_atr_long": k_atr_long_combo,
-                                "k_atr_short": k_atr_short_combo,
-                                # Risk/return configuration.
-                                "risk_per_trade_pct": risk_pct,
-                                "reward_risk_ratio": rr,
-                                # Performance metrics.
-                                "total_return": metrics.get("total_return", 0.0),
-                                "cagr": metrics.get("cagr", 0.0),
-                                "max_drawdown": metrics.get("max_drawdown", 0.0),
-                                "sharpe_ratio": metrics.get("sharpe_ratio", 0.0),
-                                "profit_factor": metrics.get("profit_factor", 0.0),
-                                "win_rate": metrics.get("win_rate", 0.0),
-                                "n_trades": metrics.get("n_trades", 0),
-                                "final_equity": metrics.get("final_equity", 0.0),
-                            }
-                        )
-
-                        run_idx += 1
-                        progress.progress(run_idx / total_runs)
-
-                    if results_rows:
-                        results_df = pd.DataFrame(results_rows)
-                        # Sort by total_return descending by default.
-                        results_df = results_df.sort_values(by="total_return", ascending=False)
-                        # Persist results in-session and record a compact summary to history.
-                        opt_state["last_run"] = {
-                            "frequency": freq,
-                            "start_date": start_date or None,
-                            "end_date": end_date or None,
-                            "trade_side": trade_side,
-                            "results_df": results_df,
+                        # Fixed value.
+                        param_grid[name] = float(row["Value"])
+                    else:
+                        # Grid search.
+                        param_grid[name] = {
+                            "start": float(row["Start"]),
+                            "stop": float(row["Stop"]),
+                            "step": float(row["Step"]),
                         }
-                        st.session_state["optimization_results"] = results_df
 
-                        hist: list[dict] = opt_state.get("history", [])
-                        best_sharpe = (
-                            float(results_df["sharpe_ratio"].max())
-                            if "sharpe_ratio" in results_df.columns
-                            else 0.0
-                        )
-                        best_total_return = (
-                            float(results_df["total_return"].max())
-                            if "total_return" in results_df.columns
-                            else 0.0
-                        )
-                        hist.append(
-                            {
-                                "timestamp": pd.Timestamp.utcnow().isoformat(),
-                                "frequency": freq,
-                                "trade_side": trade_side,
-                                "n_runs": int(len(results_df)),
-                                "best_sharpe": best_sharpe,
-                                "best_total_return": best_total_return,
-                            }
-                        )
-                        if len(hist) > MAX_HISTORY_ROWS:
-                            hist = hist[-MAX_HISTORY_ROWS:]
-                        opt_state["history"] = hist
-                        save_json_history("optimization_history.json", hist)
-            finally:
-                # Defensive: if anything throws during the grid search, ensure we
-                # re-enable Live auto-refresh.
-                stop_optimization()
-        else:
-            # Reuse the most recent optimization results, if any.
-            last = opt_state.get("last_run")
-            if last is not None and "results_df" in last:
-                results_df = last["results_df"]
-            else:
-                results_df = st.session_state.get("optimization_results")
+                job_id = _uuid.uuid4().hex
+
+                request_obj = {
+                    "frequency": freq,
+                    "start_date": start_date or None,
+                    "end_date": end_date or None,
+                    "trade_side": trade_side,
+                    "param_grid": param_grid,
+                    "prediction_mode": "csv",
+                    "predictions_csv": None,  # Will use default.
+                }
+
+                _job_store.write_request(job_id, request_obj)
+
+                log_path = _job_store.artifacts_dir(job_id) / "run.log"
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(log_path, "a", encoding="utf-8") as log_f:
+                    _subprocess.Popen(
+                        [
+                            _sys.executable,
+                            "-m",
+                            "src.jobs.run",
+                            "--job-id",
+                            job_id,
+                            "--job-type",
+                            _JobType.OPTIMIZE.value,
+                            "--request",
+                            str(_job_store.request_path(job_id)),
+                        ],
+                        stdout=log_f,
+                        stderr=_subprocess.STDOUT,
+                    )
+
+                opt_state["active_job_id"] = job_id
+                st.success(f"Started optimization job `{job_id}`. Use 'Refresh optimization job status' to monitor progress.")
+            except Exception as exc:  # pragma: no cover
+                st.error(f"Error starting optimization job: {exc}")
+
+        # Render results (persists across reruns).
+        results_df = None
+        last = opt_state.get("last_run")
+        if last is not None and "results_df" in last:
+            results_df = last["results_df"]
 
         # If we have results (either from a new run or from session_state),
         # display the table, allow loading a row into the parameter grid, and
