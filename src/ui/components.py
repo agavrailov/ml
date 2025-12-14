@@ -311,7 +311,7 @@ def render_experiment_table(
         df["validation_loss"] = df["validation_loss"].apply(lambda x: f"{float(x):.3e}" if isinstance(x, (int, float, str)) else x)
     
     st.markdown("### 🧪 Experiment History")
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.dataframe(df, width='stretch', hide_index=True)
     
     if on_select and len(experiments) > 0:
         selected_idx = st.number_input(
@@ -601,7 +601,7 @@ def render_parameter_grid(
         params_df,
         num_rows="fixed",
         key="strategy_params_grid",
-        use_container_width=True,
+        width='stretch',
         hide_index=True,
         column_config={
             "Parameter": st.column_config.TextColumn("Parameter", disabled=True, width="medium"),
@@ -659,7 +659,7 @@ def render_history_table(
     if columns:
         df = df[[col for col in columns if col in df.columns]]
     
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.dataframe(df, width='stretch', hide_index=True)
     
     if on_row_select and len(history) > 0:
         selected_idx = st.number_input(
@@ -714,7 +714,7 @@ def render_data_quality_summary(
     with st.expander("📋 Detailed Check Results", expanded=kpi["n_fail"] > 0):
         import pandas as pd
         df = pd.DataFrame(checks).sort_values(["category", "id"])
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width='stretch', hide_index=True)
 
 
 # =============================================================================
@@ -758,7 +758,7 @@ def render_walkforward_results(
     
     # Per-fold results
     st.markdown("#### 📊 Per-Fold Performance")
-    st.dataframe(results_df, use_container_width=True, hide_index=True)
+    st.dataframe(results_df, width='stretch', hide_index=True)
     
     # Heatmap if parameter sets present
     if "label" in results_df.columns and len(results_df["label"].unique()) > 1:
@@ -796,7 +796,7 @@ def render_walkforward_results(
     # Summary table
     if summary_df is not None and not summary_df.empty:
         st.markdown("#### 📈 Parameter Set Summary")
-        st.dataframe(summary_df, use_container_width=True, hide_index=True)
+        st.dataframe(summary_df, width='stretch', hide_index=True)
 
 
 # =============================================================================
