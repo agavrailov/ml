@@ -28,11 +28,14 @@ From the repository root:
 
   Then open Swagger docs at `http://127.0.0.1:8000/docs`.
 
-- Start Streamlit UI (talks to the API on port 8000):
+- Start Streamlit UI (workflow UI):
 
   ```bash
-  streamlit run ui/app.py
+  streamlit run src/ui/app.py
   ```
+
+  Note: `src/ui/app.py` currently delegates to the legacy monolithic app at `src/app.py`.
+  As pages are migrated into `src/ui/pages/*`, we will retire `src/app.py`.
 
 - Windows helper script to start both API and UI and open the browser:
 

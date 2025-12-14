@@ -9,7 +9,7 @@ call .\venv\Scripts\activate
 
 REM Start UI
 echo Starting UI...
-start streamlit run src/app.py
+start streamlit run src/ui/app.py
 
 REM Start live trading with IBKR
 echo Starting live trading with IBKR
