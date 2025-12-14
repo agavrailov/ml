@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+# Import UI components for modern styling
+from src.ui import components
+
 
 def render_backtest_tab(
     *,
@@ -227,79 +230,11 @@ def render_backtest_tab(
         equity_df = last_run.get("equity_df", pd.DataFrame())
         metrics = last_run.get("metrics", {})
 
-        time_col = "Time" if "Time" in equity_df.columns else "step"
-
-        st.subheader("Equity curve")
-        if not equity_df.empty:
-            # Plot a downsampled view of the ENTIRE equity curve to keep the UI responsive.
-            max_points = 2000
-            if len(equity_df) > max_points:
-                step = max(1, len(equity_df) // max_points)
-                equity_to_plot = equity_df.iloc[::step]
-            else:
-                equity_to_plot = equity_df
-
-            # Use matplotlib so we can show equity and NVDA price on separate axes.
-            x = (
-                pd.to_datetime(equity_to_plot[time_col])
-                if time_col == "Time" and "Time" in equity_to_plot.columns
-                else equity_to_plot.index
-            )
-
-            fig, ax_equity = plt.subplots(figsize=(12, 6))
-            ax_price = ax_equity.twinx()
-
-            # Transparent background for embedding in dark/light themes.
-            fig.patch.set_alpha(0.0)
-            ax_equity.set_facecolor("none")
-            ax_price.set_facecolor("none")
-
-            # Equity on primary y-axis.
-            ax_equity.plot(x, equity_to_plot["equity"], color="tab:orange", label="Equity")
-            ax_equity.set_ylabel("Equity", color="tab:orange")
-            ax_equity.tick_params(axis="y", labelcolor="tab:orange")
-
-            # NVDA price on secondary y-axis (if available).
-            if "price" in equity_to_plot.columns:
-                ax_price.plot(
-                    x,
-                    equity_to_plot["price"],
-                    color="tab:blue",
-                    alpha=0.7,
-                    label="NVDA price",
-                )
-                ax_price.set_ylabel("NVDA price", color="tab:blue")
-                ax_price.tick_params(axis="y", labelcolor="tab:blue")
-
-            ax_equity.set_xlabel("Time" if time_col == "Time" else "Bar index")
-            ax_equity.set_title("Equity vs NVDA price")
-
-            # Combined legend from both axes.
-            lines_e, labels_e = ax_equity.get_legend_handles_labels()
-            lines_p, labels_p = ax_price.get_legend_handles_labels()
-            if lines_e or lines_p:
-                ax_equity.legend(lines_e + lines_p, labels_e + labels_p, loc="upper left")
-
-            fig.tight_layout()
-            st.pyplot(fig)
-        else:
-            st.write("No equity data to display.")
-
-        st.subheader("Metrics")
-        # Present key metrics in a human-friendly table (percentages, rounding, separators).
-        formatted_metrics = [
-            ("Total return", f"{metrics.get('total_return', 0.0) * 100:.0f}%"),
-            ("CAGR", f"{metrics.get('cagr', 0.0) * 100:.0f}%"),
-            ("Max drawdown", f"{metrics.get('max_drawdown', 0.0) * 100:.0f}%"),
-            ("Sharpe ratio", f"{metrics.get('sharpe_ratio', 0.0):.2f}"),
-            ("Win rate", f"{metrics.get('win_rate', 0.0) * 100:.0f}%"),
-            ("Profit factor", f"{metrics.get('profit_factor', 0.0):.2f}"),
-            ("Period", metrics.get("period", "")),
-            ("Number of trades", f"{int(metrics.get('n_trades', 0))}"),
-            ("Final equity", f"{metrics.get('final_equity', 0.0):,.0f}"),
-        ]
-        metrics_df = pd.DataFrame(formatted_metrics, columns=["Metric", "Value"])
-        st.table(metrics_df)
+        # Professional metrics display with gradient cards and conditional coloring
+        components.render_backtest_metrics(st, pd, metrics)
+        
+        # Professional equity chart with dual-axis visualization
+        components.render_equity_chart(st, plt, pd, equity_df, title="Equity vs NVDA Price")
     else:
         st.info("Run a backtest to see the equity curve and metrics.")
 
@@ -307,15 +242,15 @@ def render_backtest_tab(
     history_all = bt_state.get("history", [])
     history_for_view = filter_backtest_history(history_all, frequency=freq)
 
-    st.markdown(f"### Backtest history for `{freq}` (most recent first)")
-    if history_for_view:
-        hist_df = pd.DataFrame(history_for_view)
-        if "timestamp" in hist_df.columns:
-            hist_df["timestamp"] = hist_df["timestamp"].apply(format_timestamp)
-            hist_df = hist_df.sort_values("timestamp", ascending=False)
-        st.dataframe(hist_df, width="stretch")
-    else:
-        st.caption("No backtests recorded for this frequency yet.")
+    # Professional history table with sorting and selection
+    components.render_history_table(
+        st,
+        pd,
+        history=history_for_view,
+        title=f"Backtest History for {freq}",
+        columns=["timestamp", "trade_side", "total_return", "sharpe_ratio", "max_drawdown", "n_trades"],
+        on_row_select=None  # Optional: add callback to reload parameters from history
+    )
 
     with st.expander("Show all backtest history (all frequencies)", expanded=False):
         if history_all:

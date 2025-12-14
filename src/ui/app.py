@@ -27,13 +27,11 @@ import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from src.backtest import run_backtest_for_ui
-from src.data_processing import (
-    clean_raw_minute_data,
-    convert_minute_to_timeframe,
-    prepare_keras_input_data,
-)
-from src.train import train_model
+# Heavy imports (TensorFlow/Keras) are lazy-loaded inside tabs to avoid 5s startup delay
+# from src.backtest import run_backtest_for_ui
+# from src.data_processing import (...)
+# from src.train import train_model
+
 from src.config import (
     FREQUENCY,
     TSTEPS,
@@ -70,6 +68,9 @@ from src.ui.registry import (
 )
 from src.core.config_resolver import get_strategy_defaults, save_strategy_defaults
 
+# Import UI components for modern styling
+from src.ui import components
+
 # Configure Streamlit page
 # Note: sidebar is hidden since we use tabs instead of multipage
 st.set_page_config(
@@ -78,6 +79,9 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed",
 )
+
+# Apply custom CSS for professional styling
+components.inject_custom_css(st)
 
 # Initialize global frequency in session state
 if "global_frequency" not in st.session_state:
@@ -222,6 +226,8 @@ def _run_backtest(
     allow_shorts: bool | None,
 ):
     """Run backtest using CSV predictions mode."""
+    from src.backtest import run_backtest_for_ui
+    
     predictions_csv = get_predictions_csv_path("nvda", frequency)
     if predictions_csv and not os.path.exists(predictions_csv):
         raise FileNotFoundError(
@@ -277,6 +283,11 @@ with tab_live:
 
 with tab_data:
     from src.ui.page_modules import data_page
+    from src.data_processing import (
+        clean_raw_minute_data,
+        convert_minute_to_timeframe,
+        prepare_keras_input_data,
+    )
 
     data_page.render_data_tab(
         st=st,
@@ -293,6 +304,7 @@ with tab_data:
 
 with tab_experiments:
     from src.ui.page_modules import experiments_page
+    from src.train import train_model
 
     experiments_page.render_experiments_tab(
         st=st,

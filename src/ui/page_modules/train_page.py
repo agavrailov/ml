@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+# Import UI components for modern styling
+from src.ui import components
+
 
 def _build_train_job_request_obj(
     *,
@@ -211,77 +214,61 @@ def render_train_tab(
     active_job_id = train_state.get("active_job_id")
 
     if active_job_id:
-        st.markdown(f"### Active training job: `{active_job_id}`")
-        st.caption(f"Run dir: `{_job_store.run_dir(active_job_id)}`")
-        st.caption(f"Log: `{_job_store.artifacts_dir(active_job_id) / 'run.log'}`")
-
-        # Button is optional; job status is read on every rerun anyway.
-        st.button("Refresh training job status", key="train_job_refresh")
-
         job_status = _job_store.read_status(active_job_id)
-        if job_status is None:
-            st.info("Job status not written yet.")
-        else:
-            st.write(
-                {
-                    "state": job_status.state,
-                    "created_at_utc": job_status.created_at_utc,
-                    "started_at_utc": job_status.started_at_utc,
-                    "finished_at_utc": job_status.finished_at_utc,
-                    "error": job_status.error,
+        
+        # Prepare result if job succeeded
+        result = None
+        if job_status and job_status.state == "SUCCEEDED":
+            res_path = _job_store.result_path(active_job_id)
+            if res_path.exists():
+                try:
+                    result = _job_store.read_json(res_path)
+                except Exception:
+                    pass
+        
+        # Professional job status panel with timeline and results
+        components.render_job_status(
+            st,
+            job_id=active_job_id,
+            job_type="train",
+            status=job_status.to_dict() if job_status else {},
+            result=result,
+            on_refresh=lambda: st.rerun()
+        )
+        
+        # Record run into UI history exactly once per job (after success)
+        if job_status and job_status.state == "SUCCEEDED" and result:
+            recorded = train_state.setdefault("recorded_job_ids", [])
+            if active_job_id not in recorded:
+                try:
+                    req_obj = _job_store.read_json(_job_store.request_path(active_job_id))
+                except Exception:
+                    req_obj = {}
+                
+                row = {
+                    "timestamp": pd.Timestamp.utcnow().isoformat(),
+                    "frequency": req_obj.get("frequency", train_freq),
+                    "tsteps": int(req_obj.get("tsteps", train_tsteps)),
+                    "validation_loss": float(result.get("validation_loss", 0)),
+                    "model_filename": result.get("model_filename", ""),
+                    "bias_correction_filename": result.get("bias_correction_filename"),
+                    "lstm_units": int(req_obj.get("lstm_units") or train_lstm_units),
+                    "batch_size": int(req_obj.get("batch_size") or train_batch_size),
+                    "learning_rate": float(req_obj.get("learning_rate") or train_lr),
+                    "epochs": int(req_obj.get("epochs") or train_epochs),
+                    "n_lstm_layers": int(req_obj.get("n_lstm_layers") or train_n_layers),
+                    "stateful": bool(req_obj.get("stateful") if req_obj.get("stateful") is not None else train_stateful),
+                    "optimizer_name": base_hps["optimizer_name"],
+                    "loss_function": base_hps["loss_function"],
+                    "features_to_use": req_obj.get("features_to_use") or train_features_to_use,
                 }
-            )
-
-            if job_status.state == "FAILED":
-                if job_status.traceback:
-                    with st.expander("Show traceback", expanded=False):
-                        st.code(job_status.traceback)
-
-            if job_status.state == "SUCCEEDED":
-                res_path = _job_store.result_path(active_job_id)
-                if res_path.exists():
-                    try:
-                        res_obj = _job_store.read_json(res_path)
-                        res = _TrainResult(**res_obj)
-                    except Exception:
-                        res = None
-
-                    if res is not None:
-                        st.success(f"Training complete. val_loss={float(res.validation_loss):.6f}")
-                        st.code(str(_job_store.artifacts_dir(active_job_id) / res.model_filename))
-
-                        # Record run into UI history exactly once per job.
-                        recorded = train_state.setdefault("recorded_job_ids", [])
-                        if active_job_id not in recorded:
-                            try:
-                                req_obj = _job_store.read_json(_job_store.request_path(active_job_id))
-                            except Exception:
-                                req_obj = {}
-
-                            row = {
-                                "timestamp": pd.Timestamp.utcnow().isoformat(),
-                                "frequency": req_obj.get("frequency", train_freq),
-                                "tsteps": int(req_obj.get("tsteps", train_tsteps)),
-                                "validation_loss": float(res.validation_loss),
-                                "model_filename": res.model_filename,
-                                "bias_correction_filename": res.bias_correction_filename,
-                                "lstm_units": int(req_obj.get("lstm_units") or train_lstm_units),
-                                "batch_size": int(req_obj.get("batch_size") or train_batch_size),
-                                "learning_rate": float(req_obj.get("learning_rate") or train_lr),
-                                "epochs": int(req_obj.get("epochs") or train_epochs),
-                                "n_lstm_layers": int(req_obj.get("n_lstm_layers") or train_n_layers),
-                                "stateful": bool(req_obj.get("stateful") if req_obj.get("stateful") is not None else train_stateful),
-                                "optimizer_name": base_hps["optimizer_name"],
-                                "loss_function": base_hps["loss_function"],
-                                "features_to_use": req_obj.get("features_to_use") or train_features_to_use,
-                            }
-
-                            history: list[dict] = train_state.get("history", [])
-                            history = _append_history(history, row, max_rows=MAX_HISTORY_ROWS)
-                            train_state["history"] = history
-                            save_json_history("training_history.json", history)
-
-                            recorded.append(active_job_id)
+                
+                history: list[dict] = train_state.get("history", [])
+                history = _append_history(history, row, max_rows=MAX_HISTORY_ROWS)
+                train_state["history"] = history
+                save_json_history("training_history.json", history)
+                
+                recorded.append(active_job_id)
 
     # Start a new job.
     if submitted:

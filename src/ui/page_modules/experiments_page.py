@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+# Import UI components for modern styling
+from src.ui import components
+
 
 def render_experiments_tab(
     *,
@@ -205,27 +208,19 @@ def render_experiments_tab(
 
     # Experiments table with an action to load a row into the Train tab.
     exp_rows = exp_state.get("runs") or st.session_state.get("lstm_experiments", [])
-    if exp_rows:
-        st.markdown("### Recorded experiments")
-        exp_df = pd.DataFrame(exp_rows)
-        st.dataframe(exp_df, width="stretch")
-
-        # Simple selector to copy a row's hyperparameters into the Train tab.
-        idx_to_use = st.number_input(
-            "Select experiment row index to load into 'Train & Promote' tab",
-            min_value=0,
-            max_value=len(exp_rows) - 1,
-            step=1,
-            value=len(exp_rows) - 1,
-            key="exp_row_select",
-        )
-        if st.button("Load selected experiment into Train & Promote"):
-            chosen = exp_rows[int(idx_to_use)]
-            st.session_state["train_prefill"] = chosen
-            # Mirror into ui_state.training so the Train tab can prefer it.
-            train_state = get_ui_state().setdefault("training", {})
-            train_state["train_prefill"] = chosen
-            _ = train_state  # silence linters about unused variable in UI code
-            st.success(
-                "Loaded experiment into Train & Promote tab. Switch to that tab to train fully."
-            )
+    
+    def load_experiment_to_training(experiment: dict) -> None:
+        """Callback to load selected experiment into training tab."""
+        st.session_state["train_prefill"] = experiment
+        # Mirror into ui_state.training so the Train tab can prefer it.
+        train_state = get_ui_state().setdefault("training", {})
+        train_state["train_prefill"] = experiment
+        st.success("Loaded experiment into Train & Promote tab. Switch to that tab to train fully.")
+    
+    # Professional experiment table with integrated selection
+    components.render_experiment_table(
+        st,
+        pd,
+        experiments=exp_rows,
+        on_select=load_experiment_to_training
+    )
