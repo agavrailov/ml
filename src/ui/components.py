@@ -235,6 +235,30 @@ def render_status_badge(
     st.markdown(f'<span class="status-badge status-{status_lower}">{display_text}</span>', unsafe_allow_html=True)
 
 
+def render_progress_bar(
+    st,
+    progress: float,
+    message: str | None = None,
+) -> None:
+    """Render a progress bar with optional message.
+    
+    Args:
+        st: Streamlit module
+        progress: Progress value from 0.0 to 1.0
+        message: Optional progress message
+    """
+    progress_pct = int(progress * 100)
+    message_html = f'<div style="font-size: 0.85rem; color: #4a5568; margin-bottom: 0.25rem;">{message}</div>' if message else ""
+    
+    st.markdown(f"""
+    {message_html}
+    <div class="progress-container">
+        <div class="progress-bar" style="width: {progress_pct}%;"></div>
+    </div>
+    <div style="text-align: right; font-size: 0.75rem; color: #718096; margin-top: 0.25rem;">{progress_pct}%</div>
+    """, unsafe_allow_html=True)
+
+
 # =============================================================================
 # MODEL & EXPERIMENT COMPONENTS
 # =============================================================================
@@ -373,6 +397,14 @@ def render_job_status(
     with col_finished:
         st.caption("Finished")
         st.text(status.get("finished_at_utc", "—"))
+    
+    # Progress bar for running jobs
+    if state == "RUNNING" and status.get("progress") is not None:
+        render_progress_bar(
+            st,
+            progress=status.get("progress"),
+            message=status.get("progress_message"),
+        )
     
     # Error handling
     if state == "FAILED":

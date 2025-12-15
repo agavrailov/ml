@@ -24,6 +24,8 @@ class JobStatus:
     finished_at_utc: str | None = None
     error: str | None = None
     traceback: str | None = None
+    progress: float | None = None  # 0.0 to 1.0
+    progress_message: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

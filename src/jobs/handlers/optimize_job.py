@@ -72,7 +72,16 @@ def run(job_id: str, request: OptimizeRequest) -> None:
     names = list(param_ranges.keys())
     all_values = [param_ranges[n] for n in names]
 
-    for combo in product(*all_values):
+    total_runs = 1
+    for vals in all_values:
+        total_runs *= len(vals)
+
+    for run_idx, combo in enumerate(product(*all_values), start=1):
+        # Update progress periodically
+        if run_idx % max(1, total_runs // 100) == 0 or run_idx == 1:
+            progress = run_idx / total_runs
+            store.update_progress(job_id, progress, f"Run {run_idx}/{total_runs}")
+
         combo_params = dict(zip(names, combo))
 
         # Extract strategy parameters with defaults

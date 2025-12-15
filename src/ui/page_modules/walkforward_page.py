@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from src.ui import components
+
 
 def render_walkforward_tab(
     *,
@@ -234,25 +236,48 @@ def render_walkforward_tab(
 
     # Poll active job status.
     if active_job_id:
+        job_status = _job_store.read_status(active_job_id)
+        
+        # Auto-refresh while job is running
+        if job_status and job_status.state == "RUNNING":
+            try:
+                from streamlit_autorefresh import st_autorefresh
+                # Refresh every 2 seconds while running
+                st_autorefresh(interval=2000, key="wf_autorefresh")
+            except ImportError:
+                pass
+        
         st.markdown(f"### Active walk-forward job: `{active_job_id}`")
         st.caption(f"Run dir: `{_job_store.run_dir(active_job_id)}`")
         st.caption(f"Log: `{_job_store.artifacts_dir(active_job_id) / 'run.log'}`")
-
-        st.button("Refresh walk-forward job status", key="wf_job_refresh")
-
-        job_status = _job_store.read_status(active_job_id)
+        if job_status and job_status.state == "RUNNING":
+            st.caption("🔄 Auto-refreshing every 2 seconds...")
+        elif job_status and job_status.state == "SUCCEEDED":
+            st.caption("✓ Job completed successfully")
         if job_status is None:
             st.info("Job status not written yet.")
         else:
-            st.write(
-                {
-                    "state": job_status.state,
-                    "created_at_utc": job_status.created_at_utc,
-                    "started_at_utc": job_status.started_at_utc,
-                    "finished_at_utc": job_status.finished_at_utc,
-                    "error": job_status.error,
-                }
-            )
+            # Display status badge
+            if job_status.state == "RUNNING":
+                components.render_status_badge(st, "RUNNING", "Running")
+                if job_status.started_at_utc:
+                    st.caption(f"Started: {job_status.started_at_utc}")
+                
+                # Show progress bar if available
+                if job_status.progress is not None:
+                    components.render_progress_bar(
+                        st,
+                        progress=job_status.progress,
+                        message=job_status.progress_message,
+                    )
+            elif job_status.state == "SUCCEEDED":
+                components.render_status_badge(st, "SUCCEEDED", "Complete")
+            elif job_status.state == "FAILED":
+                components.render_status_badge(st, "FAILED", "Failed")
+                if job_status.error:
+                    st.error(f"✕ {job_status.error}")
+            else:
+                components.render_status_badge(st, "QUEUED", job_status.state)
 
             if job_status.state == "FAILED":
                 if job_status.traceback:

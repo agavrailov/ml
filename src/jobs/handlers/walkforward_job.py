@@ -73,8 +73,11 @@ def run(job_id: str, request: WalkForwardRequest) -> None:
 
     # Run backtests across all parameter sets and folds
     rows: list[dict] = []
+    
+    total_runs = len(parameter_sets) * len(windows)
+    run_count = 0
 
-    for p_row in parameter_sets:
+    for param_idx, p_row in enumerate(parameter_sets, start=1):
         label = str(p_row.get("label", "unnamed"))
         k_sigma_long = float(p_row["k_sigma_long"])
         k_sigma_short = float(p_row["k_sigma_short"])
@@ -84,6 +87,15 @@ def run(job_id: str, request: WalkForwardRequest) -> None:
         rr = float(p_row["reward_risk_ratio"])
 
         for fold_idx, (train_w, test_w) in enumerate(windows, start=1):
+            run_count += 1
+            # Update progress periodically
+            if run_count % max(1, total_runs // 50) == 0 or run_count == 1:
+                progress = run_count / total_runs
+                store.update_progress(
+                    job_id,
+                    progress,
+                    f"Param {param_idx}/{len(parameter_sets)}, Fold {fold_idx}/{len(windows)}",
+                )
             test_df = slice_df_by_window(df_full, test_w)
 
             if test_df.empty:

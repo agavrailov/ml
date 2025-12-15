@@ -115,3 +115,18 @@ def copy_file_artifact(job_id: str, src_path: str | Path, *, dest_name: str | No
 
     shutil.copy2(src, dest)
     return str(dest)
+
+
+def update_progress(job_id: str, progress: float, message: str | None = None) -> None:
+    """Update job progress without changing its state.
+    
+    Args:
+        job_id: Job identifier
+        progress: Progress value from 0.0 to 1.0
+        message: Optional descriptive message
+    """
+    status = read_status(job_id)
+    if status and status.state == "RUNNING":
+        status.progress = max(0.0, min(1.0, progress))
+        status.progress_message = message
+        write_status(job_id, status)

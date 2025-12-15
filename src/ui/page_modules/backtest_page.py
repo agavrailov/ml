@@ -460,15 +460,25 @@ def render_backtest_tab(
         
         # Poll active job status
         if active_job_id:
-            st.markdown(f"#### ↻ Active Job: `{active_job_id}`")
-            col_refresh, col_cancel = st.columns([3, 1])
-            with col_refresh:
-                st.caption(f"Log: `{_job_store.artifacts_dir(active_job_id) / 'run.log'}`")
-            with col_cancel:
-                if st.button("↻ Refresh", key="opt_job_refresh", width='stretch'):
-                    st.rerun()
-
+            # Check status immediately when page loads
             job_status = _job_store.read_status(active_job_id)
+            
+            # Auto-refresh while job is running
+            if job_status and job_status.state == "RUNNING":
+                try:
+                    from streamlit_autorefresh import st_autorefresh
+                    # Refresh every 2 seconds while running
+                    st_autorefresh(interval=2000, key="opt_autorefresh")
+                except ImportError:
+                    pass
+            
+            st.markdown(f"#### ↻ Active Job: `{active_job_id}`")
+            st.caption(f"Log: `{_job_store.artifacts_dir(active_job_id) / 'run.log'}`")
+            if job_status and job_status.state == "RUNNING":
+                st.caption("🔄 Auto-refreshing every 2 seconds...")
+            elif job_status and job_status.state == "SUCCEEDED":
+                st.caption("✓ Job completed successfully")
+            
             if job_status is None:
                 st.info("⋯ Job starting...")
             else:
@@ -476,6 +486,14 @@ def render_backtest_tab(
                 if job_status.state == "RUNNING":
                     components.render_status_badge(st, "RUNNING", "Running")
                     st.caption(f"Started: {job_status.started_at_utc}")
+                    
+                    # Show progress bar if available
+                    if job_status.progress is not None:
+                        components.render_progress_bar(
+                            st,
+                            progress=job_status.progress,
+                            message=job_status.progress_message,
+                        )
                 elif job_status.state == "SUCCEEDED":
                     components.render_status_badge(st, "SUCCEEDED", "Complete")
                 elif job_status.state == "FAILED":
@@ -587,91 +605,6 @@ def render_backtest_tab(
                 on_retest=on_opt_retest,
                 on_add_to_wf=on_opt_add_to_wf,
             )
-
-            # Actions: load best result or select specific
-            col_load_best, col_load_select, col_export = st.columns([1, 2, 1])
-            
-            with col_load_best:
-                if st.button("★ Load Best (Sharpe)", width='stretch', type="primary"):
-                    best_row = display_df.sort_values("sharpe_ratio", ascending=False).iloc[0]
-                    mapping = {
-                        "k_sigma_long": float(best_row["k_sigma_long"]),
-                        "k_sigma_short": float(best_row["k_sigma_short"]),
-                        "k_atr_long": float(best_row["k_atr_long"]),
-                        "k_atr_short": float(best_row["k_atr_short"]),
-                        "risk_per_trade_pct": float(best_row["risk_per_trade_pct"]),
-                        "reward_risk_ratio": float(best_row["reward_risk_ratio"]),
-                    }
-                    params_df_updated = params_df.copy()
-                    for name, value in mapping.items():
-                        mask = params_df_updated["Parameter"] == name
-                        if mask.any():
-                            params_df_updated.loc[mask, "Value"] = value
-                    save_params_grid(params_df_updated)
-                    st.success("✓ Loaded best parameters into strategy grid")
-                    st.rerun()
-            
-            with col_load_select:
-                idx_to_use = st.number_input(
-                    "Or select row index to load",
-                    min_value=0,
-                    max_value=len(display_df) - 1,
-                    value=0,
-                    key="opt_result_row_select",
-                )
-                if st.button("← Load Selected Row", width='stretch'):
-                    chosen = display_df.iloc[int(idx_to_use)]
-                    mapping = {
-                        "k_sigma_long": float(chosen["k_sigma_long"]),
-                        "k_sigma_short": float(chosen["k_sigma_short"]),
-                        "k_atr_long": float(chosen["k_atr_long"]),
-                        "k_atr_short": float(chosen["k_atr_short"]),
-                        "risk_per_trade_pct": float(chosen["risk_per_trade_pct"]),
-                        "reward_risk_ratio": float(chosen["reward_risk_ratio"]),
-                    }
-                    params_df_updated = params_df.copy()
-                    for name, value in mapping.items():
-                        mask = params_df_updated["Parameter"] == name
-                        if mask.any():
-                            params_df_updated.loc[mask, "Value"] = value
-                    save_params_grid(params_df_updated)
-                    st.success("✓ Loaded selected parameters into strategy grid")
-                    st.rerun()
-
-            with col_export:
-                max_top_n = max(1, min(10, len(display_df)))
-                top_n_to_export = st.number_input(
-                    "Top N to WF",
-                    min_value=1,
-                    max_value=max_top_n,
-                    value=min(3, max_top_n),
-                    step=1,
-                    key="opt_to_wf_top_n",
-                )
-                if st.button("→ Export to Walk-Forward", width='stretch'):
-                    best_for_export = display_df.sort_values(
-                        by="sharpe_ratio", ascending=False
-                    ).head(int(top_n_to_export))
-
-                    wf_rows: list[dict] = []
-                    for rank, (_, row) in enumerate(best_for_export.iterrows(), start=1):
-                        wf_rows.append(
-                            {
-                                "label": f"opt_{rank}",
-                                "k_sigma_long": float(row["k_sigma_long"]),
-                                "k_sigma_short": float(row["k_sigma_short"]),
-                                "k_atr_long": float(row["k_atr_long"]),
-                                "k_atr_short": float(row["k_atr_short"]),
-                                "risk_per_trade_pct": float(row["risk_per_trade_pct"]),
-                                "reward_risk_ratio": float(row["reward_risk_ratio"]),
-                                "enabled": True,
-                            }
-                        )
-
-                    if wf_rows:
-                        wf_param_df = pd.DataFrame(wf_rows)
-                        st.session_state["wf_param_grid_seed"] = wf_param_df
-                        st.success(f"✓ Exported {len(wf_rows)} parameter sets to Walk-Forward tab")
 
             # Heatmaps
             with st.expander("▼ Heatmaps (k_sigma vs k_atr)", expanded=False):
