@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.ui.pages import train_page
+from src.ui.page_modules import train_page
 
 
 def test_append_history_trims_to_max_rows():

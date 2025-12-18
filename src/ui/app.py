@@ -188,6 +188,9 @@ def _save_strategy_defaults_to_config(
     k_sigma_short: float,
     k_atr_long: float,
     k_atr_short: float,
+    symbol: str | None = None,
+    frequency: str | None = None,
+    source: str | None = "ui_manual_deploy",
 ) -> None:
     """Persist strategy parameters to configs/active.json."""
     try:
@@ -198,6 +201,9 @@ def _save_strategy_defaults_to_config(
             k_sigma_short=k_sigma_short,
             k_atr_long=k_atr_long,
             k_atr_short=k_atr_short,
+            symbol=symbol,
+            frequency=frequency,
+            source=source,
         )
     except Exception as exc:
         st.error(f"Failed to save strategy defaults: {exc}")
