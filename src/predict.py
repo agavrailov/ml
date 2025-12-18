@@ -1,7 +1,7 @@
 import os
 import json
 from dataclasses import dataclass
-from typing import Optional, List
+from typing import Optional, List, Any
 
 # Silence most TensorFlow C++ and Python-level logs (info/warning)
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")  # 0=all,1=filter INFO,2=filter WARNING,3=filter ERROR
@@ -38,6 +38,90 @@ from src.config import (
     STATEFUL,
     FEATURES_TO_USE_OPTIONS,
 )
+
+
+def _safe_model_input_shape(model: Any) -> Optional[tuple[int | None, int | None, int | None]]:
+    """Best-effort extraction of (batch, tsteps, n_features) from a Keras model."""
+
+    try:
+        shape = getattr(model, "input_shape", None)
+        if shape is None:
+            return None
+        if isinstance(shape, list):
+            if not shape:
+                return None
+            shape = shape[0]
+        if not isinstance(shape, tuple) or len(shape) != 3:
+            return None
+        return shape  # type: ignore[return-value]
+    except Exception:
+        return None
+
+
+def _infer_lstm_architecture_from_model(model: Any) -> Optional[dict]:
+    """Infer key architecture parameters from a loaded Keras model.
+
+    We prefer inferring from the model artifact over config files because those
+    files can become stale (e.g. best_hyperparameters.json updated without the
+    corresponding model, or vice versa).
+
+    Returns a dict with keys: tsteps, n_features, lstm_units, n_lstm_layers.
+    """
+
+    input_shape = _safe_model_input_shape(model)
+    if input_shape is None:
+        return None
+
+    _batch, tsteps, n_features = input_shape
+    if tsteps is None or n_features is None:
+        return None
+
+    try:
+        layers = list(getattr(model, "layers", []) or [])
+    except Exception:
+        return None
+
+    lstm_layers = [l for l in layers if getattr(l.__class__, "__name__", "") == "LSTM"]
+    if not lstm_layers:
+        return None
+
+    units = getattr(lstm_layers[0], "units", None)
+    if units is None:
+        return None
+
+    # Defensive: ensure all stacked LSTMs (if any) share the same units.
+    for l in lstm_layers[1:]:
+        if getattr(l, "units", None) != units:
+            return None
+
+    return {
+        "tsteps": int(tsteps),
+        "n_features": int(n_features),
+        "lstm_units": int(units),
+        "n_lstm_layers": int(len(lstm_layers)),
+    }
+
+
+def _pick_features_to_match_n_features(
+    *,
+    n_features: int,
+    trained: Optional[list[str]],
+) -> list[str]:
+    if trained is not None and len(trained) == int(n_features):
+        return trained
+
+    for option in FEATURES_TO_USE_OPTIONS:
+        if len(option) == int(n_features):
+            return option
+
+    # Fall back to existing default to preserve behaviour, but fail loudly if it mismatches.
+    default = FEATURES_TO_USE_OPTIONS[0]
+    if len(default) != int(n_features):
+        raise ValueError(
+            f"No FEATURES_TO_USE_OPTIONS entry matches n_features={n_features}. "
+            f"Available lengths: {[len(o) for o in FEATURES_TO_USE_OPTIONS]}"
+        )
+    return default
 
 
 def _find_latest_registry_model_path(*, frequency: str, tsteps: int) -> Optional[str]:
@@ -169,13 +253,25 @@ def build_prediction_context(
     # Load the trained *stateful* model via the unified model loader.
     stateful_model = load_model(model_path)
 
+    # Infer architecture from the model artifact itself. This avoids a common
+    # failure mode where best_hyperparameters.json contains stale/incorrect
+    # values (e.g. lstm_units mismatch), which would otherwise cause
+    # non_stateful_model.set_weights(...) to raise.
+    inferred = _infer_lstm_architecture_from_model(stateful_model)
+    if inferred is not None:
+        if int(inferred["tsteps"]) != int(tsteps):
+            raise ValueError(
+                f"Model at {model_path} was trained with tsteps={inferred['tsteps']}, "
+                f"but build_prediction_context was called with tsteps={tsteps}."
+            )
+
     best_hps: dict = {}
     # Ensure best_hps_path is an absolute path for robust checking
     best_hps_path = os.path.abspath(os.path.join(script_dir, "best_hyperparameters.json"))
 
     if os.path.exists(best_hps_path):
         try:
-            with open(best_hps_path, 'r') as f:
+            with open(best_hps_path, "r", encoding="utf-8") as f:
                 content = f.read().strip()
                 if content:
                     best_hps_data = json.loads(content)
@@ -184,28 +280,46 @@ def build_prediction_context(
         except json.JSONDecodeError:
             best_hps = {}
 
-    lstm_units = best_hps.get("lstm_units", lstm_units_trained or LSTM_UNITS)
-    n_lstm_layers = best_hps.get("n_lstm_layers", n_lstm_layers_trained or N_LSTM_LAYERS)
+    # Optimizer/loss don't affect predict(), but we keep them for backwards compatibility.
     optimizer_name = best_hps.get("optimizer_name", "rmsprop")
     loss_function = best_hps.get("loss_function", "mae")
 
-    if features_to_use_trained:
-        features_to_use = features_to_use_trained
-    else:
-        features_to_use = FEATURES_TO_USE_OPTIONS[0]
+    # Determine architecture.
+    lstm_units = best_hps.get("lstm_units", lstm_units_trained or LSTM_UNITS)
+    n_lstm_layers = best_hps.get("n_lstm_layers", n_lstm_layers_trained or N_LSTM_LAYERS)
+    n_features = len(FEATURES_TO_USE_OPTIONS[0])
 
-    n_features = len(features_to_use)
+    if inferred is not None:
+        lstm_units = int(inferred["lstm_units"])
+        n_lstm_layers = int(inferred["n_lstm_layers"])
+        n_features = int(inferred["n_features"])
+
+    features_to_use = _pick_features_to_match_n_features(
+        n_features=n_features,
+        trained=features_to_use_trained,
+    )
+
     prediction_model = build_lstm_model(
-        input_shape=(tsteps, n_features),
-        lstm_units=lstm_units,
+        input_shape=(tsteps, len(features_to_use)),
+        lstm_units=int(lstm_units),
         batch_size=None,
         learning_rate=0.001,
-        n_lstm_layers=n_lstm_layers,
+        n_lstm_layers=int(n_lstm_layers),
         stateful=False,
         optimizer_name=optimizer_name,
         loss_function=loss_function,
     )
-    load_stateful_weights_into_non_stateful_model(stateful_model, prediction_model)
+
+    try:
+        load_stateful_weights_into_non_stateful_model(stateful_model, prediction_model)
+    except ValueError as e:
+        raise ValueError(
+            "Failed to load stateful model weights into non-stateful prediction model. "
+            f"model_path={model_path}, frequency={frequency}, tsteps={tsteps}, "
+            f"lstm_units={lstm_units}, n_lstm_layers={n_lstm_layers}, n_features={len(features_to_use)}. "
+            "This usually means the saved model architecture does not match the parameters "
+            "chosen from metadata/config."
+        ) from e
 
     scaler_params_path = get_scaler_params_json_path(frequency)
     if not os.path.exists(scaler_params_path):
