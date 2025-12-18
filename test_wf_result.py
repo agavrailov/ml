@@ -1,3 +1,13 @@
+"""Manual debugging script (not an automated test).
+
+This file starts with "test_" so pytest will try to collect it. Skip collection
+to keep the automated suite stable.
+"""
+
+import pytest
+
+pytest.skip("manual script - not a pytest test", allow_module_level=True)
+
 from src.core.contracts import WalkForwardResult
 import json
 

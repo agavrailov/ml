@@ -195,6 +195,33 @@ def _frequency_to_bar_size_setting(freq: str) -> str:
     raise ValueError(f"Unsupported frequency for live bars: {freq!r}")
 
 
+def _frequency_to_minutes(freq: str) -> int | None:
+    f = str(freq or "").lower().strip().replace(" ", "")
+    if f.endswith("min"):
+        n = f[: -len("min")]
+        return int(n) if n.isdigit() else None
+    if f in {"1h", "1hr", "1hour"}:
+        return 60
+    if f in {"4h", "4hr", "4hour"}:
+        return 240
+    return None
+
+
+def _no_update_warning_threshold_seconds(freq: str) -> float:
+    """Return how long to wait before warning about *no updateEvent callbacks*.
+
+    keepUpToDate updates are expected at least once per bar (often more frequently),
+    but for larger bar sizes it's normal to see long quiet periods.
+
+    We use max(5 minutes, 2x bar period) as a conservative threshold.
+    """
+    base = 300.0
+    mins = _frequency_to_minutes(freq)
+    if mins is None or mins <= 0:
+        return base
+    return max(base, float(2 * mins * 60))
+
+
 def _connect_with_unique_client_id(
     ib,  # noqa: ANN001
     *,
@@ -784,9 +811,11 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                 )
 
                 # If we haven't received *any* bar updates for a while, surface it.
-                if age >= 0 and age > 300:
+                warn_after = _no_update_warning_threshold_seconds(cfg.frequency)
+                if age >= 0 and age > warn_after:
                     print(
-                        f"[live] WARNING: no bar updates received for {age:.0f}s. "
+                        f"[live] WARNING: no bar updates received for {age:.0f}s "
+                        f"(threshold={warn_after:.0f}s, frequency={cfg.frequency}). "
                         "Check TWS/Gateway logs for market data/permissions errors."
                     )
 
@@ -854,11 +883,66 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
         )
 
 
+def _resolve_symbol_frequency_from_active_config(
+    *,
+    cli_symbol: str | None,
+    cli_frequency: str | None,
+    active_config: dict | None,
+) -> tuple[str, str]:
+    """Resolve (symbol, frequency) for live run.
+
+    Priority:
+    1) Explicit CLI args (highest)
+    2) configs/active.json["meta"]["symbol"/"frequency"]
+
+    We intentionally do NOT silently fall back to hardcoded defaults if both are
+    missing, because running the wrong frequency is a high-risk failure mode.
+    """
+    symbol = (cli_symbol or "").strip() or None
+    frequency = (cli_frequency or "").strip() or None
+
+    meta = None
+    if isinstance(active_config, dict):
+        m = active_config.get("meta")
+        meta = m if isinstance(m, dict) else None
+
+    if symbol is None and meta is not None:
+        sym = meta.get("symbol")
+        symbol = str(sym).strip() if sym is not None else None
+
+    if frequency is None and meta is not None:
+        freq = meta.get("frequency")
+        frequency = str(freq).strip() if freq is not None else None
+
+    if not symbol:
+        raise SystemExit(
+            "Missing --symbol and configs/active.json meta.symbol is not set. "
+            "Pass --symbol explicitly or promote a config with symbol metadata."
+        )
+    if not frequency:
+        raise SystemExit(
+            "Missing --frequency and configs/active.json meta.frequency is not set. "
+            "Pass --frequency explicitly or promote a config with frequency metadata."
+        )
+
+    return symbol.upper(), frequency
+
+
 def main() -> None:
     """CLI entrypoint - parse args and delegate to src.live.engine."""
     p = argparse.ArgumentParser(description="IBKR/TWS live session runner (bar-by-bar model predictions).")
-    p.add_argument("--symbol", type=str, default="NVDA")
-    p.add_argument("--frequency", type=str, default="60min")
+    p.add_argument(
+        "--symbol",
+        type=str,
+        default=None,
+        help="Trading symbol. If omitted, uses configs/active.json meta.symbol.",
+    )
+    p.add_argument(
+        "--frequency",
+        type=str,
+        default=None,
+        help="Bar frequency (e.g. 15min, 60min). If omitted, uses configs/active.json meta.frequency.",
+    )
     p.add_argument("--tsteps", type=int, default=5)
     p.add_argument("--backend", type=str, default="IBKR_TWS")
     p.add_argument("--initial-equity", type=float, default=10_000.0)
@@ -897,9 +981,19 @@ def main() -> None:
     # Import here to allow lazy loading
     from src.live.engine import LiveEngineConfig, run as run_engine
 
+    # Resolve defaults from configs/active.json (promoted config) when CLI omits them.
+    from src.core import config_library as _cfg_lib
+
+    active_cfg = _cfg_lib.read_active_config() or {}
+    symbol, frequency = _resolve_symbol_frequency_from_active_config(
+        cli_symbol=args.symbol,
+        cli_frequency=args.frequency,
+        active_config=active_cfg,
+    )
+
     cfg = LiveEngineConfig(
-        symbol=args.symbol,
-        frequency=args.frequency,
+        symbol=symbol,
+        frequency=frequency,
         tsteps=int(args.tsteps),
         backend=args.backend,
         initial_equity=float(args.initial_equity),

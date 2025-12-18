@@ -102,10 +102,16 @@ def save_strategy_defaults(
     k_sigma_short: float,
     k_atr_long: float,
     k_atr_short: float,
+    symbol: str | None = None,
+    frequency: str | None = None,
+    source: str | None = None,
 ) -> None:
     """Save strategy parameter overrides to configs/active.json.
 
     Does NOT edit src/config.py (which remains read-only for the UI).
+
+    Optional metadata (symbol/frequency/source) is stored under "meta" so that
+    promotions into production carry enough context to avoid mixing timeframes.
     """
     active = _load_active_config()
     active.setdefault("strategy", {})
@@ -116,5 +122,18 @@ def save_strategy_defaults(
     active["strategy"]["k_sigma_short"] = float(k_sigma_short)
     active["strategy"]["k_atr_long"] = float(k_atr_long)
     active["strategy"]["k_atr_short"] = float(k_atr_short)
+
+    # Best-effort metadata for safety/auditability.
+    if symbol is not None or frequency is not None or source is not None:
+        from datetime import datetime, timezone
+
+        active.setdefault("meta", {})
+        if symbol is not None:
+            active["meta"]["symbol"] = str(symbol).strip().upper()
+        if frequency is not None:
+            active["meta"]["frequency"] = str(frequency).strip()
+        if source is not None:
+            active["meta"]["source"] = str(source).strip() or None
+        active["meta"]["updated_at_utc"] = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
     _save_active_config(active)

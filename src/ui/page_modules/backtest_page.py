@@ -206,12 +206,163 @@ def render_backtest_tab(
                     k_sigma_short=k_sigma_short_val,
                     k_atr_long=k_atr_long_val,
                     k_atr_short=k_atr_short_val,
+                    symbol="NVDA",
+                    frequency=freq,
+                    source="ui_manual_deploy",
                 )
                 save_params_grid(params_df)
                 st.success("✓ Deployed parameters to production config")
     
     st.divider()
-    
+
+    # ==========================================================================
+    # SECTION 2B: CONFIG LIBRARY (CANDIDATES)
+    # ==========================================================================
+    from src.core import config_library as _cfg_lib
+
+    st.markdown("### 📦 Config Library (Candidates)")
+    symbol = "NVDA"  # TODO: make this selectable when multi-symbol trading is enabled.
+
+    # Display current active config metadata (best-effort).
+    active_cfg = _cfg_lib.read_active_config() or {}
+    active_meta = active_cfg.get("meta") if isinstance(active_cfg.get("meta"), dict) else {}
+    if active_meta:
+        st.caption(
+            "Active config: "
+            f"symbol={active_meta.get('symbol', '—')}, "
+            f"frequency={active_meta.get('frequency', '—')}, "
+            f"updated_at_utc={active_meta.get('updated_at_utc', active_meta.get('promoted_at_utc', '—'))}"
+        )
+
+    # Save current parameter grid values as a candidate.
+    with st.container(border=True):
+        col_label, col_save_cand, col_refresh = st.columns([2, 1, 1])
+
+        with col_label:
+            cand_label = st.text_input(
+                "Candidate label (optional)",
+                key=f"cfg_cand_label_{freq}",
+                placeholder="e.g. 'post-opt backtest v2'",
+            )
+
+        # NOTE: Streamlit columns don't support vertical alignment. We add a small spacer
+        # so the buttons align with the bottom of the (taller) text_input.
+        _btn_spacer = "<div style='height: 1.6rem'></div>"
+
+        with col_save_cand:
+            st.markdown(_btn_spacer, unsafe_allow_html=True)
+            if st.button("💾 Save as Candidate", width="stretch", key=f"cfg_save_cand_{freq}"):
+                # Attach last backtest metrics if they exist for this frequency.
+                metrics_for_save = None
+                last = bt_state.get("last_run")
+                if isinstance(last, dict):
+                    inputs = last.get("inputs")
+                    if isinstance(inputs, dict) and inputs.get("frequency") == freq:
+                        m = last.get("metrics")
+                        if isinstance(m, dict):
+                            metrics_for_save = m
+
+                row = _cfg_lib.save_candidate(
+                    symbol=symbol,
+                    frequency=freq,
+                    strategy={
+                        "risk_per_trade_pct": risk_pct_val,
+                        "reward_risk_ratio": rr_val,
+                        "k_sigma_long": k_sigma_long_val,
+                        "k_sigma_short": k_sigma_short_val,
+                        "k_atr_long": k_atr_long_val,
+                        "k_atr_short": k_atr_short_val,
+                    },
+                    label=cand_label,
+                    source="ui_backtest",
+                    metrics=metrics_for_save,
+                )
+                st.success(f"✓ Saved candidate: {row.get('id')}")
+                st.rerun()
+
+        with col_refresh:
+            st.markdown(_btn_spacer, unsafe_allow_html=True)
+            if st.button("↻ Refresh", width="stretch", key=f"cfg_refresh_{freq}"):
+                st.rerun()
+
+    # List candidates for current (symbol, frequency).
+    rows = _cfg_lib.list_candidates(symbol=symbol, frequency=freq, limit=200)
+    if not rows:
+        st.info("No saved candidates yet for this symbol/frequency.")
+    else:
+        df_cands = pd.DataFrame(rows)
+
+        # Friendly timestamp formatting.
+        if "created_at_utc" in df_cands.columns:
+            try:
+                df_cands["created_at_utc"] = pd.to_datetime(df_cands["created_at_utc"]).dt.strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                pass
+
+        df_cands.insert(0, "Select", False)
+
+        df_cands_edited = st.data_editor(
+            df_cands,
+            key=f"cfg_candidates_table_{freq}",
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "Select": st.column_config.CheckboxColumn("Select"),
+            },
+            disabled=[c for c in df_cands.columns if c != "Select"],
+        )
+
+        selected = df_cands_edited[df_cands_edited["Select"] == True]  # noqa: E712
+
+        col_load_cand, col_promote_cand = st.columns([1, 1])
+
+        def _selected_candidate_id() -> str | None:
+            if selected.empty:
+                return None
+            try:
+                return str(selected.iloc[0]["id"])
+            except Exception:
+                return None
+
+        with col_load_cand:
+            if st.button("↓ Load Selected Candidate", width="stretch", key=f"cfg_load_cand_{freq}"):
+                cid = _selected_candidate_id()
+                if not cid:
+                    st.error("Select a candidate row first.")
+                else:
+                    payload = _cfg_lib.load_candidate(cid) or {}
+                    strat = payload.get("strategy") if isinstance(payload.get("strategy"), dict) else {}
+
+                    # Update the parameter grid and persist it for the editor.
+                    for k, v in strat.items():
+                        if k in set(params_df["Parameter"]):
+                            params_df.loc[params_df["Parameter"] == k, "Value"] = float(v)
+                    save_params_grid(params_df)
+
+                    # Force the grid editor to refresh.
+                    if "strategy_params" in st.session_state:
+                        del st.session_state["strategy_params"]
+
+                    st.success(f"✓ Loaded candidate into editor: {cid}")
+                    st.rerun()
+
+        with col_promote_cand:
+            if st.button(
+                "↑ Promote Selected to Production",
+                type="primary",
+                width="stretch",
+                key=f"cfg_promote_cand_{freq}",
+            ):
+                cid = _selected_candidate_id()
+                if not cid:
+                    st.error("Select a candidate row first.")
+                else:
+                    _cfg_lib.promote_candidate(cid)
+                    st.success(f"✓ Promoted candidate to production: {cid}")
+                    st.rerun()
+
+    st.divider()
+
     # ==========================================================================
     # SECTION 3: BACKTEST & OPTIMIZATION TABS
     # ==========================================================================
