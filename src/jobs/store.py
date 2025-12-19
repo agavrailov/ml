@@ -25,6 +25,12 @@ def run_dir(job_id: str) -> Path:
     return runs_root() / str(job_id)
 
 
+# Backward compatibility alias
+def get_job_dir(job_id: str) -> Path:
+    """Alias for run_dir for backward compatibility with tests."""
+    return run_dir(job_id)
+
+
 def request_path(job_id: str) -> Path:
     return run_dir(job_id) / "request.json"
 

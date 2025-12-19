@@ -7,12 +7,17 @@ from src import config as cfg
 from src.ui import app
 
 
-def test_load_strategy_defaults_matches_config_module() -> None:
+def test_load_strategy_defaults_matches_config_module(tmp_path: Path, monkeypatch) -> None:
     """_load_strategy_defaults should reflect current values from src.config.
 
-    This validates that the helper reloads the module and returns both the
-    shared and long/short-specific strategy parameters we care about.
+    This validates that the helper loads from config_resolver, which merges
+    code defaults (src.config) with user overrides (configs/active.json).
+    When active.json doesn't exist, it should return code defaults.
     """
+    # Point active.json to a non-existent temp location so we get code defaults
+    from src.core import config_resolver
+    fake_active_path = tmp_path / "active.json"
+    monkeypatch.setattr(config_resolver, "_get_active_config_path", lambda: fake_active_path)
 
     defaults = app._load_strategy_defaults()
 
@@ -28,23 +33,15 @@ def test_load_strategy_defaults_matches_config_module() -> None:
     }
     assert set(defaults.keys()) == expected_keys
 
-    # Shared aliases
-    assert defaults["k_sigma_err"] == float(cfg.K_SIGMA_ERR)
-    assert defaults["k_atr_min_tp"] == float(cfg.K_ATR_MIN_TP)
-    assert defaults["risk_per_trade_pct"] == float(cfg.RISK_PER_TRADE_PCT)
-    assert defaults["reward_risk_ratio"] == float(cfg.REWARD_RISK_RATIO)
-
-    # Long/short-specific defaults (fall back to shared when dedicated names are
-    # not present in config).
-    exp_k_sigma_long = float(getattr(cfg, "K_SIGMA_LONG", cfg.K_SIGMA_ERR))
-    exp_k_sigma_short = float(getattr(cfg, "K_SIGMA_SHORT", cfg.K_SIGMA_ERR))
-    exp_k_atr_long = float(getattr(cfg, "K_ATR_LONG", cfg.K_ATR_MIN_TP))
-    exp_k_atr_short = float(getattr(cfg, "K_ATR_SHORT", cfg.K_ATR_MIN_TP))
-
-    assert defaults["k_sigma_long"] == exp_k_sigma_long
-    assert defaults["k_sigma_short"] == exp_k_sigma_short
-    assert defaults["k_atr_long"] == exp_k_atr_long
-    assert defaults["k_atr_short"] == exp_k_atr_short
+    # Should match code defaults from STRATEGY_DEFAULTS
+    assert defaults["k_sigma_err"] == float(cfg.STRATEGY_DEFAULTS.k_sigma_err)
+    assert defaults["k_atr_min_tp"] == float(cfg.STRATEGY_DEFAULTS.k_atr_min_tp)
+    assert defaults["risk_per_trade_pct"] == float(cfg.STRATEGY_DEFAULTS.risk_per_trade_pct)
+    assert defaults["reward_risk_ratio"] == float(cfg.STRATEGY_DEFAULTS.reward_risk_ratio)
+    assert defaults["k_sigma_long"] == float(cfg.STRATEGY_DEFAULTS.k_sigma_long)
+    assert defaults["k_sigma_short"] == float(cfg.STRATEGY_DEFAULTS.k_sigma_short)
+    assert defaults["k_atr_long"] == float(cfg.STRATEGY_DEFAULTS.k_atr_long)
+    assert defaults["k_atr_short"] == float(cfg.STRATEGY_DEFAULTS.k_atr_short)
 
 
 def test_build_default_params_df_structure() -> None:
@@ -95,6 +92,10 @@ def test_build_default_params_df_structure() -> None:
 
 def test_load_params_grid_falls_back_to_defaults(tmp_path: Path, monkeypatch) -> None:
     """When the JSON sidecar is missing, _load_params_grid returns defaults."""
+    # Mock active.json to not exist so we get code defaults
+    from src.core import config_resolver
+    fake_active_path = tmp_path / "active.json"
+    monkeypatch.setattr(config_resolver, "_get_active_config_path", lambda: fake_active_path)
 
     # Point PARAMS_STATE_PATH at a temp location that does not exist.
     monkeypatch.setattr(app, "PARAMS_STATE_PATH", tmp_path / "ui_strategy_params.json")
@@ -116,6 +117,10 @@ def test_load_params_grid_falls_back_to_defaults(tmp_path: Path, monkeypatch) ->
 
 def test_load_params_grid_merges_missing_columns(tmp_path: Path, monkeypatch) -> None:
     """Old state files with missing columns are merged with defaults safely."""
+    # Mock active.json to not exist so we get code defaults
+    from src.core import config_resolver
+    fake_active_path = tmp_path / "active.json"
+    monkeypatch.setattr(config_resolver, "_get_active_config_path", lambda: fake_active_path)
 
     state_path = tmp_path / "ui_strategy_params.json"
     monkeypatch.setattr(app, "PARAMS_STATE_PATH", state_path)
@@ -154,6 +159,10 @@ def test_load_params_grid_merges_missing_columns(tmp_path: Path, monkeypatch) ->
 
 def test_save_and_reload_params_grid_round_trip(tmp_path: Path, monkeypatch) -> None:
     """_save_params_grid writes JSON that _load_params_grid can read back."""
+    # Mock active.json to not exist so we get code defaults
+    from src.core import config_resolver
+    fake_active_path = tmp_path / "active.json"
+    monkeypatch.setattr(config_resolver, "_get_active_config_path", lambda: fake_active_path)
 
     state_path = tmp_path / "ui_strategy_params.json"
     monkeypatch.setattr(app, "PARAMS_STATE_PATH", state_path)
@@ -179,21 +188,16 @@ def test_save_and_reload_params_grid_round_trip(tmp_path: Path, monkeypatch) -> 
 
 
 def test_save_strategy_defaults_to_config_overwrites_literals(tmp_path: Path, monkeypatch) -> None:
-    """_save_strategy_defaults_to_config replaces only numeric literals in CONFIG_PATH."""
-
-    config_text = """
-class StrategyDefaultsConfig:
-    risk_per_trade_pct: float = 0.01
-    reward_risk_ratio: float = 2.0
-    k_sigma_long: float = 1.5
-    k_sigma_short: float = 1.6
-    k_atr_long: float = 3.0
-    k_atr_short: float = 3.5
-"""
-    cfg_path = tmp_path / "config.py"
-    cfg_path.write_text(config_text, encoding="utf-8")
-
-    monkeypatch.setattr(app, "CONFIG_PATH", cfg_path)
+    """_save_strategy_defaults_to_config writes to configs/active.json (not config.py).
+    
+    The new architecture saves user overrides to configs/active.json instead of
+    mutating src/config.py, which remains read-only.
+    """
+    from src.core import config_resolver
+    
+    # Point active.json to temp location
+    active_path = tmp_path / "active.json"
+    monkeypatch.setattr(config_resolver, "_get_active_config_path", lambda: active_path)
 
     app._save_strategy_defaults_to_config(
         risk_per_trade_pct=0.02,
@@ -204,14 +208,17 @@ class StrategyDefaultsConfig:
         k_atr_short=4.5,
     )
 
-    updated = cfg_path.read_text(encoding="utf-8")
-
-    assert "risk_per_trade_pct: float = 0.02" in updated
-    assert "reward_risk_ratio: float = 3.5" in updated
-    assert "k_sigma_long: float = 2.5" in updated
-    assert "k_sigma_short: float = 2.6" in updated
-    assert "k_atr_long: float = 4.0" in updated
-    assert "k_atr_short: float = 4.5" in updated
+    # Should have written to active.json
+    assert active_path.exists()
+    import json
+    data = json.loads(active_path.read_text(encoding="utf-8"))
+    
+    assert data["strategy"]["risk_per_trade_pct"] == 0.02
+    assert data["strategy"]["reward_risk_ratio"] == 3.5
+    assert data["strategy"]["k_sigma_long"] == 2.5
+    assert data["strategy"]["k_sigma_short"] == 2.6
+    assert data["strategy"]["k_atr_long"] == 4.0
+    assert data["strategy"]["k_atr_short"] == 4.5
 
 
 def test_run_backtest_uses_csv_predictions(monkeypatch, tmp_path: Path) -> None:
@@ -240,9 +247,12 @@ def test_run_backtest_uses_csv_predictions(monkeypatch, tmp_path: Path) -> None:
         calls["kwargs"] = kwargs
         return "sentinel-result"
 
-    monkeypatch.setattr(app, "run_backtest_for_ui", fake_run_backtest_for_ui)
+    # Import and monkeypatch the function from backtest module (not app module)
+    from src import backtest
+    monkeypatch.setattr(backtest, "run_backtest_for_ui", fake_run_backtest_for_ui)
+    # Monkeypatch get_predictions_csv_path in app module (where it's imported)
     monkeypatch.setattr(
-        cfg,
+        app,
         "get_predictions_csv_path",
         fake_get_predictions_csv_path,
     )
@@ -269,7 +279,8 @@ def test_run_backtest_uses_csv_predictions(monkeypatch, tmp_path: Path) -> None:
     kwargs = calls["kwargs"]
     assert kwargs["frequency"] == "15min"
     assert kwargs["prediction_mode"] == "csv"
-    assert kwargs["predictions_csv"] == fake_csv_path
+    # predictions_csv may be str or Path; normalize for comparison
+    assert Path(kwargs["predictions_csv"]) == Path(fake_csv_path)
     assert kwargs["start_date"] == "2020-01-01"
     assert kwargs["end_date"] == "2020-12-31"
     assert kwargs["risk_per_trade_pct"] == 0.01

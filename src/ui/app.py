@@ -153,20 +153,41 @@ def _build_default_params_df(defaults: dict) -> pd.DataFrame:
 
 
 def _load_params_grid(defaults: dict) -> pd.DataFrame:
-    """Load the parameter grid from disk, falling back to defaults."""
-    if PARAMS_STATE_PATH.exists():
-        try:
-            raw = PARAMS_STATE_PATH.read_text(encoding="utf-8")
-            records = json.loads(raw)
-            if isinstance(records, list) and records:
-                df = pd.DataFrame(records)
-                required_cols = {"Parameter", "Value", "Start", "Step", "Stop", "Optimize"}
-                missing = required_cols - set(df.columns)
-                if not missing:
-                    return df
-        except Exception:
-            pass
-    return _build_default_params_df(defaults)
+    """Load the parameter grid from disk, merging saved values with defaults.
+    
+    This ensures that:
+    - If a saved file exists, Value column comes from saved data
+    - Missing columns are filled from defaults
+    - Missing parameters are added from defaults
+    """
+    default_df = _build_default_params_df(defaults)
+    
+    if not PARAMS_STATE_PATH.exists():
+        return default_df
+    
+    try:
+        raw = PARAMS_STATE_PATH.read_text(encoding="utf-8")
+        records = json.loads(raw)
+        if not isinstance(records, list) or not records:
+            return default_df
+            
+        saved_df = pd.DataFrame(records)
+        
+        # Merge: start with defaults, then update with saved values
+        result_df = default_df.copy()
+        
+        for _, saved_row in saved_df.iterrows():
+            param_name = saved_row.get("Parameter")
+            if param_name and param_name in result_df["Parameter"].values:
+                # Update the matching row with saved values (preserving defaults for missing cols)
+                idx = result_df[result_df["Parameter"] == param_name].index[0]
+                for col in saved_row.index:
+                    if col in result_df.columns and pd.notna(saved_row[col]):
+                        result_df.loc[idx, col] = saved_row[col]
+        
+        return result_df
+    except Exception:
+        return default_df
 
 
 def _save_params_grid(df: pd.DataFrame | object) -> None:
