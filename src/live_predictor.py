@@ -103,12 +103,17 @@ class LivePredictor:
             # Convert to buffer format
             loaded = 0
             for _, row in tail.iterrows():
+                # Normalize to timezone-naive UTC for consistency with live bars
+                time_val = pd.to_datetime(row["Time"])
+                if time_val.tzinfo is not None:
+                    time_val = time_val.tz_convert('UTC').tz_localize(None)
+                
                 bar_dict = {
                     "Open": float(row["Open"]),
                     "High": float(row["High"]),
                     "Low": float(row["Low"]),
                     "Close": float(row["Close"]),
-                    "Time": pd.to_datetime(row["Time"]),
+                    "Time": time_val,
                 }
                 self._buffer.append(bar_dict)
                 loaded += 1
@@ -137,11 +142,15 @@ class LivePredictor:
         this returns the latest bar's Close as a neutral placeholder.
         """
 
-        # Normalize incoming bar.
+        # Normalize incoming bar to timezone-naive UTC.
         t = bar.get("Time")
         if t is None:
             t = pd.Timestamp.utcnow()
         t = pd.to_datetime(t)
+        
+        # Convert timezone-aware to timezone-naive UTC for DataFrame compatibility
+        if hasattr(t, 'tzinfo') and t.tzinfo is not None:
+            t = t.tz_convert('UTC').tz_localize(None)
 
         row = {
             "Open": float(bar.get("Open")),
