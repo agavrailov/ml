@@ -133,13 +133,21 @@ class IBKRBrokerTws(Broker):
         qty = float(order.quantity)
 
         if order.order_type is OrderType.MARKET:
-            return MarketOrder(action, qty)  # type: ignore[call-arg]
+            ib_order = MarketOrder(action, qty)  # type: ignore[call-arg]
         elif order.order_type is OrderType.LIMIT:
             if order.limit_price is None:
                 raise ValueError("Limit order requires limit_price")
-            return LimitOrder(action, qty, float(order.limit_price))  # type: ignore[call-arg]
+            ib_order = LimitOrder(action, qty, float(order.limit_price))  # type: ignore[call-arg]
         else:  # pragma: no cover - unreachable with current enum
             raise ValueError(f"Unsupported OrderType: {order.order_type!r}")
+
+        # IBKR error 435 ("You must specify an account") happens in multi-account
+        # setups when the Order.account field is missing. If the user configured an
+        # explicit account (e.g. via IBKR_ACCOUNT env var), always set it.
+        if self._config.account:
+            setattr(ib_order, "account", self._config.account)
+
+        return ib_order
 
     # -------------
     # Broker interface

@@ -122,6 +122,25 @@ def test_place_order_maps_to_ib_order_and_returns_order_id():
     assert open_orders[0].order_id == "1"
 
 
+def test_place_order_sets_account_when_configured():
+    fake_ib = _FakeIB()
+    cfg = IBKRBrokerConfig(host="127.0.0.1", port=7497, client_id=1, account="U16442949")
+    broker = IBKRBrokerTws(config=cfg, ib=fake_ib)
+
+    req = OrderRequest(
+        symbol="NVDA",
+        side=Side.BUY,
+        quantity=1.0,
+        order_type=OrderType.MARKET,
+    )
+
+    broker.place_order(req)
+
+    assert len(fake_ib.placed) == 1
+    _contract, order = fake_ib.placed[0]
+    assert getattr(order, "account", None) == "U16442949"
+
+
 def test_get_positions_maps_ib_positions_to_position_info():
     fake_ib = _FakeIB()
     cfg = IBKRBrokerConfig(host="127.0.0.1", port=7497, client_id=1)
