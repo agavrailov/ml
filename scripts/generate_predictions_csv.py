@@ -2,10 +2,18 @@
 
 This script loads `data/processed/nvda_<frequency>.csv`, runs the existing
 LSTM prediction pipeline in a sliding-window fashion, and writes a
-predictions CSV with columns:
+predictions CSV.
 
+Important performance note
+- We reuse the model prediction checkpoint written by
+  `src.backtest._make_model_prediction_provider`.
+- We avoid per-row `df.iloc[i]` loops for large 1min datasets.
+
+The output CSV contains columns:
 - Time
 - predicted_price
+- model_error_sigma
+- already_corrected
 
 Usage (from repo root):
 
@@ -13,7 +21,7 @@ Usage (from repo root):
         --output backtests/nvda_60min_predictions.csv
 
 This CSV can then be consumed by `src.backtest.py` with
-`--prediction-mode=csv --predictions-csv <path>` or by `src.paper_trade.py`.
+`--prediction-mode=csv --predictions-csv <path>`.
 """
 from __future__ import annotations
 
@@ -23,7 +31,6 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
 
 from src import config as config_mod
 from src.backtest import _make_model_prediction_provider
@@ -36,9 +43,9 @@ def generate_predictions_for_csv(
 ) -> None:
     """Generate per-bar predictions for the given frequency and write to CSV.
 
-    This implementation reuses the same model prediction pipeline as
-    :func:`src.backtest._make_model_prediction_provider` so that CSV-based
-    backtests see the *exact* same predictions and sigma series as model-mode.
+    We reuse the same model prediction pipeline as
+    :func:`src.backtest._make_model_prediction_provider` and then reuse its
+    on-disk checkpoint to avoid slow per-row pandas access on large datasets.
     """
 
     source_path = config_mod.get_hourly_data_csv_path(frequency)
@@ -64,32 +71,47 @@ def generate_predictions_for_csv(
     # Ensure Time is typed as datetime for alignment.
     df["Time"] = pd.to_datetime(df["Time"])
 
-    # Reuse the shared model prediction provider, which will either load an
-    # existing aligned checkpoint or run the full batched prediction pipeline
-    # and write a new checkpoint. This guarantees consistency with
-    # model-mode backtests.
-    provider, sigma_series = _make_model_prediction_provider(df.copy(), frequency=frequency)
+    # Ensure the model checkpoint exists and is aligned to this exact dataset.
+    # `_make_model_prediction_provider` will either load and reuse an aligned
+    # checkpoint, or compute predictions and write a new checkpoint.
+    _make_model_prediction_provider(df.copy(), frequency=frequency)
 
-    # Materialize per-bar predictions by calling the provider over the DataFrame.
-    preds = np.empty(len(df), dtype=float)
-    for i in range(len(df)):
-        preds[i] = float(provider(i, df.iloc[i]))
+    checkpoint_path = os.path.join(
+        "backtests",
+        f"nvda_{frequency}_model_predictions_checkpoint.csv",
+    )
+    if not os.path.exists(checkpoint_path):
+        raise FileNotFoundError(
+            f"Expected model prediction checkpoint at {checkpoint_path} but it was not created."
+        )
 
-    # Build output frame. We include model_error_sigma and a boolean flag to
-    # indicate that these predictions have already passed through the
-    # bias-correction layer, so CSV-mode backtests can avoid double-correction.
+    # Load checkpoint and align to our requested OHLC slice by Time.
+    ckpt = pd.read_csv(checkpoint_path, low_memory=False)
+    if "Time" not in ckpt.columns or "predicted_price" not in ckpt.columns:
+        raise ValueError(
+            f"Checkpoint {checkpoint_path} missing required columns. Found columns: {list(ckpt.columns)}"
+        )
+
+    ckpt["Time"] = pd.to_datetime(ckpt["Time"], errors="coerce")
+    merged = pd.merge(
+        df[["Time"]].copy(),
+        ckpt[[c for c in ("Time", "predicted_price", "model_error_sigma") if c in ckpt.columns]].copy(),
+        on="Time",
+        how="left",
+    )
+
+    # Backwards compatible: older checkpoints may not have sigma.
+    if "model_error_sigma" not in merged.columns:
+        merged["model_error_sigma"] = 0.0
+
     out_df = pd.DataFrame(
         {
-            "Time": df["Time"].astype("datetime64[ns]"),
-            "predicted_price": preds,
-            "model_error_sigma": np.asarray(sigma_series, dtype=float),
+            "Time": merged["Time"].astype("datetime64[ns]"),
+            "predicted_price": merged["predicted_price"].astype(float),
+            "model_error_sigma": merged["model_error_sigma"].astype(float),
             "already_corrected": True,
         }
     )
-
-    # tqdm for user feedback, iterating only to show progress, not to compute.
-    for _ in tqdm(range(len(out_df)), desc="predict", unit="bar"):
-        pass
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     out_df.to_csv(output_path, index=False)

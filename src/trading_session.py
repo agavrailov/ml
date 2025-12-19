@@ -67,12 +67,19 @@ def make_strategy_config_from_defaults() -> StrategyConfig:
     )
 
 
-def make_broker(backend: Optional[str] = None) -> Broker:
+def make_broker(backend: Optional[str] = None, *, ib: object | None = None) -> Broker:
     """Construct a Broker instance based on backend string.
 
     Supported backends:
     - "SIM"      -> SimulatedBroker (in-memory).
     - "IBKR_TWS" -> IBKRBrokerTws (requires ib_insync and src.ibkr_broker).
+
+    Parameters
+    ----------
+    ib : object, optional
+        Optional injected ``ib_insync.IB`` instance. When provided and
+        ``backend==IBKR_TWS``, the broker will reuse the same socket connection as
+        the live engine (single-IB design).
     """
 
     backend_eff = (backend or BROKER_BACKEND).upper()
@@ -83,7 +90,7 @@ def make_broker(backend: Optional[str] = None) -> Broker:
         from src.ibkr_broker import IBKRBrokerConfig, IBKRBrokerTws
 
         cfg = IBKRBrokerConfig.from_global_config()
-        return IBKRBrokerTws(config=cfg)
+        return IBKRBrokerTws(config=cfg, ib=ib)  # type: ignore[arg-type]
     else:
         raise ValueError(f"Unsupported broker backend: {backend_eff!r}")
 

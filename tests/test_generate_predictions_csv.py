@@ -57,18 +57,44 @@ def test_generate_predictions_for_csv_uses_batched_context(tmp_path: Path, monke
 
     # Stub out the shared model prediction provider so that we avoid heavy ML
     # and focus purely on the CSV generation and alignment logic.
+    #
+    # The generator now reuses the checkpoint written by `_make_model_prediction_provider`,
+    # so our fake provider must also write a compatible checkpoint CSV.
     def _fake_model_provider(data_arg: pd.DataFrame, frequency: str):  # noqa: ARG001
         series = np.linspace(0.0, 1.0, len(data_arg))
+        sigma_series = np.full(len(data_arg), 0.5, dtype=np.float32)
+
+        from pathlib import Path
+
+        checkpoint_path = Path("backtests") / f"nvda_{frequency}_model_predictions_checkpoint.csv"
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(
+            {
+                "Time": pd.to_datetime(data_arg["Time"]).reset_index(drop=True),
+                "predicted_price": series,
+                "model_error_sigma": sigma_series,
+            }
+        ).to_csv(checkpoint_path, index=False)
 
         def provider(i: int, row: pd.Series) -> float:  # type: ignore[name-defined]
             return float(series[i])
 
-        sigma_series = np.full(len(data_arg), 0.5, dtype=np.float32)
         return provider, sigma_series
 
-    with patch("scripts.generate_predictions_csv._make_model_prediction_provider", side_effect=_fake_model_provider):
-        output_path = tmp_path / "preds.csv"
-        generate_predictions_for_csv(frequency=freq, output_path=str(output_path), max_rows=None)
+    output_path = tmp_path / "preds.csv"
+    checkpoint_path = None
+    try:
+        with patch("scripts.generate_predictions_csv._make_model_prediction_provider", side_effect=_fake_model_provider):
+            generate_predictions_for_csv(frequency=freq, output_path=str(output_path), max_rows=None)
+
+        assert output_path.exists()
+    finally:
+        # Cleanup any checkpoint we wrote in the repo-local backtests/ dir.
+        from pathlib import Path
+
+        checkpoint_path = Path("backtests") / f"nvda_{freq}_model_predictions_checkpoint.csv"
+        if checkpoint_path.exists():
+            checkpoint_path.unlink()
 
     assert output_path.exists()
     out_df = pd.read_csv(output_path)

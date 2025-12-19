@@ -384,10 +384,11 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
     if cfg.log_to_disk:
         log_path = make_log_path(symbol=cfg.symbol, frequency=cfg.frequency, run_id=run_id, live_dir=live_dir)
 
-    # IMPORTANT: this function establishes two independent connections by default:
-    # - `ib` here (market data / event loop)
-    # - the Broker instance (when backend=IBKR_TWS, it creates its own ib_insync.IB)
-    # Ensure we always disconnect both so clientIds are released even on Ctrl+C.
+    # IMPORTANT: single-IB design (robustness):
+    # We reuse the *same* ib_insync.IB instance for both:
+    # - market data / event loop
+    # - order execution via the Broker abstraction
+    # This reduces reconnection complexity and avoids clientId coordination.
     broker: object | None = None
 
     def _log(event: dict) -> None:  # noqa: ANN001
@@ -421,6 +422,12 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
     )
 
     detach_ib_error_logger: Callable[[], None] | None = None
+
+    # Reconnect bookkeeping (wired later, after bars subscription exists).
+    shutdown_requested = False
+    reconnect_stop = threading.Event()
+    reconnect_thread: threading.Thread | None = None
+    detach_disconnected_handler: Callable[[], None] | None = None
 
     try:
         connected_client_id = _connect_with_unique_client_id(
@@ -456,7 +463,8 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
             LivePredictorConfig(frequency=cfg.frequency, tsteps=cfg.tsteps),
         )
 
-        broker = make_broker(cfg.backend)
+        # Reuse the same IB instance inside the broker (when backend=IBKR_TWS).
+        broker = make_broker(cfg.backend, ib=ib)
         if hasattr(broker, "connect"):
             try:
                 broker.connect()  # type: ignore[attr-defined]
@@ -599,8 +607,14 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
             "last_has_new_bar": None,
         }
 
+        # When false, we keep the event loop running but skip any trading actions.
+        trading_enabled = True
+
+        # Best-effort dedupe for completed bars.
+        last_completed_bar_time_iso: str | None = None
+
         def _on_bar_update(bar_list, has_new_bar: bool) -> None:  # noqa: ANN001
-            nonlocal equity, has_open_position, bar_count
+            nonlocal equity, has_open_position, bar_count, trading_enabled, last_completed_bar_time_iso
 
             # Track liveness even for in-progress bar updates.
             try:
@@ -637,6 +651,12 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                 except Exception:
                     pass
 
+                # Dedupe: resubscribe/reconnect can replay the last completed bar.
+                if bar_time_iso is not None and bar_time_iso == last_completed_bar_time_iso:
+                    return
+                if bar_time_iso is not None:
+                    last_completed_bar_time_iso = bar_time_iso
+
                 bar = {
                     "Time": bar_time_raw,
                     "Open": float(getattr(b, "open", 0.0)),
@@ -660,6 +680,10 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                 )
 
                 bar_count += 1
+
+                # During reconnect windows, keep logging bars but do not trade.
+                if not trading_enabled:
+                    return
                 every = max(1, int(getattr(cfg, "snapshot_every_n_bars", 1)))
                 if bar_count % every == 0:
                     _log_broker_snapshot(where="on_bar", bar_time=bar_time_iso)
@@ -771,6 +795,7 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
 
                 if cfg.stop_after_first_trade:
                     print("[live] stop_after_first_trade=True; stopping event loop.")
+                    shutdown_requested = True
                     ib.disconnect()
 
             except Exception as exc:  # noqa: BLE001
@@ -786,6 +811,147 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                 print(f"[live] ERROR in bar handler: {exc}")
 
         bars.updateEvent += _on_bar_update
+
+        # -----------------
+        # Disconnect handling
+        # -----------------
+        # IB Gateway/TWS restarts will drop the socket. We keep the Python process
+        # alive and attempt to reconnect + resubscribe.
+
+        def _reconnect_loop() -> None:
+            nonlocal bars, trading_enabled, has_open_position, last_completed_bar_time_iso
+
+            backoff = 1.0
+            while not reconnect_stop.is_set():
+                try:
+                    # Wait a bit before hammering connect() while Gateway boots.
+                    sleeper = getattr(ib, "sleep", None)
+                    if callable(sleeper):
+                        sleeper(backoff)
+                    else:
+                        time.sleep(backoff)
+
+                    connected_client_id = _connect_with_unique_client_id(
+                        ib,
+                        host=IbConfig.host,
+                        port=IbConfig.port,
+                        preferred_client_id=preferred_client_id,
+                    )
+
+                    _log(
+                        {
+                            "type": "broker_reconnected",
+                            "run_id": run_id,
+                            "host": IbConfig.host,
+                            "port": int(IbConfig.port),
+                            "client_id": int(connected_client_id),
+                        }
+                    )
+                    print(f"[live] Reconnected to TWS (clientId={connected_client_id}).")
+
+                    # Re-qualify contract and re-subscribe keepUpToDate stream.
+                    contract2 = Stock(cfg.symbol, "SMART", "USD")  # type: ignore[call-arg]
+                    ib.qualifyContracts(contract2)
+
+                    # Detach handler from old bars object (best-effort) to avoid leaks.
+                    try:
+                        bars.updateEvent -= _on_bar_update
+                    except Exception:
+                        pass
+
+                    bars = ib.reqHistoricalData(
+                        contract2,
+                        endDateTime="",
+                        durationStr="7 D",
+                        barSizeSetting=bar_size_setting,
+                        whatToShow="TRADES",
+                        useRTH=False,
+                        formatDate=1,
+                        keepUpToDate=True,
+                    )
+                    bars.updateEvent += _on_bar_update
+                    last_completed_bar_time_iso = None
+
+                    # Reconcile basic position state (best-effort).
+                    try:
+                        positions = broker.get_positions() if hasattr(broker, "get_positions") else []
+                        has_open_position = bool(positions)
+                    except Exception:
+                        pass
+
+                    _log(
+                        {
+                            "type": "data_resubscribed",
+                            "run_id": run_id,
+                            "symbol": cfg.symbol,
+                            "frequency": cfg.frequency,
+                            "bar_size_setting": bar_size_setting,
+                        }
+                    )
+
+                    _log_broker_snapshot(where="after_reconnect")
+
+                    trading_enabled = True
+                    return
+
+                except Exception as exc:  # noqa: BLE001
+                    _log(
+                        {
+                            "type": "reconnect_failed",
+                            "run_id": run_id,
+                            "error": repr(exc),
+                            "traceback": traceback.format_exc(),
+                        }
+                    )
+                    print(f"[live] Reconnect failed; will retry: {exc}")
+                    backoff = min(30.0, max(1.0, backoff * 1.8))
+
+        def _start_reconnector() -> None:
+            nonlocal reconnect_thread
+            if reconnect_stop.is_set():
+                return
+            if reconnect_thread is not None and reconnect_thread.is_alive():
+                return
+            reconnect_thread = threading.Thread(
+                target=_reconnect_loop,
+                name="ibkr_reconnector",
+                daemon=True,
+            )
+            reconnect_thread.start()
+
+        def _on_disconnected() -> None:
+            nonlocal trading_enabled, shutdown_requested
+
+            if shutdown_requested or reconnect_stop.is_set():
+                return
+
+            # Pause trading immediately. We will resume after resubscribe.
+            trading_enabled = False
+            _log(
+                {
+                    "type": "ib_disconnected",
+                    "run_id": run_id,
+                    "host": IbConfig.host,
+                    "port": int(IbConfig.port),
+                }
+            )
+            print("[live] DISCONNECTED from TWS; pausing trading and starting reconnect loop...")
+            _start_reconnector()
+
+        disc_event = getattr(ib, "disconnectedEvent", None)
+        if disc_event is not None:
+            try:
+                disc_event += _on_disconnected
+
+                def _detach_disconnected() -> None:
+                    try:
+                        ib.disconnectedEvent -= _on_disconnected
+                    except Exception:
+                        pass
+
+                detach_disconnected_handler = _detach_disconnected
+            except Exception:
+                detach_disconnected_handler = None
 
         # Heartbeat: log status periodically and warn if no updates arrive.
         hb_stop = threading.Event()
@@ -847,6 +1013,23 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
         try:
             if "hb_thread" in locals() and hb_thread is not None:
                 hb_thread.join(timeout=1.0)
+        except Exception:
+            pass
+
+        # Prevent reconnect loop from fighting shutdown.
+        shutdown_requested = True
+        try:
+            reconnect_stop.set()
+        except Exception:
+            pass
+        try:
+            if detach_disconnected_handler is not None:
+                detach_disconnected_handler()
+        except Exception:
+            pass
+        try:
+            if reconnect_thread is not None:
+                reconnect_thread.join(timeout=2.0)
         except Exception:
             pass
 

@@ -233,7 +233,7 @@ def _make_model_prediction_provider(data: pd.DataFrame, frequency: str) -> tuple
     # off trading.
     if os.path.exists(checkpoint_path):
         try:
-            checkpoint_df = pd.read_csv(checkpoint_path)
+            checkpoint_df = pd.read_csv(checkpoint_path, low_memory=False)
             if "predicted_price" in checkpoint_df.columns and len(checkpoint_df) >= n:
                 series = checkpoint_df["predicted_price"].iloc[:n].to_numpy(dtype=float)
 
