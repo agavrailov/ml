@@ -24,6 +24,7 @@ Note: requires ib_insync installed and a running TWS/IB Gateway.
 from __future__ import annotations
 
 import argparse
+import os
 import threading
 import time
 import traceback
@@ -462,6 +463,16 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
         predictor = LivePredictor.from_config(
             LivePredictorConfig(frequency=cfg.frequency, tsteps=cfg.tsteps),
         )
+
+        # Pre-seed predictor buffer from historical CSV to enable immediate predictions.
+        # This avoids waiting for 24+ bars on startup (critical for large timeframes like 240min).
+        from src.config import get_hourly_data_csv_path
+        historical_csv = get_hourly_data_csv_path(cfg.frequency)
+        if os.path.exists(historical_csv):
+            loaded = predictor.warmup_from_csv(historical_csv, cfg.frequency)
+            print(f"[live] Predictor warmed up with {loaded} bars from {historical_csv}")
+        else:
+            print(f"[live] Historical CSV not found at {historical_csv}; starting cold.")
 
         # Reuse the same IB instance inside the broker (when backend=IBKR_TWS).
         broker = make_broker(cfg.backend, ib=ib)

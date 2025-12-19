@@ -21,6 +21,7 @@ Accordingly, prediction returns a price via:
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from collections import deque
 from typing import Deque, Mapping, Optional, Any
@@ -67,6 +68,57 @@ class LivePredictor:
         config = config or LivePredictorConfig()
         ctx = build_prediction_context(frequency=config.frequency, tsteps=config.tsteps)
         return cls(ctx=ctx, config=config)
+
+    def warmup_from_csv(self, csv_path: str, frequency: str) -> int:
+        """Pre-populate buffer with last N bars from historical CSV.
+
+        Args:
+            csv_path: Path to historical data CSV (e.g. data/processed/nvda_240min.csv)
+            frequency: Bar frequency for this CSV (e.g. "240min")
+
+        Returns:
+            Number of bars loaded into the buffer.
+
+        This allows the predictor to make predictions immediately on the first
+        live bar instead of waiting for max_window bars to accumulate.
+        """
+        if not os.path.exists(csv_path):
+            print(f"[warmup] CSV not found: {csv_path}")
+            return 0
+
+        try:
+            # Read the CSV - assume columns: DateTime, Open, High, Low, Close
+            df = pd.read_csv(csv_path)
+
+            # Convert DateTime to pandas datetime
+            if "DateTime" in df.columns:
+                df["DateTime"] = pd.to_datetime(df["DateTime"])
+                df = df.rename(columns={"DateTime": "Time"})
+            elif "Time" in df.columns:
+                df["Time"] = pd.to_datetime(df["Time"])
+
+            # Take the last max_window bars
+            tail = df.tail(self.config.max_window)
+
+            # Convert to buffer format
+            loaded = 0
+            for _, row in tail.iterrows():
+                bar_dict = {
+                    "Open": float(row["Open"]),
+                    "High": float(row["High"]),
+                    "Low": float(row["Low"]),
+                    "Close": float(row["Close"]),
+                    "Time": pd.to_datetime(row["Time"]),
+                }
+                self._buffer.append(bar_dict)
+                loaded += 1
+
+            print(f"[warmup] Loaded {loaded} bars from {csv_path}")
+            return loaded
+
+        except Exception as e:
+            print(f"[warmup] Failed to load from {csv_path}: {e}")
+            return 0
 
     def _buffer_to_frame(self) -> pd.DataFrame:
         if not self._buffer:
