@@ -23,9 +23,10 @@ from src.jobs.handlers import backtest_job, optimize_job, train_job, walkforward
 
 
 @pytest.fixture
-def job_id(tmp_path: Path) -> str:
+def job_id(tmp_path: Path, monkeypatch) -> str:
     """Create a unique job ID for testing."""
-    store._JOB_DIR = tmp_path / "jobs"  # Override job directory for tests
+    # Override runs_root to point to temp directory
+    monkeypatch.setattr(store, "runs_root", lambda: tmp_path / "runs")
     return "test_job_123"
 
 
