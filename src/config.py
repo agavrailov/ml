@@ -187,11 +187,20 @@ class IbConfig:
     - TWS_HOST
     - TWS_PORT
     - TWS_CLIENT_ID
+    - IBKR_ACCOUNT
+
+    Available production accounts:
+    - U16442949: Robots (default)
+    - U16452783: Kids
+    - U16485076: AI
+    - U16835894: M7
+    - U22210084: ChinaTech
     """
 
     host: str = field(default_factory=lambda: os.getenv("TWS_HOST", "127.0.0.1"))
     port: int = field(default_factory=lambda: int(os.getenv("TWS_PORT", "4002")))
     client_id: int = field(default_factory=lambda: int(os.getenv("TWS_CLIENT_ID", "1")))
+    account: str = field(default_factory=lambda: os.getenv("IBKR_ACCOUNT", "U16442949"))
     max_concurrent_requests: int = 50
     data_batch_save_size: int = 7
     contract_details: dict = field(

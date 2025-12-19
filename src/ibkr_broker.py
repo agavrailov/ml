@@ -47,7 +47,7 @@ class IBKRBrokerConfig:
     @classmethod
     def from_global_config(cls) -> "IBKRBrokerConfig":
         ib_cfg = IbConfig
-        return cls(host=ib_cfg.host, port=ib_cfg.port, client_id=ib_cfg.client_id)
+        return cls(host=ib_cfg.host, port=ib_cfg.port, client_id=ib_cfg.client_id, account=ib_cfg.account)
 
 
 class IBKRBrokerTws(Broker):
