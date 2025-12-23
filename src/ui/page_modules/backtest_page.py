@@ -198,7 +198,7 @@ def render_backtest_tab(
             elif risk_pct_val <= 0.0:
                 st.error("✕ risk_per_trade_pct must be > 0")
             else:
-                # Save to production config
+                # Save to production config with trading mode
                 save_strategy_defaults_to_config(
                     risk_per_trade_pct=risk_pct_val,
                     reward_risk_ratio=rr_val,
@@ -206,12 +206,14 @@ def render_backtest_tab(
                     k_sigma_short=k_sigma_short_val,
                     k_atr_long=k_atr_long_val,
                     k_atr_short=k_atr_short_val,
+                    enable_longs=enable_longs_flag,
+                    allow_shorts=allow_shorts_flag,
                     symbol="NVDA",
                     frequency=freq,
                     source="ui_manual_deploy",
                 )
                 save_params_grid(params_df)
-                st.success("✓ Deployed parameters to production config")
+                st.success(f"✓ Deployed parameters to production config ({trade_side})")
     
     st.divider()
 

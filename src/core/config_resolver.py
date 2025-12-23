@@ -54,7 +54,7 @@ def _save_active_config(config: dict[str, Any]) -> None:
     path.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def get_strategy_defaults() -> dict[str, float]:
+def get_strategy_defaults() -> dict[str, float | bool]:
     """Return effective strategy defaults by merging config.py + active.json.
 
     Priority:
@@ -64,7 +64,8 @@ def get_strategy_defaults() -> dict[str, float]:
     Returns a dict with keys:
         risk_per_trade_pct, reward_risk_ratio,
         k_sigma_long, k_sigma_short,
-        k_atr_long, k_atr_short
+        k_atr_long, k_atr_short,
+        enable_longs, allow_shorts
     """
     # Import inside function to avoid circular imports at module load time.
     from src.config import STRATEGY_DEFAULTS
@@ -91,6 +92,12 @@ def get_strategy_defaults() -> dict[str, float]:
         "k_atr_short": float(
             strategy_overrides.get("k_atr_short", STRATEGY_DEFAULTS.k_atr_short)
         ),
+        "enable_longs": bool(
+            strategy_overrides.get("enable_longs", STRATEGY_DEFAULTS.enable_longs)
+        ),
+        "allow_shorts": bool(
+            strategy_overrides.get("allow_shorts", STRATEGY_DEFAULTS.allow_shorts)
+        ),
     }
 
 
@@ -102,6 +109,8 @@ def save_strategy_defaults(
     k_sigma_short: float,
     k_atr_long: float,
     k_atr_short: float,
+    enable_longs: bool | None = None,
+    allow_shorts: bool | None = None,
     symbol: str | None = None,
     frequency: str | None = None,
     source: str | None = None,
@@ -122,6 +131,12 @@ def save_strategy_defaults(
     active["strategy"]["k_sigma_short"] = float(k_sigma_short)
     active["strategy"]["k_atr_long"] = float(k_atr_long)
     active["strategy"]["k_atr_short"] = float(k_atr_short)
+    
+    # Save trading mode if provided
+    if enable_longs is not None:
+        active["strategy"]["enable_longs"] = bool(enable_longs)
+    if allow_shorts is not None:
+        active["strategy"]["allow_shorts"] = bool(allow_shorts)
 
     # Best-effort metadata for safety/auditability.
     if symbol is not None or frequency is not None or source is not None:

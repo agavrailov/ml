@@ -337,6 +337,55 @@ def _no_update_warning_threshold_seconds(freq: str) -> float:
     return max(base, float(2 * mins * 60))
 
 
+def _is_market_hours(*, premarket: bool = True) -> bool:
+    """Check if current time is within US market trading hours (EST/EDT).
+
+    Args:
+        premarket: If True, includes pre-market hours (4:00 AM - 9:30 AM EST).
+                  Regular market: 9:30 AM - 4:00 PM EST.
+
+    Returns True during trading hours (Mon-Fri only), False otherwise.
+    """
+    try:
+        from datetime import datetime, timezone
+        import zoneinfo
+    except ImportError:
+        # Fallback if zoneinfo not available (Python < 3.9)
+        try:
+            from datetime import datetime, timezone
+            from backports.zoneinfo import ZoneInfo as zoneinfo  # type: ignore[import]
+        except ImportError:
+            # If we can't determine timezone, conservatively assume market hours
+            return True
+
+    try:
+        # Get current time in US Eastern timezone
+        eastern = zoneinfo.ZoneInfo("America/New_York")
+        now = datetime.now(timezone.utc).astimezone(eastern)
+
+        # Skip weekends
+        if now.weekday() >= 5:  # Saturday = 5, Sunday = 6
+            return False
+
+        # Get time as minutes since midnight
+        current_minutes = now.hour * 60 + now.minute
+
+        if premarket:
+            # Pre-market: 4:00 AM - 9:30 AM, Regular: 9:30 AM - 4:00 PM
+            premarket_start = 4 * 60  # 4:00 AM
+            market_close = 16 * 60  # 4:00 PM
+            return premarket_start <= current_minutes < market_close
+        else:
+            # Regular market hours only: 9:30 AM - 4:00 PM
+            market_open = 9 * 60 + 30  # 9:30 AM
+            market_close = 16 * 60  # 4:00 PM
+            return market_open <= current_minutes < market_close
+
+    except Exception:
+        # If timezone detection fails, conservatively assume market hours
+        return True
+
+
 def _connect_with_unique_client_id(
     ib,  # noqa: ANN001
     *,
@@ -1117,11 +1166,14 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
         hb_stop = threading.Event()
 
         def _heartbeat() -> None:
+            nonlocal trading_enabled
             while not hb_stop.wait(30.0):
                 try:
                     age = float(time.monotonic() - float(liveness.get("last_update_monotonic", 0.0)))
                 except Exception:
                     age = -1.0
+
+                is_market_open = _is_market_hours(premarket=True)
 
                 _log(
                     {
@@ -1133,6 +1185,7 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                         "seconds_since_last_update": age,
                         "last_has_new_bar": liveness.get("last_has_new_bar"),
                         "last_bar_time": liveness.get("last_bar_time"),
+                        "is_market_open": is_market_open,
                     }
                 )
 
@@ -1144,6 +1197,32 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                         f"(threshold={warn_after:.0f}s, frequency={cfg.frequency}). "
                         "Check TWS/Gateway logs for market data/permissions errors."
                     )
+
+                    # During market hours, stale data likely means subscription died.
+                    # Trigger reconnection to re-establish keepUpToDate stream.
+                    if is_market_open and not shutdown_requested:
+                        is_connected = getattr(ib, "isConnected", None)
+                        if callable(is_connected) and is_connected():
+                            _log(
+                                {
+                                    "type": "stale_data_reconnect_trigger",
+                                    "run_id": run_id,
+                                    "seconds_since_last_update": age,
+                                    "threshold": warn_after,
+                                    "is_market_open": is_market_open,
+                                }
+                            )
+                            print(
+                                f"[live] Stale data during market hours ({age:.0f}s); "
+                                "forcing disconnect to trigger re-subscription..."
+                            )
+                            # Pause trading before disconnect
+                            trading_enabled = False
+                            # Force disconnect to trigger reconnection logic
+                            try:
+                                ib.disconnect()
+                            except Exception:
+                                pass
 
         hb_thread = threading.Thread(target=_heartbeat, name="ibkr_live_heartbeat", daemon=True)
         hb_thread.start()

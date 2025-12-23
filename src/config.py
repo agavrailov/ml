@@ -261,6 +261,10 @@ class StrategyDefaultsConfig:
     # Position sizing constraints
     min_position_size: float = 1.0
 
+    # Trading mode gates
+    enable_longs: bool = True
+    allow_shorts: bool = False
+
     # Execution / cost model
     commission_per_unit_per_leg: float = 0.005
     min_commission_per_order: float = 1.0
