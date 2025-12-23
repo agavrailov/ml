@@ -2,6 +2,16 @@
 
 This file provides guidance to WARP (warp.dev) when working with code in this repository.
 
+## Project Overview
+
+This is an LSTM-based price prediction and automated trading system for NVDA stock. The system operates in phases:
+1. **Data ingestion**: Minute-level OHLC data from Interactive Brokers (IB/TWS)
+2. **Processing pipeline**: Cleaning, gap-filling, resampling to configurable frequencies (15min, 60min, 240min)
+3. **Model training**: Stateful LSTM models with hyperparameter tuning and model registry
+4. **Trading**: Backtesting, walk-forward validation, and live trading with TP/SL-based risk management
+
+The system is moving from long-only to bidirectional trading (long/short), with future support for multiple tickers planned (see `docs/ROADMAP.md`).
+
 ## Common commands
 
 ### Dependencies & environment
@@ -93,6 +103,21 @@ Several scripts manage ingestion of NVDA minute-level data from Interactive Brok
 
   This calls `python src/daily_data_agent.py` using the active virtual environment.
 
+### Job runner (async task execution)
+
+For long-running jobs (backtests, training, walk-forward, optimization), the UI uses an async job runner:
+
+```bash
+python -m src.jobs.run --job-id <uuid> --job-type <BACKTEST|TRAIN|OPTIMIZE|WALKFORWARD> --request <path-to-request.json>
+```
+
+Job state and artifacts are stored under `runs/<job_id>/` with:
+- `request.json`: Input parameters
+- `status.json`: Job state (QUEUED, RUNNING, SUCCEEDED, FAILED)
+- `result.json`: Output artifacts (trades CSV, equity CSV, metrics)
+
+The UI polls `status.json` for progress updates.
+
 ### Training, experiments, and evaluation
 
 Core training and experimentation scripts are under `src/` and operate on processed hourly data produced by the pipelines above.
@@ -145,6 +170,51 @@ Core training and experimentation scripts are under `src/` and operate on proces
 
   Note: `promote_model.py` currently depends on `get_latest_model_path()` from `src.config`, while `config.py` exposes `get_latest_best_model_path(...)`. Adjustments may be required before using this script in production flows.
 
+### Backtesting
+
+Run backtests using the unified backtest engine (shared by both offline and paper-trading paths):
+
+```bash
+python -m src.backtest --initial-equity 10000 --start-date 2024-01-01 --end-date 2024-12-31
+```
+
+Key parameters:
+- `--frequency 60min`: Trading timeframe
+- `--prediction-mode model|csv`: Use live model or pre-generated predictions
+- `--predictions-csv`: Path to predictions CSV (if using csv mode)
+- `--risk-per-trade-pct 0.01`: Risk percentage per trade
+- `--k-sigma-err 0.5`, `--k-atr-min-tp 1.5`: Strategy filter thresholds
+
+Outputs (saved under `backtests/`):
+- Equity plot PNG with parameters in filename
+- Trades CSV
+- Equity curve CSV
+- Backtest metrics (Sharpe, max drawdown, win rate, profit factor)
+
+Walk-forward backtesting:
+
+```bash
+python scripts/run_walkforward_backtest.py --frequency 60min --test-span-months 3 --train-lookback-months 24
+```
+
+### Live trading
+
+Live trading connects to IBKR/TWS via `ib_insync` and runs the same strategy logic as backtests:
+
+```bash
+python -m src.ibkr_live_session --symbol NVDA --frequency 60min --tsteps 5 --initial-equity 10000
+```
+
+Safety mechanisms:
+- Kill switch file: `ui_state/live/KILL_SWITCH` prevents order submission without stopping the daemon
+- Reconnect controller handles IB disconnections with backoff
+- JSONL event log for all trading decisions and orders
+
+Live session state:
+- `ui_state/live/configs/active.json`: Current strategy parameters
+- `ui_state/live/logs/<run_id>.jsonl`: Event log (bars, predictions, trades)
+- Events: `BAR_RECEIVED`, `PREDICTION_GENERATED`, `DECISION_MADE`, `ORDER_SUBMITTED`, `ORDER_FILLED`
+
 ### Prediction / inference utilities
 
 The main prediction entry point is the FastAPI `/predict` endpoint, which internally calls `src.predict.predict_future_prices`.
@@ -189,6 +259,38 @@ This repository implements an end-to-end LSTM-based price prediction system for 
 - A prediction API (FastAPI) and interactive UI (Streamlit) that expose the latest model.
 
 The core package is under `src/`, with tests under `tests/`, an API under `api/`, and a UI under `ui/`.
+
+### Key architecture patterns
+
+**Config-driven design**: Almost all paths, hyperparameters, and runtime settings flow through `src/config.py` via dataclasses (`PathsConfig`, `TrainingConfig`, `IbConfig`, `MarketConfig`). When adding new parameters, extend the relevant config dataclass rather than hardcoding values.
+
+**Stateful vs non-stateful models**: Training uses stateful LSTMs with fixed `batch_shape=(batch_size, tsteps, n_features)` for sequential learning. Inference requires non-stateful clones (dynamic batch size) created via `build_lstm_model(...)` with `stateful=False` and `load_stateful_weights_into_non_stateful_model(...)`.
+
+**Model registry and selection**: Models are saved to `models/registry/` with timestamped filenames. `best_hyperparameters.json` tracks the best model per `(frequency, TSTEPS)` by validation loss. `get_latest_best_model_path(frequency, tsteps)` selects the active model; `promote_model.py` writes `models/active_model.txt` for the API.
+
+**Shared backtest engine**: Both offline backtesting (`src/backtest.py`) and paper trading (`src/paper_trade.py`) delegate to `src.backtest_engine.run_backtest()`, ensuring identical entry/exit logic, commission handling, and ATR-based filters. Any strategy changes must be made in the shared engine.
+
+**ATR-based volatility**: Average True Range (ATR) is computed per-bar via `_compute_atr_series(data, window=14)` and used for SNR filters and position sizing. Both backtest and live trading use the same per-bar ATR series (not scalar approximations).
+
+**Bias correction**: After training, `train.py` computes a rolling mean residual on validation data and saves it to `bias_correction_<frequency>_tsteps<...>.json`. This is applied at prediction time to compensate for systematic over/under-prediction.
+
+### Data flow and critical dependencies
+
+**Raw → curated → processed pipeline**:
+1. `data/raw/nvda_minute.csv`: Raw minute bars from IB/TWS (via `src/ingestion/tws_historical.py`)
+2. `data/processed/nvda_minute_curated.csv`: Cleaned, gap-filled snapshot (via `src/ingestion/curated_minute.py`)
+3. `data/processed/nvda_<frequency>.csv`: Resampled OHLC (via `convert_minute_to_timeframe`)
+4. `data/processed/training_data_<frequency>.csv`: Feature-enriched data (via `prepare_keras_input_data`)
+
+**Scaler parameters**: Saved as `data/processed/scaler_params_<frequency>.json` during training, loaded at prediction time to ensure consistent normalization.
+
+**Predictions CSV**: For backtest modes using pre-computed predictions, generate via `scripts/generate_predictions_csv.py` and save to `backtests/<symbol>_<frequency>_predictions.csv`.
+
+**Job artifacts**: Async jobs write to `runs/<job_id>/` with structured JSON outputs (request, status, result).
+
+**UI state**: The Streamlit UI persists state under `ui_state/` for live trading configs, kill switch, and session logs.
+
+**Windows environment**: This repo is primarily developed on Windows. Batch scripts (`.bat`) assume a virtual environment at `.\venv`. When contributing cross-platform features, test both PowerShell and bash paths.
 
 ---
 
@@ -494,6 +596,24 @@ Note that model selection in the API is currently based on `get_active_model_pat
 
 The UI code is a useful reference for how to structure requests and interpret responses from the API.
 
+#### UI architecture (`src/ui/`)
+
+The Streamlit UI uses **horizontal tabs** (not multipage sidebar) for single-page app simplicity:
+
+- `src/ui/app.py`: Main entry point with `st.tabs()`
+- `src/ui/page_modules/`: Tab content modules (NOT named `pages/` to prevent Streamlit auto-discovery)
+  - `live_page.py`: Monitor live trading sessions
+  - `data_page.py`: Ingest and prepare OHLC data
+  - `experiments_page.py`: Hyperparameter search
+  - `train_page.py`: Full model training
+  - `backtest_page.py`: Test and optimize strategies
+  - `walkforward_page.py`: Robustness validation
+- `src/ui/state.py`: Centralized session state management via `get_ui_state()`
+- `src/ui/formatting.py`: Display helpers
+- `src/ui/registry.py`: Model registry operations
+
+State is persisted to JSON for history tables and parameter grids. All tabs share the same session state.
+
 ---
 
 ### Tests and their implications for usage
@@ -509,6 +629,68 @@ The `tests/` directory offers concrete examples of expected behavior and usage p
 - `tests/test_api.py` documents the API contract: required payload shape, error messages for insufficient length or malformed inputs, and handling of internal errors in `predict_future_prices`.
 
 When changing public APIs, data shapes, or training/evaluation semantics, consult and update the corresponding tests to keep the behavior aligned with these expectations.
+
+---
+
+## Development standards
+
+### Coding principles
+
+- **Simplicity first**: Prefer the simplest implementation that works. Avoid unnecessary abstractions, layers, or configuration unless clearly justified.
+- **Minimal diffs**: Default to minimal diffs instead of large rewrites when fixing bugs or adding features.
+- **Explicit over implicit**: Avoid designs that rely on subtle global state, cross-module side effects, or tight coupling that isn't obvious from function signatures.
+- **Technical debt tracking**: When introducing complexity (deeper nesting, more states, non-obvious invariants), document it in `docs/technical_debt.md` with suggested follow-up refactors.
+
+### Before making changes
+
+- **Think before acting**: Consider if a fix requires a larger, more general refactoring. Measure benefits vs cost (labor and complexity).
+- **Suggest improvements**: When possible, propose enhancements and wait for confirmation before executing.
+- **Test coverage**: For every non-trivial change, generate corresponding tests covering edge cases, negative paths, and regression scenarios.
+
+### Testing
+
+All tests live under `tests/` and can be run via:
+
+```bash
+pytest                          # All tests
+pytest tests/test_model.py      # Single test file
+pytest tests/test_model.py::test_build_lstm_model_architecture_single_layer_stateful  # Single test
+```
+
+Test files mirror `src/` structure and use fixtures from `tests/conftest.py` for path setup and mocking.
+
+### IBKR configuration
+
+Interactive Brokers connection settings in `src/config.py` via `IbConfig`:
+
+- **IB Gateway paper trading** (default): `host=127.0.0.1`, `port=4002`
+- **TWS paper trading**: `host=127.0.0.1`, `port=7497`
+- **TWS live trading**: `host=127.0.0.1`, `port=7496`
+
+Override via environment variables:
+```bash
+export TWS_HOST=127.0.0.1
+export TWS_PORT=4002
+export TWS_CLIENT_ID=1
+export IBKR_ACCOUNT=U16442949  # Production account ID
+```
+
+Available production accounts (from `src/config.py`):
+- `U16442949`: Robots (default)
+- `U16452783`: Kids
+- `U16485076`: AI
+- `U16835894`: M7
+- `U22210084`: ChinaTech
+
+Ensure IB Gateway/TWS is running before executing ingestion or live trading commands.
+
+### Common pitfalls
+
+- **Model selection inconsistency**: The API uses `get_active_model_path()` (reading `models/active_model.txt`), while `predict.py` uses `get_latest_best_model_path(...)` from `best_hyperparameters.json`. Keep these in sync via `promote_model.py`.
+- **Stateful vs non-stateful**: Training requires stateful models; inference requires non-stateful clones. Always use `load_stateful_weights_into_non_stateful_model(...)` when loading for prediction.
+- **Scaler mismatch**: Predictions fail silently if scaler parameters don't match the frequency. Ensure `scaler_params_<frequency>.json` exists and was generated from the same data used for training.
+- **Insufficient history**: The API requires `20 + TSTEPS` data points (20 for feature engineering, TSTEPS for model input). Always validate input length.
+- **ATR calculation**: Use per-bar ATR series (`_compute_atr_series(data, window=14)`) for strategy filters, not scalar approximations. The backtest engine and live trading both expect per-bar series.
 
 ---
 

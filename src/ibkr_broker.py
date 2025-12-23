@@ -16,11 +16,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
-from src.broker import Broker, OrderRequest, OrderStatus, OrderType, PositionInfo, Side
+from src.broker import (
+    Broker,
+    BracketOrderIds,
+    BracketOrderRequest,
+    OrderRequest,
+    OrderStatus,
+    OrderType,
+    PositionInfo,
+    Side,
+)
 from src.config import IB as IbConfig
 
 try:  # Optional dependency guard
-    from ib_insync import IB, Stock, MarketOrder, LimitOrder, Trade  # type: ignore[import]
+    from ib_insync import IB, Stock, MarketOrder, LimitOrder, Order, Trade  # type: ignore[import]
 
     _HAVE_IB_INSYNC = True
 except Exception:  # pragma: no cover - environment without ib_insync
@@ -28,6 +37,7 @@ except Exception:  # pragma: no cover - environment without ib_insync
     Stock = object  # type: ignore[assignment]
     MarketOrder = object  # type: ignore[assignment]
     LimitOrder = object  # type: ignore[assignment]
+    Order = object  # type: ignore[assignment]
     Trade = object  # type: ignore[assignment]
     _HAVE_IB_INSYNC = False
 
@@ -168,6 +178,79 @@ class IBKRBrokerTws(Broker):
             order_id = getattr(trade, "orderId", None)
 
         return str(order_id) if order_id is not None else "unknown"
+
+    def place_bracket_order(self, bracket: BracketOrderRequest) -> BracketOrderIds:
+        """Submit a bracket order (entry + TP + SL) using IBKR's parent-child linking.
+
+        The implementation follows the standard IBKR bracket pattern:
+        1. Entry order (parent) with transmit=False
+        2. TP order (child) with transmit=False, parentId=entry.orderId
+        3. SL order (child) with transmit=True, parentId=entry.orderId
+
+        Setting transmit=True only on the last order sends all three atomically.
+        IBKR enforces OCO behavior: when one child fills, the other is cancelled.
+        """
+        self._ensure_connected()
+
+        contract = self._make_stock_contract(bracket.symbol)
+
+        # Entry order (parent)
+        entry_action = "BUY" if bracket.side is Side.BUY else "SELL"
+        if bracket.entry_order_type is OrderType.MARKET:
+            entry_order = MarketOrder(entry_action, float(bracket.quantity))  # type: ignore[call-arg]
+        elif bracket.entry_order_type is OrderType.LIMIT:
+            if bracket.entry_limit_price is None:
+                raise ValueError("Limit entry order requires entry_limit_price")
+            entry_order = LimitOrder(  # type: ignore[call-arg]
+                entry_action, float(bracket.quantity), float(bracket.entry_limit_price)
+            )
+        else:
+            raise ValueError(f"Unsupported entry order type: {bracket.entry_order_type!r}")
+
+        # Apply account if configured (multi-account setups)
+        if self._config.account:
+            setattr(entry_order, "account", self._config.account)
+
+        # Do not transmit entry yet; we need to attach children
+        setattr(entry_order, "transmit", False)
+
+        # Submit entry to get orderId
+        entry_trade: Trade = self._ib.placeOrder(contract, entry_order)  # type: ignore[assignment]
+        entry_id = getattr(entry_trade.order, "orderId", None)
+        if entry_id is None:
+            raise RuntimeError("Failed to get orderId for entry order")
+
+        # TP order (child): opposite side, LIMIT at tp_price
+        tp_action = "SELL" if bracket.side is Side.BUY else "BUY"
+        tp_order = LimitOrder(tp_action, float(bracket.quantity), float(bracket.tp_price))  # type: ignore[call-arg]
+        if self._config.account:
+            setattr(tp_order, "account", self._config.account)
+        setattr(tp_order, "parentId", int(entry_id))
+        setattr(tp_order, "transmit", False)
+
+        tp_trade: Trade = self._ib.placeOrder(contract, tp_order)  # type: ignore[assignment]
+        tp_id = getattr(tp_trade.order, "orderId", None)
+        if tp_id is None:
+            raise RuntimeError("Failed to get orderId for TP order")
+
+        # SL order (child): opposite side, STOP at sl_price
+        # For IBKR, we use Order() directly with orderType="STP" and auxPrice
+        sl_order = Order()  # type: ignore[call-arg]
+        setattr(sl_order, "action", tp_action)  # same as TP
+        setattr(sl_order, "orderType", "STP")  # stop order
+        setattr(sl_order, "totalQuantity", float(bracket.quantity))
+        setattr(sl_order, "auxPrice", float(bracket.sl_price))  # stop trigger price
+        if self._config.account:
+            setattr(sl_order, "account", self._config.account)
+        setattr(sl_order, "parentId", int(entry_id))
+        setattr(sl_order, "transmit", True)  # transmit all three now
+
+        sl_trade: Trade = self._ib.placeOrder(contract, sl_order)  # type: ignore[assignment]
+        sl_id = getattr(sl_trade.order, "orderId", None)
+        if sl_id is None:
+            raise RuntimeError("Failed to get orderId for SL order")
+
+        return BracketOrderIds(entry_id=str(entry_id), tp_id=str(tp_id), sl_id=str(sl_id))
 
     def cancel_order(self, order_id: str) -> None:
         self._ensure_connected()

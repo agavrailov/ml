@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from src.config import IB as IbConfig
-from src.execution import ExecutionContext, submit_trade_plan
+from src.execution import ExecutionContext, submit_trade_plan_bracket
 from src.live_log import (
     append_event,
     create_run_id,
@@ -57,6 +57,120 @@ def _canonical_order_status(status: object) -> str:
     if not s:
         return "UNKNOWN"
     return s.upper()
+
+
+def check_positions_have_brackets(
+    positions: list[object],
+    open_orders: list[object],
+    *,
+    run_id: str,
+    symbol: str,
+    ib_trades: list[object] | None = None,
+) -> list[dict[str, object]]:
+    """Check if all positions have associated TP/SL bracket orders.
+
+    Returns a list of warning events for positions that lack bracket orders.
+
+    A position is considered to have brackets if there are exit orders for both
+    TP (LIMIT) and SL (STOP) on the opposite side of the position.
+
+    Args:
+        positions: List of PositionInfo objects from broker
+        open_orders: List of OrderStatus objects from broker
+        run_id: Current run ID for logging
+        symbol: Symbol to check (for logging)
+        ib_trades: Optional list of raw IB trades (for more detailed order type info)
+    """
+    warnings: list[dict[str, object]] = []
+
+    if not positions:
+        return warnings
+
+    # Build order type map from IB trades if available
+    order_types: dict[str, str] = {}
+    if ib_trades:
+        for trade in ib_trades:
+            order = getattr(trade, "order", None)
+            if order:
+                order_id = str(getattr(order, "orderId", ""))
+                order_type = str(getattr(order, "orderType", "")).upper()
+                if order_id and order_type:
+                    order_types[order_id] = order_type
+
+    # Count open orders per symbol and categorize by type
+    orders_by_symbol: dict[str, dict[str, list[object]]] = {}
+    for order in open_orders:
+        order_symbol = str(getattr(order, "symbol", ""))
+        if not order_symbol:
+            continue
+
+        order_id = str(getattr(order, "order_id", ""))
+        side = str(getattr(order, "side", "")).upper()
+
+        # Get order type from IB trades if available, otherwise use heuristic
+        if order_id in order_types:
+            otype = order_types[order_id]
+        else:
+            # Fallback: can't reliably determine without IB trades
+            otype = "UNKNOWN"
+
+        if order_symbol not in orders_by_symbol:
+            orders_by_symbol[order_symbol] = {"LIMIT": [], "STOP": [], "OTHER": []}
+
+        if "LMT" in otype or "LIMIT" in otype:
+            orders_by_symbol[order_symbol]["LIMIT"].append(order)
+        elif "STP" in otype or "STOP" in otype:
+            orders_by_symbol[order_symbol]["STOP"].append(order)
+        else:
+            orders_by_symbol[order_symbol]["OTHER"].append(order)
+
+    # Check each position
+    for pos in positions:
+        pos_symbol = str(getattr(pos, "symbol", ""))
+        pos_qty = float(getattr(pos, "quantity", 0.0))
+
+        if not pos_symbol or abs(pos_qty) < 0.01:
+            continue
+
+        # Get orders for this symbol
+        symbol_order_groups = orders_by_symbol.get(pos_symbol, {"LIMIT": [], "STOP": [], "OTHER": []})
+
+        # Look for exit orders (opposite side of position)
+        exit_limit_orders = []
+        exit_stop_orders = []
+
+        for order in symbol_order_groups["LIMIT"]:
+            side = str(getattr(order, "side", "")).upper()
+            is_exit = (pos_qty > 0 and side == "SELL") or (pos_qty < 0 and side == "BUY")
+            if is_exit:
+                exit_limit_orders.append(order)
+
+        for order in symbol_order_groups["STOP"]:
+            side = str(getattr(order, "side", "")).upper()
+            is_exit = (pos_qty > 0 and side == "SELL") or (pos_qty < 0 and side == "BUY")
+            if is_exit:
+                exit_stop_orders.append(order)
+
+        has_tp = len(exit_limit_orders) > 0
+        has_sl = len(exit_stop_orders) > 0
+
+        # If position lacks both TP and SL, warn
+        if not (has_tp and has_sl):
+            warnings.append(
+                {
+                    "type": "position_missing_brackets",
+                    "run_id": run_id,
+                    "symbol": pos_symbol,
+                    "quantity": pos_qty,
+                    "has_tp": has_tp,
+                    "has_sl": has_sl,
+                    "tp_orders_count": len(exit_limit_orders),
+                    "sl_orders_count": len(exit_stop_orders),
+                    "total_open_orders": sum(len(v) for v in symbol_order_groups.values()),
+                }
+            )
+
+    return warnings
 
 
 def derive_order_lifecycle_events(
@@ -552,6 +666,38 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                 # Never let observability crash the loop.
                 pass
 
+            # Check for positions without bracket orders
+            try:
+                # Try to get IB trades for more accurate order type detection
+                ib_trades = None
+                if hasattr(broker, "_ib"):
+                    ib_obj = getattr(broker, "_ib", None)
+                    if ib_obj and callable(getattr(ib_obj, "trades", None)):
+                        try:
+                            ib_trades = ib_obj.trades()
+                        except Exception:
+                            pass
+
+                bracket_warnings = check_positions_have_brackets(
+                    positions,
+                    open_orders,
+                    run_id=run_id,
+                    symbol=cfg.symbol,
+                    ib_trades=ib_trades,
+                )
+                for warning in bracket_warnings:
+                    _log(warning)
+                    # Also print to console for immediate visibility
+                    print(
+                        f"[live] WARNING: Position in {warning['symbol']} "
+                        f"(qty={warning['quantity']}) lacks complete brackets: "
+                        f"has_tp={warning['has_tp']}, has_sl={warning['has_sl']} "
+                        f"(tp_orders={warning['tp_orders_count']}, sl_orders={warning['sl_orders_count']})"
+                    )
+            except Exception:
+                # Never let observability crash the loop.
+                pass
+
         bar_size_setting = _frequency_to_bar_size_setting(cfg.frequency)
 
         # Keep up-to-date bar stream. We request a small lookback window so IB has
@@ -759,7 +905,7 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                 _log(decision_event)
 
                 try:
-                    order_id = submit_trade_plan(broker, plan, exec_ctx)
+                    bracket_ids = submit_trade_plan_bracket(broker, plan, exec_ctx)
                 except Exception as exc:  # noqa: BLE001
                     _log(
                         {
@@ -776,7 +922,7 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                             "traceback": traceback.format_exc(),
                         }
                     )
-                    print(f"[live] Order submission failed: {exc}")
+                    print(f"[live] Bracket order submission failed: {exc}")
                     return
 
                 has_open_position = True
@@ -788,7 +934,9 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                         "symbol": cfg.symbol,
                         "frequency": cfg.frequency,
                         "bar_time": bar_time_iso,
-                        "order_id": order_id,
+                        "entry_order_id": bracket_ids.entry_id if bracket_ids else None,
+                        "tp_order_id": bracket_ids.tp_id if bracket_ids else None,
+                        "sl_order_id": bracket_ids.sl_id if bracket_ids else None,
                         "direction": int(plan.direction),
                         "size": float(plan.size),
                         "tp_price": float(plan.tp_price),
@@ -801,7 +949,8 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
 
                 print(
                     f"[live] TRADE {cfg.symbol} dir={plan.direction:+d} size={plan.size:.2f} "
-                    f"tp={plan.tp_price:.2f} sl={plan.sl_price:.2f} order_id={order_id}"
+                    f"tp={plan.tp_price:.2f} sl={plan.sl_price:.2f} "
+                    f"entry_id={bracket_ids.entry_id if bracket_ids else 'N/A'}"
                 )
 
                 if cfg.stop_after_first_trade:
