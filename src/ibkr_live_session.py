@@ -386,6 +386,56 @@ def _is_market_hours(*, premarket: bool = True) -> bool:
         return True
 
 
+def _is_trading_day(date_to_check: datetime | None = None) -> bool:
+    """Check if a given date is a trading day using market calendar.
+
+    Uses pandas_market_calendars to check against official exchange holidays.
+    Falls back to simple weekday check if calendar not available.
+
+    Args:
+        date_to_check: Date to check. If None, uses current date in US Eastern time.
+
+    Returns:
+        True if the date is a valid trading day, False otherwise.
+    """
+    try:
+        from datetime import datetime, timezone
+        import zoneinfo
+    except ImportError:
+        try:
+            from datetime import datetime, timezone
+            from backports.zoneinfo import ZoneInfo as zoneinfo  # type: ignore[import]
+        except ImportError:
+            # Conservative fallback: assume it's a trading day
+            return True
+
+    try:
+        if date_to_check is None:
+            eastern = zoneinfo.ZoneInfo("America/New_York")
+            date_to_check = datetime.now(timezone.utc).astimezone(eastern)
+
+        # Quick weekend check
+        if date_to_check.weekday() >= 5:
+            return False
+
+        # Try to use market calendar for holiday awareness
+        try:
+            import pandas as pd
+            import pandas_market_calendars as mcal  # type: ignore[import]
+
+            cal = mcal.get_calendar("NASDAQ")
+            check_date = pd.Timestamp(date_to_check.date())
+            schedule = cal.schedule(start_date=check_date, end_date=check_date)
+            return not schedule.empty
+        except Exception:
+            # Fallback: if calendar fails, just check weekday (already done above)
+            return True
+
+    except Exception:
+        # Conservative fallback
+        return True
+
+
 def _connect_with_unique_client_id(
     ib,  # noqa: ANN001
     *,
@@ -1031,14 +1081,44 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
             nonlocal bars, trading_enabled, has_open_position, last_completed_bar_time_iso
 
             backoff = 1.0
+            last_log_time = 0.0
+            
             while not reconnect_stop.is_set():
                 try:
-                    # Wait a bit before hammering connect() while Gateway boots.
-                    sleeper = getattr(ib, "sleep", None)
-                    if callable(sleeper):
-                        sleeper(backoff)
-                    else:
-                        time.sleep(backoff)
+                    # Check if we're in a period when market could be open
+                    is_trading_day = _is_trading_day()
+                    is_market_time = _is_market_hours(premarket=True)
+                    
+                    # During completely closed market (weekends/holidays/night), use longer backoff
+                    if not is_trading_day or not is_market_time:
+                        # Market closed: wait 5-15 minutes between attempts
+                        off_hours_backoff = min(900.0, max(300.0, backoff * 60.0))
+                        
+                        # Log at most once per 5 minutes during off hours to avoid spam
+                        now = time.time()
+                        if now - last_log_time >= 300.0:
+                            _log(
+                                {
+                                    "type": "reconnect_paused_off_hours",
+                                    "run_id": run_id,
+                                    "is_trading_day": is_trading_day,
+                                    "is_market_time": is_market_time,
+                                    "next_retry_seconds": off_hours_backoff,
+                                }
+                            )
+                            print(
+                                f"[live] Market closed (trading_day={is_trading_day}, "
+                                f"market_time={is_market_time}); will retry in {off_hours_backoff:.0f}s"
+                            )
+                            last_log_time = now
+                        
+                        # Use regular sleep (not ib.sleep) since we're in a background thread
+                        time.sleep(off_hours_backoff)
+                        continue
+                    
+                    # Market hours or premarket: use normal backoff (1s -> 30s)
+                    # Use time.sleep instead of ib.sleep to avoid event loop issues in thread
+                    time.sleep(backoff)
 
                     connected_client_id = _connect_with_unique_client_id(
                         ib,
@@ -1104,15 +1184,64 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                     return
 
                 except Exception as exc:  # noqa: BLE001
-                    _log(
-                        {
-                            "type": "reconnect_failed",
-                            "run_id": run_id,
-                            "error": repr(exc),
-                            "traceback": traceback.format_exc(),
-                        }
-                    )
-                    print(f"[live] Reconnect failed; will retry: {exc}")
+                    # Detect common non-transient errors that need longer backoff
+                    exc_str = str(exc).lower()
+                    error_repr = repr(exc).lower()
+                    
+                    # Check for TWS/Gateway not logged in or not ready
+                    is_not_logged_in = any([
+                        "not logged in" in exc_str,
+                        "not logged in" in error_repr,
+                        "not connected" in exc_str and "login" in exc_str,
+                        "no security definition" in exc_str,  # Can occur when TWS not ready
+                        "connection refused" in exc_str,
+                        "connection reset" in exc_str,
+                    ])
+                    
+                    # Check market status for logging decisions
+                    is_trading_day = _is_trading_day()
+                    is_market_time = _is_market_hours(premarket=True)
+                    
+                    # If TWS not logged in, use longer backoff regardless of market hours
+                    if is_not_logged_in:
+                        # Exponential backoff: 1 min -> 30 min
+                        login_backoff = min(1800.0, max(60.0, backoff * 10.0))
+                        
+                        # Log at most once per 5 minutes for login issues
+                        now = time.time()
+                        if now - last_log_time >= 300.0:
+                            _log(
+                                {
+                                    "type": "reconnect_failed_not_logged_in",
+                                    "run_id": run_id,
+                                    "error": repr(exc),
+                                    "next_retry_seconds": login_backoff,
+                                }
+                            )
+                            print(
+                                f"[live] TWS/Gateway not ready (not logged in or connection issue). "
+                                f"Will retry in {login_backoff:.0f}s. Error: {exc}"
+                            )
+                            last_log_time = now
+                        
+                        time.sleep(login_backoff)
+                        # Increase backoff for next login attempt
+                        backoff = min(180.0, max(1.0, backoff * 1.8))
+                        continue
+                    
+                    # Normal reconnect failures: log during market hours only
+                    if is_trading_day and is_market_time:
+                        _log(
+                            {
+                                "type": "reconnect_failed",
+                                "run_id": run_id,
+                                "error": repr(exc),
+                                "traceback": traceback.format_exc(),
+                            }
+                        )
+                        print(f"[live] Reconnect failed; will retry: {exc}")
+                    
+                    # Increase backoff for next attempt (capped at 30s during market hours)
                     backoff = min(30.0, max(1.0, backoff * 1.8))
 
         def _start_reconnector() -> None:
