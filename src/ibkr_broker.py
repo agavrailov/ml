@@ -14,6 +14,7 @@ Design goals:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from src.broker import (
@@ -58,6 +59,40 @@ class IBKRBrokerConfig:
     def from_global_config(cls) -> "IBKRBrokerConfig":
         ib_cfg = IbConfig
         return cls(host=ib_cfg.host, port=ib_cfg.port, client_id=ib_cfg.client_id, account=ib_cfg.account)
+
+
+def _is_regular_market_hours() -> bool:
+    """Check if current time is within regular US market hours (9:30 AM - 4:00 PM EST).
+
+    Returns True during regular trading hours (Mon-Fri), False during pre-market,
+    after-market, or weekends.
+    """
+    try:
+        import zoneinfo
+    except ImportError:
+        try:
+            from backports.zoneinfo import ZoneInfo as zoneinfo  # type: ignore[import]
+        except ImportError:
+            # Conservative fallback: assume regular hours if timezone unavailable
+            return True
+
+    try:
+        eastern = zoneinfo.ZoneInfo("America/New_York")
+        now = datetime.now(timezone.utc).astimezone(eastern)
+
+        # Skip weekends
+        if now.weekday() >= 5:  # Saturday = 5, Sunday = 6
+            return False
+
+        # Regular market hours: 9:30 AM - 4:00 PM EST
+        current_minutes = now.hour * 60 + now.minute
+        market_open = 9 * 60 + 30  # 9:30 AM
+        market_close = 16 * 60  # 4:00 PM
+        return market_open <= current_minutes < market_close
+
+    except Exception:
+        # Conservative fallback
+        return True
 
 
 class IBKRBrokerTws(Broker):
@@ -138,6 +173,67 @@ class IBKRBrokerTws(Broker):
 
         return Stock(symbol, "SMART", "USD")  # type: ignore[call-arg]
 
+    def _get_current_price(self, symbol: str) -> float | None:
+        """Get current market price for a symbol (best-effort).
+
+        Returns None if price is unavailable.
+        """
+        try:
+            contract = self._make_stock_contract(symbol)
+            ticker = self._ib.reqMktData(contract, "", False, False)
+            self._ib.sleep(0.5)  # Brief wait for data
+
+            # Try last price, then close price, then midpoint
+            if ticker.last and ticker.last > 0:
+                return float(ticker.last)
+            if ticker.close and ticker.close > 0:
+                return float(ticker.close)
+            if ticker.bid and ticker.ask and ticker.bid > 0 and ticker.ask > 0:
+                return float((ticker.bid + ticker.ask) / 2)
+
+            return None
+        except Exception:  # pragma: no cover - best effort
+            return None
+        finally:
+            try:
+                self._ib.cancelMktData(contract)
+            except Exception:  # pragma: no cover
+                pass
+
+    def _adjust_order_for_extended_hours(self, order: OrderRequest) -> OrderRequest:
+        """Adjust order for pre-market/after-market sessions.
+
+        During extended hours, IBKR only accepts limit orders. This method converts
+        market orders to aggressive limit orders with a small slippage buffer.
+        """
+        if _is_regular_market_hours() or order.order_type != OrderType.MARKET:
+            return order
+
+        # During extended hours, convert MARKET to LIMIT
+        current_price = self._get_current_price(order.symbol)
+        if current_price is None:
+            raise ValueError(
+                f"Cannot place market order for {order.symbol} during extended hours: "
+                "current price unavailable. Please use a limit order instead."
+            )
+
+        # Use 1% slippage buffer for aggressive limit
+        buffer = 0.01
+        if order.side is Side.BUY:
+            limit_price = current_price * (1 + buffer)
+        else:
+            limit_price = current_price * (1 - buffer)
+
+        return OrderRequest(
+            symbol=order.symbol,
+            side=order.side,
+            quantity=order.quantity,
+            order_type=OrderType.LIMIT,
+            limit_price=round(limit_price, 2),
+            time_in_force=order.time_in_force,
+            idempotency_key=order.idempotency_key,
+        )
+
     def _make_ib_order(self, order: OrderRequest):
         action = "BUY" if order.side is Side.BUY else "SELL"
         qty = float(order.quantity)
@@ -166,8 +262,11 @@ class IBKRBrokerTws(Broker):
     def place_order(self, order: OrderRequest) -> str:
         self._ensure_connected()
 
-        contract = self._make_stock_contract(order.symbol)
-        ib_order = self._make_ib_order(order)
+        # Adjust order for extended hours if needed
+        adjusted_order = self._adjust_order_for_extended_hours(order)
+
+        contract = self._make_stock_contract(adjusted_order.symbol)
+        ib_order = self._make_ib_order(adjusted_order)
 
         trade: Trade = self._ib.placeOrder(contract, ib_order)  # type: ignore[assignment]
 
@@ -194,9 +293,22 @@ class IBKRBrokerTws(Broker):
 
         contract = self._make_stock_contract(bracket.symbol)
 
-        # Entry order (parent)
+        # Handle extended hours: convert market entry to limit if needed
         entry_action = "BUY" if bracket.side is Side.BUY else "SELL"
-        if bracket.entry_order_type is OrderType.MARKET:
+        if bracket.entry_order_type is OrderType.MARKET and not _is_regular_market_hours():
+            current_price = self._get_current_price(bracket.symbol)
+            if current_price is None:
+                raise ValueError(
+                    f"Cannot place market bracket order for {bracket.symbol} during extended hours: "
+                    "current price unavailable. Please use a limit entry order instead."
+                )
+            buffer = 0.01
+            if bracket.side is Side.BUY:
+                entry_limit_price = round(current_price * (1 + buffer), 2)
+            else:
+                entry_limit_price = round(current_price * (1 - buffer), 2)
+            entry_order = LimitOrder(entry_action, float(bracket.quantity), entry_limit_price)  # type: ignore[call-arg]
+        elif bracket.entry_order_type is OrderType.MARKET:
             entry_order = MarketOrder(entry_action, float(bracket.quantity))  # type: ignore[call-arg]
         elif bracket.entry_order_type is OrderType.LIMIT:
             if bracket.entry_limit_price is None:

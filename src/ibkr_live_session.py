@@ -41,6 +41,7 @@ from src.live_log import (
     is_kill_switch_enabled,
     make_log_path,
 )
+from src.utils.timestamped_print import ts_print
 
 
 def _canonical_order_status(status: object) -> str:
@@ -568,7 +569,7 @@ def _attach_ib_error_logging(
         }
         log_fn(ev)
         # Keep console printing lightweight but actionable.
-        print(f"[live][ib_error] code={ev['error_code']} reqId={ev['req_id']} {ev['error']}")
+        ts_print(f"[live][ib_error] code={ev['error_code']} reqId={ev['req_id']} {ev['error']}")
 
     try:
         err_event += _on_error
@@ -628,7 +629,7 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
     ib = IB()  # type: ignore[call-arg]
 
     preferred_client_id = IbConfig.client_id if cfg.client_id is None else int(cfg.client_id)
-    print(
+    ts_print(
         f"[live] Connecting to TWS at {IbConfig.host}:{IbConfig.port} "
         f"(preferred clientId={preferred_client_id})",
     )
@@ -652,7 +653,7 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
             preferred_client_id=preferred_client_id,
         )
         connection_established_time = time.time()
-        print(f"[live] Connected (clientId={connected_client_id}).")
+        ts_print(f"[live] Connected (clientId={connected_client_id}).")
         _log(
             {
                 "type": "broker_connected",
@@ -686,9 +687,9 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
         historical_csv = get_hourly_data_csv_path(cfg.frequency)
         if os.path.exists(historical_csv):
             loaded = predictor.warmup_from_csv(historical_csv, cfg.frequency)
-            print(f"[live] Predictor warmed up with {loaded} bars from {historical_csv}")
+            ts_print(f"[live] Predictor warmed up with {loaded} bars from {historical_csv}")
         else:
-            print(f"[live] Historical CSV not found at {historical_csv}; starting cold.")
+            ts_print(f"[live] Historical CSV not found at {historical_csv}; starting cold.")
 
         # Reuse the same IB instance inside the broker (when backend=IBKR_TWS).
         broker = make_broker(cfg.backend, ib=ib)
@@ -790,7 +791,7 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                 for warning in bracket_warnings:
                     _log(warning)
                     # Also print to console for immediate visibility
-                    print(
+                    ts_print(
                         f"[live] WARNING: Position in {warning['symbol']} "
                         f"(qty={warning['quantity']}) lacks complete brackets: "
                         f"has_tp={warning['has_tp']}, has_sl={warning['has_sl']} "
@@ -840,11 +841,11 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                 "last_bar_time": initial_last_bar_time,
             }
         )
-        print(
+        ts_print(
             f"[live] Initial historical bars received: n={initial_n_bars} last={initial_last_bar_time}"
         )
 
-        print(f"[live] Subscribed to keepUpToDate bars ({bar_size_setting}) for {cfg.symbol}.")
+        ts_print(f"[live] Subscribed to keepUpToDate bars ({bar_size_setting}) for {cfg.symbol}.")
         _log(
             {
                 "type": "data_subscribed",
@@ -981,7 +982,7 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                 if plan is None:
                     decision_event.update({"action": "NO_TRADE"})
                     _log(decision_event)
-                    print(
+                    ts_print(
                         f"[live] {cfg.symbol} bar close={current_price:.2f} "
                         f"pred={predicted_price:.2f} -> no trade"
                     )
@@ -1001,7 +1002,7 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                 if is_kill_switch_enabled(live_dir):
                     decision_event["blocked_by_kill_switch"] = True
                     _log(decision_event)
-                    print("[live] KILL SWITCH enabled; blocking order submission.")
+                    ts_print("[live] KILL SWITCH enabled; blocking order submission.")
                     return
 
                 _log(decision_event)
@@ -1024,7 +1025,7 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                             "traceback": traceback.format_exc(),
                         }
                     )
-                    print(f"[live] Bracket order submission failed: {exc}")
+                    ts_print(f"[live] Bracket order submission failed: {exc}")
                     return
 
                 has_open_position = True
@@ -1049,14 +1050,14 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                 # Snapshot immediately after submitting an order.
                 _log_broker_snapshot(where="after_order_submit", bar_time=bar_time_iso)
 
-                print(
+                ts_print(
                     f"[live] TRADE {cfg.symbol} dir={plan.direction:+d} size={plan.size:.2f} "
                     f"tp={plan.tp_price:.2f} sl={plan.sl_price:.2f} "
                     f"entry_id={bracket_ids.entry_id if bracket_ids else 'N/A'}"
                 )
 
                 if cfg.stop_after_first_trade:
-                    print("[live] stop_after_first_trade=True; stopping event loop.")
+                    ts_print("[live] stop_after_first_trade=True; stopping event loop.")
                     shutdown_requested = True
                     ib.disconnect()
 
@@ -1070,7 +1071,7 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                         "traceback": traceback.format_exc(),
                     }
                 )
-                print(f"[live] ERROR in bar handler: {exc}")
+                ts_print(f"[live] ERROR in bar handler: {exc}")
 
         bars.updateEvent += _on_bar_update
 
@@ -1114,7 +1115,7 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                                     "next_retry_seconds": off_hours_backoff,
                                 }
                             )
-                            print(
+                            ts_print(
                                 f"[live] Market closed (trading_day={is_trading_day}, "
                                 f"market_time={is_market_time}); will retry in {off_hours_backoff:.0f}s"
                             )
@@ -1153,7 +1154,7 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                             "previous_connection_uptime_seconds": connection_uptime_seconds,
                         }
                     )
-                    print(
+                    ts_print(
                         f"[live] Reconnected to TWS (clientId={connected_client_id}). "
                         f"Previous uptime: {connection_uptime_seconds:.0f}s" if connection_uptime_seconds else "[live] Reconnected to TWS (clientId={connected_client_id})."
                     )
@@ -1267,7 +1268,7 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                                     "next_retry_seconds": restart_backoff,
                                 }
                             )
-                            print(
+                            ts_print(
                                 f"[live] IB Gateway restart detected "
                                 f"(failures={len(failure_timestamps)}, window={is_restart_window}). "
                                 f"Will retry in {restart_backoff:.0f}s (30 min)."
@@ -1292,7 +1293,7 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                                     "next_retry_seconds": login_backoff,
                                 }
                             )
-                            print(
+                            ts_print(
                                 f"[live] TWS/Gateway not ready (not logged in or connection issue). "
                                 f"Will retry in {login_backoff:.0f}s. Error: {exc}"
                             )
@@ -1313,7 +1314,7 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                                 "traceback": traceback.format_exc(),
                             }
                         )
-                        print(f"[live] Reconnect failed; will retry: {exc}")
+                        ts_print(f"[live] Reconnect failed; will retry: {exc}")
                     
                     # Increase backoff for next attempt (capped at 30s during market hours)
                     backoff = min(30.0, max(1.0, backoff * 1.8))
@@ -1356,7 +1357,7 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                 }
             )
             uptime_msg = f" (uptime: {connection_uptime_seconds:.0f}s)" if connection_uptime_seconds else ""
-            print(f"[live] DISCONNECTED from TWS{uptime_msg}; pausing trading and starting reconnect loop...")
+            ts_print(f"[live] DISCONNECTED from TWS{uptime_msg}; pausing trading and starting reconnect loop...")
             _start_reconnector()
 
         disc_event = getattr(ib, "disconnectedEvent", None)
@@ -1405,7 +1406,7 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                 # Only warn during market hours to avoid spam when market is closed.
                 warn_after = _no_update_warning_threshold_seconds(cfg.frequency)
                 if age >= 0 and age > warn_after and is_market_open:
-                    print(
+                    ts_print(
                         f"[live] WARNING: no bar updates received for {age:.0f}s "
                         f"(threshold={warn_after:.0f}s, frequency={cfg.frequency}). "
                         "Check TWS/Gateway logs for market data/permissions errors."
@@ -1425,7 +1426,7 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                                     "is_market_open": is_market_open,
                                 }
                             )
-                            print(
+                            ts_print(
                                 f"[live] Stale data during market hours ({age:.0f}s); "
                                 "forcing disconnect to trigger re-subscription..."
                             )
@@ -1440,7 +1441,7 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
         hb_thread = threading.Thread(target=_heartbeat, name="ibkr_live_heartbeat", daemon=True)
         hb_thread.start()
 
-        print("[live] Running event loop (Ctrl+C to stop)...")
+        ts_print("[live] Running event loop (Ctrl+C to stop)...")
         ib.run()
 
     except Exception as exc:  # noqa: BLE001

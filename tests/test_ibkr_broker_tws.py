@@ -8,6 +8,8 @@ Tests are skipped entirely if ``ib_insync`` is not installed.
 """
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 
 ib_insync = pytest.importorskip("ib_insync")  # type: ignore[assignment]
@@ -100,26 +102,28 @@ def test_place_order_maps_to_ib_order_and_returns_order_id():
         order_type=OrderType.MARKET,
     )
 
-    oid = broker.place_order(req)
+    # Mock regular market hours to skip extended hours conversion
+    with patch("src.ibkr_broker._is_regular_market_hours", return_value=True):
+        oid = broker.place_order(req)
 
-    assert oid == "1"  # first order id assigned by FakeIB
-    assert len(fake_ib.placed) == 1
-    contract, order = fake_ib.placed[0]
+        assert oid == "1"  # first order id assigned by FakeIB
+        assert len(fake_ib.placed) == 1
+        contract, order = fake_ib.placed[0]
 
-    assert contract.symbol == "NVDA"
-    assert order.action == "BUY"
-    assert float(order.totalQuantity) == 5.0
+        assert contract.symbol == "NVDA"
+        assert order.action == "BUY"
+        assert float(order.totalQuantity) == 5.0
 
-    # get_all_orders should include submitted orders.
-    all_orders = broker.get_all_orders()
-    assert len(all_orders) == 1
-    assert all_orders[0].order_id == "1"
-    assert all_orders[0].status == "Submitted"
+        # get_all_orders should include submitted orders.
+        all_orders = broker.get_all_orders()
+        assert len(all_orders) == 1
+        assert all_orders[0].order_id == "1"
+        assert all_orders[0].status == "Submitted"
 
-    # open orders should include it as well.
-    open_orders = broker.get_open_orders()
-    assert len(open_orders) == 1
-    assert open_orders[0].order_id == "1"
+        # open orders should include it as well.
+        open_orders = broker.get_open_orders()
+        assert len(open_orders) == 1
+        assert open_orders[0].order_id == "1"
 
 
 def test_place_order_sets_account_when_configured():
@@ -134,11 +138,13 @@ def test_place_order_sets_account_when_configured():
         order_type=OrderType.MARKET,
     )
 
-    broker.place_order(req)
+    # Mock regular market hours to skip extended hours conversion
+    with patch("src.ibkr_broker._is_regular_market_hours", return_value=True):
+        broker.place_order(req)
 
-    assert len(fake_ib.placed) == 1
-    _contract, order = fake_ib.placed[0]
-    assert getattr(order, "account", None) == "U16442949"
+        assert len(fake_ib.placed) == 1
+        _contract, order = fake_ib.placed[0]
+        assert getattr(order, "account", None) == "U16442949"
 
 
 def test_get_positions_maps_ib_positions_to_position_info():
