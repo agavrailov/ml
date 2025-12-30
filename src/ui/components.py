@@ -759,6 +759,7 @@ def render_equity_chart(
     
     fig.tight_layout()
     st.pyplot(fig)
+    plt.close(fig)
 
 
 # =============================================================================
@@ -980,6 +981,7 @@ def render_walkforward_results(
         plt.colorbar(im, ax=ax, label="Sharpe Ratio")
         fig.tight_layout()
         st.pyplot(fig)
+        plt.close(fig)
     
     # Summary table
     if summary_df is not None and not summary_df.empty:

@@ -26,7 +26,7 @@ The live trader's reconnect loop was generating millions of error messages durin
 
 ### 3. Off-Market Hours Handling
 **Lines 1088-1117**: Smart backoff during market closure
-- **During off-hours**: 5-15 minute backoff (300-900 seconds)
+- **During off-hours**: Exponential 1-30 minute backoff (60-1800 seconds)
 - **During market hours**: 1-30 second exponential backoff
 - **Logging**: Once per 5 minutes during off-hours (vs every attempt)
 - Allows reconnection during premarket hours
@@ -46,9 +46,9 @@ The live trader's reconnect loop was generating millions of error messages durin
 
 | Scenario | Old Behavior | New Behavior |
 |----------|-------------|--------------|
-| Weekend disconnect | 1-30s retry, log every attempt | 5-15min retry, log every 5min |
-| Holiday disconnect | 1-30s retry, log every attempt | 5-15min retry, log every 5min |
-| Night hours (after 4PM) | 1-30s retry, log every attempt | 5-15min retry, log every 5min |
+| Weekend disconnect | 1-30s retry, log every attempt | 1-30min exponential backoff, log every 5min |
+| Holiday disconnect | 1-30s retry, log every attempt | 1-30min exponential backoff, log every 5min |
+| Night hours (after 4PM) | 1-30s retry, log every attempt | 1-30min exponential backoff, log every 5min |
 | Premarket (4AM-9:30AM) | 1-30s retry, log every attempt | 1-30s retry, log every attempt ✓ |
 | Market hours (9:30AM-4PM) | 1-30s retry, log every attempt | 1-30s retry, log every attempt ✓ |
 | TWS not logged in | 1-30s retry, log every attempt | 1-30min exponential backoff, log every 5min |

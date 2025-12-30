@@ -27,7 +27,7 @@ for name, dt in test_cases:
 print("\n✅ Reconnect logic improvements verified!")
 print("\nKey improvements:")
 print("1. Event loop error fixed (time.sleep vs ib.sleep)")
-print("2. Off-hours: 5-15 min backoff, log every 5 min")
+print("2. Off-hours: 1-30 min exponential backoff, log every 5 min")
 print("3. TWS not logged in: 1-30 min exponential backoff, log every 5 min")
 print("4. Premarket hours (4AM-9:30AM EST) allow normal reconnection")
 print("5. Calendar-aware holiday detection")

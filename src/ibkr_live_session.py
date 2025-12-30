@@ -477,11 +477,9 @@ def _connect_with_unique_client_id(
             ib.connect(host, port, clientId=cid)
 
             # Give IB a moment to deliver immediate rejection errors (e.g. 326).
-            sleeper = getattr(ib, "sleep", None)
-            if callable(sleeper):
-                sleeper(0.35)
-            else:
-                time.sleep(0.35)
+            # Always use time.sleep() instead of ib.sleep() to avoid event loop issues
+            # when called from background threads.
+            time.sleep(0.35)
 
             if any(code == 326 for code, _ in connect_errors):
                 raise TimeoutError("Unable to connect as the client id is already in use")
@@ -642,6 +640,9 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
     reconnect_stop = threading.Event()
     reconnect_thread: threading.Thread | None = None
     detach_disconnected_handler: Callable[[], None] | None = None
+    
+    # Connection health tracking
+    connection_established_time: float | None = None
 
     try:
         connected_client_id = _connect_with_unique_client_id(
@@ -650,6 +651,7 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
             port=IbConfig.port,
             preferred_client_id=preferred_client_id,
         )
+        connection_established_time = time.time()
         print(f"[live] Connected (clientId={connected_client_id}).")
         _log(
             {
@@ -658,6 +660,7 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                 "host": IbConfig.host,
                 "port": int(IbConfig.port),
                 "client_id": int(connected_client_id),
+                "connection_time": connection_established_time,
             }
         )
 
@@ -1079,9 +1082,14 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
 
         def _reconnect_loop() -> None:
             nonlocal bars, trading_enabled, has_open_position, last_completed_bar_time_iso
+            nonlocal connection_established_time
 
             backoff = 1.0
             last_log_time = 0.0
+            
+            # Gateway health monitoring
+            failure_timestamps: list[float] = []  # Track recent failures
+            restart_window_detected = False
             
             while not reconnect_stop.is_set():
                 try:
@@ -1091,8 +1099,8 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                     
                     # During completely closed market (weekends/holidays/night), use longer backoff
                     if not is_trading_day or not is_market_time:
-                        # Market closed: wait 5-15 minutes between attempts
-                        off_hours_backoff = min(900.0, max(300.0, backoff * 60.0))
+                        # Market closed: exponential backoff 1-30 minutes
+                        off_hours_backoff = min(1800.0, max(60.0, backoff * 60.0))
                         
                         # Log at most once per 5 minutes during off hours to avoid spam
                         now = time.time()
@@ -1127,6 +1135,13 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                         preferred_client_id=preferred_client_id,
                     )
 
+                    # Track connection uptime for health monitoring
+                    reconnect_time = time.time()
+                    connection_uptime_seconds = None
+                    if connection_established_time is not None:
+                        connection_uptime_seconds = reconnect_time - connection_established_time
+                    connection_established_time = reconnect_time
+                    
                     _log(
                         {
                             "type": "broker_reconnected",
@@ -1134,9 +1149,14 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                             "host": IbConfig.host,
                             "port": int(IbConfig.port),
                             "client_id": int(connected_client_id),
+                            "connection_time": reconnect_time,
+                            "previous_connection_uptime_seconds": connection_uptime_seconds,
                         }
                     )
-                    print(f"[live] Reconnected to TWS (clientId={connected_client_id}).")
+                    print(
+                        f"[live] Reconnected to TWS (clientId={connected_client_id}). "
+                        f"Previous uptime: {connection_uptime_seconds:.0f}s" if connection_uptime_seconds else "[live] Reconnected to TWS (clientId={connected_client_id})."
+                    )
 
                     # Re-qualify contract and re-subscribe keepUpToDate stream.
                     contract2 = Stock(cfg.symbol, "SMART", "USD")  # type: ignore[call-arg]
@@ -1184,6 +1204,12 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                     return
 
                 except Exception as exc:  # noqa: BLE001
+                    # Track failure for health monitoring
+                    now = time.time()
+                    failure_timestamps.append(now)
+                    # Keep only failures from last 2 minutes
+                    failure_timestamps[:] = [ts for ts in failure_timestamps if now - ts < 120.0]
+                    
                     # Detect common non-transient errors that need longer backoff
                     exc_str = str(exc).lower()
                     error_repr = repr(exc).lower()
@@ -1198,17 +1224,65 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                         "connection reset" in exc_str,
                     ])
                     
+                    # Check for Gateway restart indicators
+                    is_gateway_restart = any([
+                        "tws reset" in exc_str,
+                        "server reset" in exc_str,
+                        "reset by peer" in exc_str,
+                        "connection aborted" in exc_str,
+                    ]) or len(failure_timestamps) > 5  # >5 failures in 2 minutes
+                    
                     # Check market status for logging decisions
                     is_trading_day = _is_trading_day()
                     is_market_time = _is_market_hours(premarket=True)
                     
-                    # If TWS not logged in, use longer backoff regardless of market hours
+                    # Detect typical Gateway restart window (11 PM - 12 AM EST on weekends)
+                    try:
+                        from datetime import datetime, timezone
+                        import zoneinfo
+                        eastern = zoneinfo.ZoneInfo("America/New_York")
+                        current_time = datetime.now(timezone.utc).astimezone(eastern)
+                        is_restart_window = (
+                            current_time.weekday() in (5, 6)  # Sat/Sun
+                            and 23 <= current_time.hour < 24  # 11 PM - 12 AM
+                        )
+                    except Exception:
+                        is_restart_window = False
+                    
+                    # Handle Gateway restart scenario (detected or scheduled window)
+                    if is_gateway_restart or is_restart_window:
+                        # Gateway appears to be restarting: use very long backoff
+                        restart_backoff = 1800.0  # Fixed 30 min during restart
+                        
+                        if not restart_window_detected:
+                            restart_window_detected = True
+                            _log(
+                                {
+                                    "type": "gateway_restart_detected",
+                                    "run_id": run_id,
+                                    "error": repr(exc),
+                                    "failure_count_2min": len(failure_timestamps),
+                                    "is_restart_window": is_restart_window,
+                                    "is_restart_pattern": is_gateway_restart,
+                                    "next_retry_seconds": restart_backoff,
+                                }
+                            )
+                            print(
+                                f"[live] IB Gateway restart detected "
+                                f"(failures={len(failure_timestamps)}, window={is_restart_window}). "
+                                f"Will retry in {restart_backoff:.0f}s (30 min)."
+                            )
+                        
+                        time.sleep(restart_backoff)
+                        backoff = 1.0  # Reset backoff after restart wait
+                        continue
+                    
+                    # If TWS not logged in (but not restarting), use longer backoff
                     if is_not_logged_in:
                         # Exponential backoff: 1 min -> 30 min
                         login_backoff = min(1800.0, max(60.0, backoff * 10.0))
                         
                         # Log at most once per 5 minutes for login issues
-                        now = time.time()
                         if now - last_log_time >= 300.0:
                             _log(
                                 {
@@ -1258,10 +1332,16 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
             reconnect_thread.start()
 
         def _on_disconnected() -> None:
-            nonlocal trading_enabled, shutdown_requested
+            nonlocal trading_enabled, shutdown_requested, connection_established_time
 
             if shutdown_requested or reconnect_stop.is_set():
                 return
+
+            # Track connection uptime for health monitoring
+            disconnect_time = time.time()
+            connection_uptime_seconds = None
+            if connection_established_time is not None:
+                connection_uptime_seconds = disconnect_time - connection_established_time
 
             # Pause trading immediately. We will resume after resubscribe.
             trading_enabled = False
@@ -1271,9 +1351,12 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                     "run_id": run_id,
                     "host": IbConfig.host,
                     "port": int(IbConfig.port),
+                    "disconnect_time": disconnect_time,
+                    "connection_uptime_seconds": connection_uptime_seconds,
                 }
             )
-            print("[live] DISCONNECTED from TWS; pausing trading and starting reconnect loop...")
+            uptime_msg = f" (uptime: {connection_uptime_seconds:.0f}s)" if connection_uptime_seconds else ""
+            print(f"[live] DISCONNECTED from TWS{uptime_msg}; pausing trading and starting reconnect loop...")
             _start_reconnector()
 
         disc_event = getattr(ib, "disconnectedEvent", None)
@@ -1319,8 +1402,9 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                 )
 
                 # If we haven't received *any* bar updates for a while, surface it.
+                # Only warn during market hours to avoid spam when market is closed.
                 warn_after = _no_update_warning_threshold_seconds(cfg.frequency)
-                if age >= 0 and age > warn_after:
+                if age >= 0 and age > warn_after and is_market_open:
                     print(
                         f"[live] WARNING: no bar updates received for {age:.0f}s "
                         f"(threshold={warn_after:.0f}s, frequency={cfg.frequency}). "
