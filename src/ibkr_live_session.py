@@ -335,14 +335,16 @@ def _no_update_warning_threshold_seconds(freq: str) -> float:
     keepUpToDate updates are expected at least once per bar (often more frequently),
     but for larger bar sizes it's normal to see long quiet periods.
 
-    We use max(5 minutes, 1x bar period) as the threshold. IBKR's keepUpToDate
-    sometimes stops sending updates, so we need to detect this quickly.
+    After reconnection, bars should arrive quickly if HMDS is active. We cap the
+    threshold at 10 minutes to detect HMDS inactivity faster.
     """
-    base = 300.0
+    base = 300.0  # 5 minutes minimum
     mins = _frequency_to_minutes(freq)
     if mins is None or mins <= 0:
         return base
-    return max(base, float(mins * 60))
+    # Use 0.5x bar period, capped at 10 minutes
+    bar_half_period = float(mins * 30)  # 30 seconds per minute (mins * 60 / 2)
+    return min(600.0, max(base, bar_half_period))
 
 
 def _is_market_hours(*, premarket: bool = True) -> bool:
@@ -542,6 +544,66 @@ def _connect_with_unique_client_id(
         f"tried {preferred_client_id}..{preferred_client_id + max_tries - 1}. "
         f"Last error: {last_exc!r}",
     )
+
+
+def _activate_hmds(
+    ib,  # noqa: ANN001
+    contract,  # noqa: ANN001
+    bar_size_setting: str,
+    log_fn: Callable[[dict], None],
+    run_id: str,
+    symbol: str,
+) -> bool:
+    """Force HMDS data farm activation with one-shot historical data request.
+
+    After reconnection or sleep/wake, IBKR's HMDS farm may go inactive (error 2107).
+    This causes keepUpToDate subscriptions to stop delivering bars until HMDS activates.
+    
+    This function triggers HMDS activation by requesting a small amount of historical data.
+
+    Args:
+        ib: ib_insync.IB instance
+        contract: Qualified contract for the symbol
+        bar_size_setting: Bar size (e.g., "4 hours")
+        log_fn: Logging function
+        run_id: Current run ID
+        symbol: Symbol name for logging
+
+    Returns:
+        True if activation succeeded, False otherwise
+    """
+    try:
+        # Request 1 day of data to wake up HMDS
+        wake_bars = ib.reqHistoricalData(
+            contract,
+            endDateTime="",
+            durationStr="1 D",
+            barSizeSetting=bar_size_setting,
+            whatToShow="TRADES",
+            useRTH=False,
+            formatDate=1,
+            keepUpToDate=False,  # One-shot request
+        )
+        
+        log_fn({
+            "type": "hmds_activation_request",
+            "run_id": run_id,
+            "symbol": symbol,
+            "bars_received": len(wake_bars) if wake_bars else 0,
+        })
+        
+        # Brief delay to let HMDS fully activate
+        time.sleep(2.0)
+        return True
+        
+    except Exception as exc:  # noqa: BLE001
+        log_fn({
+            "type": "hmds_activation_failed",
+            "run_id": run_id,
+            "symbol": symbol,
+            "error": repr(exc),
+        })
+        return False
 
 
 def _attach_ib_error_logging(
@@ -1252,6 +1314,11 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                     )
 
                     _log_broker_snapshot(where="after_reconnect")
+
+                    # Force HMDS activation to ensure keepUpToDate works after reconnect
+                    # Error 2107 (HMDS inactive) causes keepUpToDate to stop delivering bars
+                    ts_print("[live] Activating HMDS data farm after reconnection...")
+                    _activate_hmds(ib, contract2, bar_size_setting, _log, run_id, cfg.symbol)
 
                     # Transition back to trading state
                     state_machine.transition_to(SystemState.TRADING, reason="reconnect_successful")

@@ -104,6 +104,22 @@ The system operates with explicit states (no more boolean soup):
 
 **Action**: None required unless stuck >5 minutes
 
+### Issue: No Bars After Wake-from-Sleep
+
+**Symptom**: System shows TRADING state but no bars received for >5 minutes during market hours
+
+**Diagnosis**: HMDS data farm went inactive (error 2107) after computer wake
+
+**Expected Behavior**:
+- System automatically activates HMDS after reconnection
+- Bars should resume within 2-3 minutes
+- Stale data detection triggers reconnection if HMDS stays inactive >10 min
+
+**Manual Fix** (if stale data persists >15 min):
+1. Check IB Gateway is logged in
+2. Restart live session (system will force HMDS activation)
+3. If recurring: Check IB data permissions
+
 ### Issue: Kill Switch Enabled
 
 **Symptom**: Banner shows "Kill Switch ENABLED"

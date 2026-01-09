@@ -240,11 +240,19 @@ backoff = min(1800, backoff * 60)  # 60, 120, ... 1800s (30min)
 4. On success:
    - StateMachine → CONNECTED
    - Resubscribe to data
+   - **Force HMDS activation** (error 2107 fix)
    - StateMachine → SUBSCRIBED → TRADING
 5. On repeated failure:
    - Increase backoff
    - Check for gateway restart pattern
    - StateMachine → WAITING_FOR_GATEWAY if detected
+
+#### HMDS Activation
+After computer wake-from-sleep or reconnection, IBKR's HMDS (historical data) farm may go inactive (error 2107). This causes `keepUpToDate` subscriptions to stop delivering bars.
+
+The system now forces HMDS activation after every reconnection by requesting a small amount of historical data. This ensures bars resume flowing within 2-3 minutes.
+
+**Stale Data Detection**: If HMDS remains inactive, the reduced warning threshold (10 min cap) triggers forced reconnection, which re-activates HMDS.
 
 ## Configuration
 

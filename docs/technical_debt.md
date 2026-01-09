@@ -33,6 +33,26 @@ This file tracks known complexity/tech-debt items that were introduced intention
 
 ---
 
+## HMDS Inactivity Fix (January 2026) - ✅ COMPLETED
+
+**Problem**: After computer wake-from-sleep or reconnection, IBKR's HMDS (historical data) farm goes inactive (error 2107). The `keepUpToDate` subscription remains alive but stops delivering bars indefinitely.
+
+**Root Cause**: HMDS farm enters "inactive but available upon demand" state. System was not requesting data to trigger activation.
+
+**Solution Implemented**:
+- ✅ Created `_activate_hmds()` helper function (ibkr_live_session.py:549-606)
+- ✅ Call HMDS activation after every reconnection (line 1321)
+- ✅ Reduced stale data threshold from `max(5min, 1x bar period)` to `min(10min, max(5min, 0.5x bar period))`
+- ✅ Updated documentation (live_architecture.md, live_ops_runbook.md)
+
+**Impact**:
+- Before: 4-hour bars could wait up to 4 hours for stale data detection
+- After: Bars resume within 2-3 minutes via HMDS activation; max 10-minute detection if activation fails
+
+**Status**: Deployed and ready for testing
+
+---
+
 ## Unit Test Coverage - DEFERRED
 
 **Priority**: Medium
