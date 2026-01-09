@@ -16,14 +16,21 @@ The `IBKRBrokerTws` broker automatically detects trading session and converts ma
 ### Conversion Logic
 When a market order is placed during extended hours:
 
-1. **Fetch current price** via IBKR market data API
+1. **Use provided price** if available (from bar close or caller)
+   - Avoids market data subscription issues during extended hours
+   
+2. **Fallback: Fetch current price** via IBKR market data API if not provided
    - Tries: last price → close price → bid/ask midpoint
    
-2. **Apply slippage buffer** (1%)
+3. **Apply slippage buffer** (1%)
    - BUY orders: `limit_price = current_price × 1.01`
    - SELL orders: `limit_price = current_price × 0.99`
    
-3. **Convert to limit order** with calculated price
+4. **Convert to limit order** with calculated price
+
+5. **Set `outsideRth=True`** flag on the order
+   - Tells IBKR the order is intentionally placed outside regular hours
+   - Without this flag, orders are queued until market open (09:30 EST)
 
 ### What Gets Converted
 - ✅ Single market orders via `place_order()`
@@ -45,12 +52,19 @@ broker.place_order(OrderRequest(
     order_type=OrderType.MARKET,  # Auto-converted to LIMIT
 ))
 
-# Bracket orders also handled
+# Bracket orders: provide current_price to avoid market data subscription issues
+submit_trade_plan_bracket(
+    broker, plan, ctx, 
+    current_price=150.0  # From bar close or other source
+)
+
+# Or use broker directly (current_price calculated from entry_limit_price if provided)
 broker.place_bracket_order(BracketOrderRequest(
     symbol="NVDA",
     side=Side.BUY,
     quantity=10,
     entry_order_type=OrderType.MARKET,  # Auto-converted to LIMIT
+    entry_limit_price=151.50,  # Pre-calculated aggressive limit (optional)
     tp_price=160.0,
     sl_price=140.0,
 ))
@@ -58,22 +72,45 @@ broker.place_bracket_order(BracketOrderRequest(
 
 ## Error Handling
 
-If current price cannot be fetched during extended hours:
+If current price cannot be fetched during extended hours and no `entry_limit_price` is provided:
 ```
 ValueError: Cannot place market order for NVDA during extended hours: 
 current price unavailable. Please use a limit order instead.
 ```
 
-**Workaround**: Specify an explicit limit price:
+**Solutions**:
+1. **Recommended**: Pass `current_price` to `submit_trade_plan_bracket()` (e.g., from bar close)
+2. **Alternative**: Specify an explicit limit price in the bracket order:
 ```python
-broker.place_order(OrderRequest(
+broker.place_bracket_order(BracketOrderRequest(
     symbol="NVDA",
     side=Side.BUY,
     quantity=10,
-    order_type=OrderType.LIMIT,
-    limit_price=150.0,  # Manual limit price
+    entry_order_type=OrderType.MARKET,
+    entry_limit_price=150.0,  # Manual limit price
+    tp_price=160.0,
+    sl_price=140.0,
 ))
 ```
+3. **Alternative**: Subscribe to extended hours market data in IBKR
+
+### Bracket Order Cancellations (Error 202)
+
+You may see:
+```
+code=202 reqId=XX Order Canceled - reason:
+```
+
+**Common cause**: Entry order filled too quickly (esp. at market open/close with high volatility)
+
+Bracket orders use parent-child linking where TP/SL orders only become active after the entry fills. At volatile times (market open/close), the entry may fill before IBKR can properly activate the child orders, causing them to be canceled.
+
+**This is normal at market open** - the entry order (26) succeeded, but child orders (27, 28) were canceled due to fast fill timing.
+
+**Position remains unprotected** - you'll need to:
+- Manually add TP/SL orders after entry fills
+- Or monitor the position and manage risk manually
+- Consider using slightly wider entry prices during volatile periods to slow fills
 
 ## Testing
 See `tests/test_ibkr_extended_hours.py` for comprehensive test coverage:
@@ -103,6 +140,5 @@ See `tests/test_ibkr_extended_hours.py` for comprehensive test coverage:
 
 ## Future Enhancements
 1. Configurable slippage buffer per symbol or account
-2. Support for `outsideRth=True` IBKR flag for explicit extended hours opt-in
-3. Market holiday awareness via `pandas_market_calendars`
-4. Logging/events when auto-conversion occurs
+2. Market holiday awareness via `pandas_market_calendars`
+3. Logging/events when auto-conversion occurs

@@ -28,6 +28,7 @@ import os
 import threading
 import time
 import traceback
+import warnings
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -595,6 +596,10 @@ def _attach_ib_error_logging(
 def run_live_session(cfg: LiveSessionConfig) -> None:
     if not _HAVE_IB:
         raise RuntimeError("ib_insync is required; install it with 'pip install ib-insync'")
+    
+    # Suppress RuntimeWarning for unawaited coroutines from ib_insync
+    # ib_insync's reqHistoricalData creates coroutines internally but handles them
+    warnings.filterwarnings("ignore", category=RuntimeWarning, message=".*coroutine.*was never awaited.*")
 
     live_dir = Path(cfg.log_dir) if cfg.log_dir else None
 
@@ -677,6 +682,9 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
     
     # Connection health tracking
     connection_established_time: float | None = None
+    
+    # Shutdown flag (accessed by _heartbeat thread)
+    shutdown_requested = False
 
     try:
         state_machine.transition_to(SystemState.CONNECTING, reason="initial_connection")
@@ -1006,7 +1014,7 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
 
                 # Dedupe: resubscribe/reconnect can replay the last completed bar.
                 # Use persistent tracker for deduplication across restarts
-                bar_hash = compute_bar_hash(bar)
+                bar_hash = compute_bar_hash(b)
                 if bar_time_iso is not None and bar_tracker.is_duplicate(bar_time_iso, bar_hash):
                     return
                 if bar_time_iso is not None:
@@ -1104,7 +1112,7 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                 _log(decision_event)
 
                 try:
-                    bracket_ids = submit_trade_plan_bracket(broker, plan, exec_ctx)
+                    bracket_ids = submit_trade_plan_bracket(broker, plan, exec_ctx, current_price=current_price)
                 except Exception as exc:  # noqa: BLE001
                     _log(
                         {
@@ -1146,8 +1154,12 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                 # Snapshot immediately after submitting an order.
                 _log_broker_snapshot(where="after_order_submit", bar_time=bar_time_iso)
 
+                # Show actual rounded quantity for clarity (plan.size is pre-rounding)
+                actual_qty = int(round(plan.size))
+                if actual_qty <= 0:
+                    actual_qty = 1
                 ts_print(
-                    f"[live] TRADE {cfg.symbol} dir={plan.direction:+d} size={plan.size:.2f} "
+                    f"[live] TRADE {cfg.symbol} dir={plan.direction:+d} size={actual_qty} (plan={plan.size:.2f}) "
                     f"tp={plan.tp_price:.2f} sl={plan.sl_price:.2f} "
                     f"entry_id={bracket_ids.entry_id if bracket_ids else 'N/A'}"
                 )
@@ -1324,6 +1336,7 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
         hb_stop = threading.Event()
 
         def _heartbeat() -> None:
+            nonlocal shutdown_requested
             last_poll_check_time = 0.0
             poll_check_interval = 300.0  # Check every 5 minutes
             
@@ -1399,8 +1412,10 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                     last_poll_check_time = current_time
                     try:
                         # Request latest historical bar to compare with subscription
-                        is_connected = getattr(ib, "isConnected", None)
-                        if callable(is_connected) and is_connected():
+                        # Skip if disconnected to avoid unawaited coroutines
+                        if not ib.isConnected():
+                            pass  # Skip check when disconnected
+                        else:
                             # Get latest bar from historical data (non-keepUpToDate request)
                             check_bars = ib.reqHistoricalData(
                                 contract,

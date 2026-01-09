@@ -177,6 +177,106 @@ def test_sell_order_buffer_calculation():
     assert adjusted.limit_price == 198.0  # 200 * 0.99
 
 
+def test_outside_rth_flag_set_during_extended_hours():
+    """Test that outsideRth flag is set on orders during extended hours."""
+    from src.ibkr_broker import LimitOrder
+    
+    mock_ib = Mock()
+    config = IBKRBrokerConfig(host="127.0.0.1", port=7497, client_id=1)
+    broker = IBKRBrokerTws(config=config, ib=mock_ib)
+    
+    order = OrderRequest(
+        symbol="NVDA",
+        side=Side.BUY,
+        quantity=10,
+        order_type=OrderType.LIMIT,
+        limit_price=150.0,
+    )
+    
+    # Mock extended hours
+    with patch("src.ibkr_broker._is_regular_market_hours", return_value=False):
+        ib_order = broker._make_ib_order(order)
+    
+    # Should have outsideRth flag set
+    assert hasattr(ib_order, "outsideRth")
+    assert ib_order.outsideRth is True
+
+
+def test_outside_rth_flag_not_set_during_regular_hours():
+    """Test that outsideRth flag is not set during regular hours."""
+    mock_ib = Mock()
+    config = IBKRBrokerConfig(host="127.0.0.1", port=7497, client_id=1)
+    broker = IBKRBrokerTws(config=config, ib=mock_ib)
+    
+    order = OrderRequest(
+        symbol="NVDA",
+        side=Side.BUY,
+        quantity=10,
+        order_type=OrderType.LIMIT,
+        limit_price=150.0,
+    )
+    
+    # Mock regular hours
+    with patch("src.ibkr_broker._is_regular_market_hours", return_value=True):
+        ib_order = broker._make_ib_order(order)
+    
+    # Should not have outsideRth flag set (or set to False)
+    if hasattr(ib_order, "outsideRth"):
+        assert ib_order.outsideRth is not True
+
+
+def test_bracket_orders_have_outside_rth_during_extended_hours():
+    """Test that bracket orders (entry + TP + SL) all have outsideRth during extended hours."""
+    from src.ibkr_broker import Stock, LimitOrder, Order
+    
+    mock_ib = Mock()
+    mock_ib.isConnected.return_value = True
+    
+    # Mock placeOrder to capture the orders
+    placed_orders = []
+    def capture_order(contract, order):
+        placed_orders.append(order)
+        trade = Mock()
+        trade.order = order
+        # Assign orderId for parent-child linking
+        if not hasattr(order, "orderId"):
+            order.orderId = len(placed_orders) + 100
+        return trade
+    
+    mock_ib.placeOrder.side_effect = capture_order
+    
+    config = IBKRBrokerConfig(host="127.0.0.1", port=7497, client_id=1)
+    broker = IBKRBrokerTws(config=config, ib=mock_ib)
+    
+    bracket = BracketOrderRequest(
+        symbol="NVDA",
+        side=Side.BUY,
+        quantity=10,
+        entry_order_type=OrderType.LIMIT,
+        entry_limit_price=150.0,
+        tp_price=160.0,
+        sl_price=140.0,
+    )
+    
+    # Mock extended hours
+    with patch("src.ibkr_broker._is_regular_market_hours", return_value=False):
+        result = broker.place_bracket_order(bracket)
+    
+    # Should have placed 3 orders
+    assert len(placed_orders) == 3
+    entry_order, tp_order, sl_order = placed_orders
+    
+    # All three should have outsideRth=True
+    assert hasattr(entry_order, "outsideRth")
+    assert entry_order.outsideRth is True
+    
+    assert hasattr(tp_order, "outsideRth")
+    assert tp_order.outsideRth is True
+    
+    assert hasattr(sl_order, "outsideRth")
+    assert sl_order.outsideRth is True
+
+
 def test_price_unavailable_raises_error():
     """Test that missing price data raises clear error during extended hours."""
     mock_ib = Mock()

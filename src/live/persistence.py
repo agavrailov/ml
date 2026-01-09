@@ -71,14 +71,19 @@ class PersistentBarTracker:
             return None
 
 
-def compute_bar_hash(bar: dict) -> str:
+def compute_bar_hash(bar) -> str:  # noqa: ANN001
     """Compute hash of bar OHLC data for deduplication.
 
     Args:
-        bar: Bar dict with Open, High, Low, Close keys
+        bar: Bar dict with Open, High, Low, Close keys OR IB BarData object
 
     Returns:
         Short hash string (8 hex chars)
     """
-    ohlc_str = f"{bar['Open']}{bar['High']}{bar['Low']}{bar['Close']}"
+    # Handle both dict and IB BarData object
+    if isinstance(bar, dict):
+        ohlc_str = f"{bar['Open']}{bar['High']}{bar['Low']}{bar['Close']}"
+    else:
+        # IB BarData object with attributes
+        ohlc_str = f"{getattr(bar, 'open', 0)}{getattr(bar, 'high', 0)}{getattr(bar, 'low', 0)}{getattr(bar, 'close', 0)}"
     return hashlib.md5(ohlc_str.encode()).hexdigest()[:8]
