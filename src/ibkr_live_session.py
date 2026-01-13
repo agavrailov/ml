@@ -822,6 +822,38 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                 # Not all brokers have connect(); ignore.
                 pass
 
+        # Cancel any stale orders from previous sessions to start fresh.
+        # This prevents issues with orphaned brackets or orders placed with old configs.
+        try:
+            open_orders = broker.get_open_orders() if hasattr(broker, "get_open_orders") else []
+            canceled_count = 0
+            for order in open_orders:
+                order_symbol = str(getattr(order, "symbol", ""))
+                if order_symbol == cfg.symbol:
+                    order_id = str(getattr(order, "order_id", ""))
+                    try:
+                        broker.cancel_order(order_id)
+                        canceled_count += 1
+                        _log({
+                            "type": "stale_order_canceled",
+                            "run_id": run_id,
+                            "symbol": cfg.symbol,
+                            "order_id": order_id,
+                        })
+                    except Exception as exc:
+                        _log({
+                            "type": "stale_order_cancel_failed",
+                            "run_id": run_id,
+                            "symbol": cfg.symbol,
+                            "order_id": order_id,
+                            "error": repr(exc),
+                        })
+            if canceled_count > 0:
+                ts_print(f"[live] Canceled {canceled_count} stale order(s) for {cfg.symbol}")
+                time.sleep(2.0)  # Give IBKR time to process cancellations
+        except Exception as exc:
+            ts_print(f"[live] Warning: failed to cleanup stale orders: {exc}")
+
         strat_cfg = make_strategy_config_from_defaults()
         exec_ctx = ExecutionContext(symbol=cfg.symbol)
 
@@ -920,44 +952,6 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                 # Never let observability crash the loop.
                 pass
 
-            # Check for positions without bracket orders
-            try:
-                # Try to get IB trades for more accurate order type detection
-                ib_trades = None
-                if hasattr(broker, "_ib"):
-                    ib_obj = getattr(broker, "_ib", None)
-                    if ib_obj and callable(getattr(ib_obj, "trades", None)):
-                        try:
-                            ib_trades = ib_obj.trades()
-                        except Exception:
-                            pass
-
-                bracket_warnings = check_positions_have_brackets(
-                    positions,
-                    open_orders,
-                    run_id=run_id,
-                    symbol=cfg.symbol,
-                    ib_trades=ib_trades,
-                )
-                for warning in bracket_warnings:
-                    _log(warning)
-                    # Add alert for missing brackets
-                    alert_manager.add_alert(
-                        key=f"missing_brackets_{warning['symbol']}",
-                        severity=AlertSeverity.CRITICAL,
-                        alert_type="position_missing_brackets",
-                        message=f"Position {warning['symbol']} qty={warning['quantity']} lacks brackets (tp={warning['has_tp']}, sl={warning['has_sl']})",
-                    )
-                    # Also print to console for immediate visibility
-                    ts_print(
-                        f"[live] WARNING: Position in {warning['symbol']} "
-                        f"(qty={warning['quantity']}) lacks complete brackets: "
-                        f"has_tp={warning['has_tp']}, has_sl={warning['has_sl']} "
-                        f"(tp_orders={warning['tp_orders_count']}, sl_orders={warning['sl_orders_count']})"
-                    )
-            except Exception:
-                # Never let observability crash the loop.
-                pass
 
         bar_size_setting = _frequency_to_bar_size_setting(cfg.frequency)
 

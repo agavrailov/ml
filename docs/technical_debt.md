@@ -105,6 +105,27 @@ This file tracks known complexity/tech-debt items that were introduced intention
 
 ---
 
+## Strategy Config Not Reading from Active.json (January 2026) - ✅ RESOLVED
+
+**Problem**: Live trading system ignored the configuration deployed from the UI "Deploy to Production Config" button. Specifically, `enable_longs` and `allow_shorts` settings were not being respected.
+
+**Root Cause**: `make_strategy_config_from_defaults()` in `src/trading_session.py` was reading from hardcoded constants in `src/config.py` instead of using `get_strategy_defaults()` from `src/core/config_resolver.py`, which properly merges code defaults with user overrides from `configs/active.json`.
+
+**Impact**: 
+- Deployed short trading configuration was ignored
+- Live sessions ran long-only even when shorts were enabled in UI
+- All other strategy parameters (k_sigma, k_atr, etc.) were also not respected
+
+**Resolution (2026-01-12)**:
+- ✅ Updated `make_strategy_config_from_defaults()` to use `get_strategy_defaults()`
+- ✅ Added `enable_longs` and `allow_shorts` to returned StrategyConfig
+- ✅ Verified all tests pass
+- ✅ Confirmed live trading now reads from `configs/active.json`
+
+**Status**: Fixed and verified
+
+---
+
 ## Multi-Symbol Support
 
 **Priority**: Deferred

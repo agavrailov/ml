@@ -238,8 +238,8 @@ class StrategyDefaultsConfig:
     """
 
     # Core risk and reward parameters
-    risk_per_trade_pct: float = 0.001  # 1% of equity per trade
-    reward_risk_ratio: float = 0.1
+    risk_per_trade_pct: float = 0.01  # 1% of equity per trade
+    reward_risk_ratio: float = 2.5  # Reward:Risk ratio (e.g., 2.5:1 means TP is 2.5x SL distance)
 
     # Long/short-specific noise / filter parameters
     # How much of the model residual sigma_err we subtract from the predicted move.
