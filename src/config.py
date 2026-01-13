@@ -181,7 +181,7 @@ class IbConfig:
 
     Defaults are set up for **IB Gateway paper trading**:
     - host: 127.0.0.1
-    - port: 4002
+    - port: 4002 (GW), 7496 (TWS)
 
     Override via environment variables:
     - TWS_HOST
@@ -198,7 +198,7 @@ class IbConfig:
     """
 
     host: str = field(default_factory=lambda: os.getenv("TWS_HOST", "127.0.0.1"))
-    port: int = field(default_factory=lambda: int(os.getenv("TWS_PORT", "4002")))
+    port: int = field(default_factory=lambda: int(os.getenv("TWS_PORT", "7496")))
     client_id: int = field(default_factory=lambda: int(os.getenv("TWS_CLIENT_ID", "1")))
     account: str = field(default_factory=lambda: os.getenv("IBKR_ACCOUNT", "U16442949"))
     max_concurrent_requests: int = 50
