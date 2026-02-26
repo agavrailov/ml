@@ -1115,13 +1115,31 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                 model_error_sigma = max(1e-6, 0.5 * current_price * 0.01)
                 atr = max(1e-6, current_price * 0.01)
 
+                # Query real account equity and buying power from broker.
+                real_equity = equity  # fallback to cfg.initial_equity
+                bp: float | None = None
+                try:
+                    acct = broker.get_account_summary() if hasattr(broker, "get_account_summary") else {}
+                    if acct:
+                        for key in ("NetLiquidation", "EquityWithLoanValue"):
+                            if key in acct and acct[key] > 0:
+                                real_equity = acct[key]
+                                break
+                        for key in ("BuyingPower", "AvailableFunds"):
+                            if key in acct and acct[key] > 0:
+                                bp = acct[key]
+                                break
+                except Exception:
+                    pass  # fall back to cfg.initial_equity
+
                 state = StrategyState(
                     current_price=current_price,
                     predicted_price=float(predicted_price),
                     model_error_sigma=float(model_error_sigma),
                     atr=float(atr),
-                    account_equity=float(equity),
+                    account_equity=float(real_equity),
                     has_open_position=bool(has_open_position),
+                    buying_power=bp,
                 )
 
                 plan = compute_tp_sl_and_size(state, strat_cfg)

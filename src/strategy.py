@@ -56,6 +56,12 @@ class StrategyState:
 
     has_open_position: bool  # True if we already hold a position (long or short)
 
+    # Optional: broker-reported buying power (available funds for new positions).
+    # When set, position size is capped so that the max potential loss (SL-based)
+    # stays within what the account can actually support.  In margin terms this
+    # translates to size * price <= buying_power, preventing order rejections.
+    buying_power: Optional[float] = None
+
 
 @dataclass
 class TradePlan:
@@ -116,6 +122,12 @@ def _compute_trade_plan_for_long(price: float, predicted_return: float, sigma_re
         return None
 
     size = max_risk_notional / risk_per_unit
+
+    # Cap size to stay within broker buying power (prevents margin rejections).
+    if state.buying_power is not None and state.buying_power > 0 and price > 0:
+        max_size_by_bp = state.buying_power / price
+        size = min(size, max_size_by_bp)
+
     if size < cfg.min_position_size:
         return None
 
@@ -166,6 +178,12 @@ def _compute_trade_plan_for_short(price: float, predicted_return: float, sigma_r
         return None
 
     size = max_risk_notional / risk_per_unit
+
+    # Cap size to stay within broker buying power (prevents margin rejections).
+    if state.buying_power is not None and state.buying_power > 0 and price > 0:
+        max_size_by_bp = state.buying_power / price
+        size = min(size, max_size_by_bp)
+
     if size < cfg.min_position_size:
         return None
 

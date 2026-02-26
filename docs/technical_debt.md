@@ -143,6 +143,26 @@ This file tracks known complexity/tech-debt items that were introduced intention
 
 ---
 
+## Position Sizing: Placeholder Risk Inputs (February 2026)
+
+**Priority**: Medium
+
+**Current State**: Both `poll_loop.py` and `ibkr_live_session.py` use placeholder values for `model_error_sigma` (~0.5% of price) and `atr` (~1% of price) instead of computing them from actual historical data. This means the strategy's signal filters (k_sigma, k_atr) operate on synthetic noise estimates, which can produce very tight stop distances and over-sized positions.
+
+**Buying power guard added (2026-02-26)**:
+- ✅ `StrategyState.buying_power` — optional field, caps `size * price <= buying_power`
+- ✅ Real equity queried from broker (`NetLiquidation`) instead of stale `--initial-equity` CLI default
+- ✅ `BuyingPower` / `AvailableFunds` queried from broker and passed to strategy
+
+**Remaining**:
+1. Wire real ATR from historical bar data (rolling window)
+2. Wire real model error sigma from prediction residuals
+3. Both would produce more realistic stop distances and naturally constrain position sizes
+
+**Risk if not addressed**: With synthetic risk inputs, strategy may generate trades with tiny stop distances → large position sizes. The buying power guard prevents margin rejections, but the underlying sizing may not reflect actual market volatility.
+
+---
+
 ## Multi-Symbol Support
 
 **Priority**: Deferred

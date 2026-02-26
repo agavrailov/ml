@@ -368,13 +368,41 @@ def _run_single_cycle(
         model_error_sigma = max(1e-6, 0.5 * current_price * 0.01)
         atr = max(1e-6, current_price * 0.01)
 
+        # Query real account equity and buying power from broker.
+        real_equity = equity  # fallback to cfg.initial_equity
+        buying_power: float | None = None
+        try:
+            acct = broker.get_account_summary() if hasattr(broker, "get_account_summary") else {}
+            if acct:
+                # Prefer NetLiquidation (total account value); fall back to EquityWithLoanValue.
+                for key in ("NetLiquidation", "EquityWithLoanValue"):
+                    if key in acct and acct[key] > 0:
+                        real_equity = acct[key]
+                        break
+                # BuyingPower or AvailableFunds for margin constraint.
+                for key in ("BuyingPower", "AvailableFunds"):
+                    if key in acct and acct[key] > 0:
+                        buying_power = acct[key]
+                        break
+                log_fn({
+                    "type": "account_equity",
+                    "run_id": run_id,
+                    "symbol": cfg.symbol,
+                    "real_equity": real_equity,
+                    "buying_power": buying_power,
+                    "cfg_initial_equity": float(equity),
+                })
+        except Exception:
+            pass  # fall back to cfg.initial_equity
+
         state = StrategyState(
             current_price=current_price,
             predicted_price=float(predicted_price),
             model_error_sigma=float(model_error_sigma),
             atr=float(atr),
-            account_equity=float(equity),
+            account_equity=float(real_equity),
             has_open_position=bool(has_open_position),
+            buying_power=buying_power,
         )
 
         plan = compute_tp_sl_and_size(state, strat_cfg)
@@ -583,7 +611,7 @@ def run_poll_loop(cfg) -> None:
             if target > now:
                 wait_secs = (target - now).total_seconds()
                 ts_print(
-                    f"[poll] Next bar at {target.strftime('%H:%M %Z')} "
+                    f"[poll] Next bar at {target.astimezone().strftime('%H:%M %Z')} "
                     f"(waiting {wait_secs / 60:.1f} min)"
                 )
 
