@@ -24,6 +24,11 @@ class SystemState(Enum):
     FATAL_ERROR = "FATAL_ERROR"
     STOPPED = "STOPPED"
 
+    # Poll-loop states (connect-on-demand architecture)
+    SLEEPING = "SLEEPING"
+    PROCESSING = "PROCESSING"
+    ERROR = "ERROR"
+
 
 class StateMachine:
     """Manages system state transitions with logging."""

@@ -126,6 +126,23 @@ This file tracks known complexity/tech-debt items that were introduced intention
 
 ---
 
+## Persistent Connection Architecture (February 2026) - DEPRECATED
+
+**Status**: Replaced by poll-based connect-on-demand architecture
+
+**What changed**: The always-connected `keepUpToDate=True` approach in `ibkr_live_session.py` was fundamentally unreliable (HMDS inactivity, silent subscription death, complex reconnection logic). Replaced with `src/live/poll_loop.py` which connects fresh on each bar cycle.
+
+**Deprecated components** (kept for reference/rollback):
+- `ReconnectController` class (reconnect.py lines 131-365)
+- `_reconnect_loop` thread in `ibkr_live_session.py`
+- `_activate_hmds()` workaround
+- Heartbeat stale-data polling
+- `disconnectedEvent` handler
+
+**Cleanup opportunity**: Once the poll loop proves stable in production, the deprecated code in `ibkr_live_session.py` (~600 lines of reconnection/heartbeat logic) can be removed.
+
+---
+
 ## Multi-Symbol Support
 
 **Priority**: Deferred

@@ -211,48 +211,50 @@ backoff = min(1800, backoff * 60)  # 60, 120, ... 1800s (30min)
 
 ## Data Flow
 
-### Startup Sequence
-1. `INITIALIZING` - Load config, create components
-2. `CONNECTING` - ConnectionManager finds free clientId
-3. `CONNECTED` - Attach error handlers, qualify contracts
-4. `SUBSCRIBED` - Subscribe to market data (reqHistoricalData)
-5. Warm up predictor from CSV (24 bars)
-6. `TRADING` - Start heartbeat loop, process bars
+### Architecture: Poll-Based Connect-on-Demand (February 2026)
 
-### Bar Processing
-1. IB delivers bar via callback (`onBarUpdate`)
-2. PersistentBarTracker checks hash (dedupe)
-3. Log bar event to JSONL
-4. LivePredictor makes prediction
-5. Decision logic (strategy) determines action
-6. Execute order via Broker abstraction
-7. StatusManager updates status.json
-8. AlertManager checks for issues (missing brackets)
+The system uses a **poll-based** architecture for hourly+ bar frequencies.
+Instead of maintaining a persistent connection with `keepUpToDate=True`,
+each cycle creates a fresh IB connection, fetches data, processes it, and disconnects.
 
-### Reconnection Flow
-1. Detect disconnection (ib.disconnectedEvent)
-2. StateMachine → DISCONNECTED
-3. ReconnectController starts loop:
-   - Check market hours
-   - Apply backoff
-   - Attempt connection
-   - Probe with reqCurrentTime()
-4. On success:
-   - StateMachine → CONNECTED
-   - Resubscribe to data
-   - **Force HMDS activation** (error 2107 fix)
-   - StateMachine → SUBSCRIBED → TRADING
-5. On repeated failure:
-   - Increase backoff
-   - Check for gateway restart pattern
-   - StateMachine → WAITING_FOR_GATEWAY if detected
+This eliminates all reconnection complexity (ReconnectController, HMDS activation,
+stale-data polling, heartbeat threads) and survives PC sleep/wake reliably.
 
-#### HMDS Activation
-After computer wake-from-sleep or reconnection, IBKR's HMDS (historical data) farm may go inactive (error 2107). This causes `keepUpToDate` subscriptions to stop delivering bars.
+**Implementation**: `src/live/poll_loop.py`
 
-The system now forces HMDS activation after every reconnection by requesting a small amount of historical data. This ensures bars resume flowing within 2-3 minutes.
+### Poll Loop Cycle
+1. `SLEEPING` - Compute next bar boundary, poll-wait (30s intervals)
+2. `CONNECTING` - Fresh `IB()` instance, ConnectionManager finds free clientId
+3. `PROCESSING` - Fetch bars (`reqHistoricalData`, one-shot), deduplicate, predict, execute
+4. `SLEEPING` - Disconnect and wait for next cycle
 
-**Stale Data Detection**: If HMDS remains inactive, the reduced warning threshold (10 min cap) triggers forced reconnection, which re-activates HMDS.
+On failure: retry up to 3× with 30s delays, then skip to next bar.
+
+### Bar Processing (per cycle)
+1. Connect to IB Gateway / TWS
+2. Fetch 7 days of historical bars (one-shot, `keepUpToDate=False`)
+3. PersistentBarTracker checks hash (dedupe)
+4. Reconcile position state from broker
+5. Check bracket orders on existing positions
+6. LivePredictor makes prediction
+7. Decision logic (strategy) determines action
+8. Execute order via Broker abstraction
+9. Log events + update status.json
+10. Disconnect
+
+### Sleep/Wake Resilience
+The wait loop uses `time.sleep(30)` with wall-clock checks:
+```python
+while datetime.now() < target:
+    time.sleep(30)
+```
+If the PC sleeps through a bar boundary, on wake the loop immediately
+detects the deadline has passed and runs the cycle.
+
+### Legacy: Persistent Connection (deprecated)
+The old `run_live_session()` in `ibkr_live_session.py` used `keepUpToDate=True`
+with a background reconnect thread. This is kept for reference but no longer
+used by the engine. See `docs/reconnect_improvements.md` for history.
 
 ## Configuration
 
@@ -274,20 +276,13 @@ The system now forces HMDS activation after every reconnection by requesting a s
 
 ## Threading Model
 
-**Single-threaded event loop** with background reconnection thread:
+**Single-threaded** — no background threads required.
 
-- **Main thread**: IB event loop (`ib.run()`)
-  - Bar callbacks
-  - Error handlers
-  - Disconnection events
-
-- **Reconnection thread**: Spawned only when disconnected
-  - Runs ReconnectController loop
-  - Terminates on successful reconnection
-  - Uses `threading.Event` for coordination
+The poll loop runs sequentially: sleep → connect → process → disconnect → sleep.
+No IB event loop (`ib.run()`) is needed since we use one-shot `reqHistoricalData`.
 
 **Synchronization**:
-- All state transitions thread-safe (simple assignments)
+- No thread coordination needed (single-threaded)
 - EventLog writes atomic (line-buffered JSONL)
 - StatusManager uses temp-file-rename for atomicity
 
@@ -380,15 +375,17 @@ The system now forces HMDS activation after every reconnection by requesting a s
 
 ```
 src/
-├── ibkr_live_session.py       # Main entry point
+├── ibkr_live_session.py       # Legacy persistent-connection runner (deprecated)
 ├── live/
+│   ├── poll_loop.py           # Poll-based connect-on-demand loop (active)
+│   ├── engine.py              # Engine entry point (routes to poll_loop)
 │   ├── state.py               # StateMachine, SystemState enum
-│   ├── reconnect.py           # ReconnectController, ConnectionManager
+│   ├── reconnect.py           # ConnectionManager (connect_with_unique_client_id)
 │   ├── status.py              # StatusManager (status.json)
 │   ├── alerts.py              # AlertManager (alerts.jsonl)
 │   ├── persistence.py         # PersistentBarTracker
 │   └── contracts.py           # Event schemas (StateTransitionEvent, etc)
-├── lstm_live_predictor.py     # Real-time LSTM inference
+├── live_predictor.py          # Real-time LSTM inference
 └── ui/page_modules/live_page.py  # Streamlit dashboard
 
 scripts/
