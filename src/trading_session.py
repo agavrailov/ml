@@ -28,15 +28,8 @@ from typing import Iterable, Optional
 import pandas as pd
 
 from src.broker import Broker, SimulatedBroker
-from src.config import (
-    BROKER_BACKEND,
-    K_ATR_LONG,
-    K_ATR_SHORT,
-    K_SIGMA_LONG,
-    K_SIGMA_SHORT,
-    RISK_PER_TRADE_PCT,
-    REWARD_RISK_RATIO,
-)
+from src.config import BROKER_BACKEND
+from src.core.config_resolver import get_strategy_defaults
 from src.execution import ExecutionContext, submit_trade_plan
 from src.strategy import StrategyConfig, StrategyState, TradePlan, compute_tp_sl_and_size
 
@@ -51,19 +44,22 @@ class SessionConfig:
 
 
 def make_strategy_config_from_defaults() -> StrategyConfig:
-    """Build a StrategyConfig using global STRATEGY_DEFAULTS.
+    """Build a StrategyConfig using effective strategy defaults.
 
-    For now we use the same filters for both long and short sides as indicated
-    by the flat config aliases.
+    Merges code defaults from src.config with user overrides from configs/active.json.
+    This ensures live trading respects the configuration deployed from the UI.
     """
-
+    defaults = get_strategy_defaults()
+    
     return StrategyConfig(
-        risk_per_trade_pct=RISK_PER_TRADE_PCT,
-        reward_risk_ratio=REWARD_RISK_RATIO,
-        k_sigma_long=K_SIGMA_LONG,
-        k_sigma_short=K_SIGMA_SHORT,
-        k_atr_long=K_ATR_LONG,
-        k_atr_short=K_ATR_SHORT,
+        risk_per_trade_pct=defaults["risk_per_trade_pct"],
+        reward_risk_ratio=defaults["reward_risk_ratio"],
+        k_sigma_long=defaults["k_sigma_long"],
+        k_sigma_short=defaults["k_sigma_short"],
+        k_atr_long=defaults["k_atr_long"],
+        k_atr_short=defaults["k_atr_short"],
+        enable_longs=defaults["enable_longs"],
+        allow_shorts=defaults["allow_shorts"],
     )
 
 

@@ -73,14 +73,9 @@ def run(config: LiveEngineConfig | dict, *, active_json_path: Path | None = None
         config: Engine configuration (dict or LiveEngineConfig)
         active_json_path: Optional path to configs/active.json for strategy overrides
 
-    The engine:
-    1. Connects to IBKR/TWS
-    2. Subscribes to keepUpToDate bar stream
-    3. For each new bar:
-       - Updates predictor and generates prediction
-       - Evaluates strategy decision
-       - Submits orders (if decision is TRADE and kill switch is off)
-    4. Writes all events to JSONL log for observability
+    Uses the poll-based connect-on-demand architecture (src.live.poll_loop):
+    for each bar cycle, connects to IBKR, fetches bars, runs prediction +
+    strategy, executes trades, then disconnects.
 
     The engine respects the kill switch file (ui_state/live/KILL_SWITCH) to
     prevent new order submissions without stopping the daemon.
@@ -90,7 +85,7 @@ def run(config: LiveEngineConfig | dict, *, active_json_path: Path | None = None
     else:
         cfg = config
 
-    # TODO: If active_json_path is provided, merge strategy params from it
-    # For now, delegate to existing implementation
+    from src.live.poll_loop import run_poll_loop
+
     legacy_cfg = cfg.to_legacy_config()
-    run_live_session(legacy_cfg)
+    run_poll_loop(legacy_cfg)

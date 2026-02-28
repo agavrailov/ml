@@ -157,3 +157,85 @@ def test_short_entries_only_when_enabled(base_config: StrategyConfig) -> None:
     assert plan2.tp_price < bearish_state2.current_price
     assert plan2.sl_price > bearish_state2.current_price
     assert plan2.size >= short_cfg.min_position_size
+
+
+# ---------------------------------------------------------------------------
+# Buying power cap tests
+# ---------------------------------------------------------------------------
+
+def test_buying_power_caps_long_position_size(base_config: StrategyConfig) -> None:
+    """When buying_power is set, long position size should not exceed buying_power / price."""
+    # Without buying power: produces a trade with uncapped size.
+    state_no_bp = make_state(predicted_price=105.0, model_error_sigma=0.5, atr=1.0,
+                             account_equity=100_000.0)
+    plan_no_bp = compute_tp_sl_and_size(state_no_bp, base_config)
+    assert plan_no_bp is not None
+
+    # With a tight buying power constraint: size should be capped.
+    state_bp = StrategyState(
+        current_price=100.0,
+        predicted_price=105.0,
+        model_error_sigma=0.5,
+        atr=1.0,
+        account_equity=100_000.0,
+        has_open_position=False,
+        buying_power=5_000.0,  # can only buy 50 shares at $100
+    )
+    plan_bp = compute_tp_sl_and_size(state_bp, base_config)
+    assert plan_bp is not None
+    assert plan_bp.size <= 5_000.0 / 100.0 + 0.01  # 50 shares (+ float tolerance)
+    assert plan_bp.size < plan_no_bp.size  # must be strictly less than uncapped
+
+
+def test_buying_power_caps_short_position_size() -> None:
+    """When buying_power is set, short position size should also be capped."""
+    short_cfg = StrategyConfig(
+        risk_per_trade_pct=0.01,
+        reward_risk_ratio=2.0,
+        k_sigma_long=1.0,
+        k_sigma_short=1.0,
+        k_atr_long=0.5,
+        k_atr_short=0.5,
+        min_position_size=1.0,
+        enable_longs=True,
+        allow_shorts=True,
+    )
+
+    state_bp = StrategyState(
+        current_price=100.0,
+        predicted_price=95.0,
+        model_error_sigma=0.5,
+        atr=1.0,
+        account_equity=100_000.0,
+        has_open_position=False,
+        buying_power=3_000.0,  # max 30 shares at $100
+    )
+    plan = compute_tp_sl_and_size(state_bp, short_cfg)
+    assert plan is not None
+    assert plan.direction == -1
+    assert plan.size <= 3_000.0 / 100.0 + 0.01
+
+
+def test_no_buying_power_does_not_cap(base_config: StrategyConfig) -> None:
+    """When buying_power is None, position sizing should be uncapped (risk-only)."""
+    state = make_state(predicted_price=105.0, model_error_sigma=0.5, atr=1.0,
+                       account_equity=100_000.0)
+    plan = compute_tp_sl_and_size(state, base_config)
+    assert plan is not None
+    # With $100K equity and 1% risk, size should be well above what $5K BP would allow.
+    assert plan.size > 50.0  # 50 = $5K / $100
+
+
+def test_buying_power_too_low_rejects_trade(base_config: StrategyConfig) -> None:
+    """If buying_power is so low that max_size < min_position_size, trade is rejected."""
+    state = StrategyState(
+        current_price=100.0,
+        predicted_price=105.0,
+        model_error_sigma=0.5,
+        atr=1.0,
+        account_equity=100_000.0,
+        has_open_position=False,
+        buying_power=50.0,  # max 0.5 shares → below min_position_size
+    )
+    plan = compute_tp_sl_and_size(state, base_config)
+    assert plan is None

@@ -28,6 +28,7 @@ import os
 import threading
 import time
 import traceback
+import warnings
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,6 +36,11 @@ from typing import Callable, Optional
 
 from src.config import IB as IbConfig
 from src.execution import ExecutionContext, submit_trade_plan_bracket
+from src.live.alerts import AlertManager, AlertSeverity
+from src.live.persistence import PersistentBarTracker, compute_bar_hash
+from src.live.reconnect import ConnectionManager, ReconnectConfig, ReconnectController
+from src.live.state import StateMachine, SystemState
+from src.live.status import StatusManager
 from src.live_log import (
     append_event,
     create_run_id,
@@ -329,13 +335,16 @@ def _no_update_warning_threshold_seconds(freq: str) -> float:
     keepUpToDate updates are expected at least once per bar (often more frequently),
     but for larger bar sizes it's normal to see long quiet periods.
 
-    We use max(5 minutes, 2x bar period) as a conservative threshold.
+    After reconnection, bars should arrive quickly if HMDS is active. We cap the
+    threshold at 10 minutes to detect HMDS inactivity faster.
     """
-    base = 300.0
+    base = 300.0  # 5 minutes minimum
     mins = _frequency_to_minutes(freq)
     if mins is None or mins <= 0:
         return base
-    return max(base, float(2 * mins * 60))
+    # Use 0.5x bar period, capped at 10 minutes
+    bar_half_period = float(mins * 30)  # 30 seconds per minute (mins * 60 / 2)
+    return min(600.0, max(base, bar_half_period))
 
 
 def _is_market_hours(*, premarket: bool = True) -> bool:
@@ -537,6 +546,66 @@ def _connect_with_unique_client_id(
     )
 
 
+def _activate_hmds(
+    ib,  # noqa: ANN001
+    contract,  # noqa: ANN001
+    bar_size_setting: str,
+    log_fn: Callable[[dict], None],
+    run_id: str,
+    symbol: str,
+) -> bool:
+    """Force HMDS data farm activation with one-shot historical data request.
+
+    After reconnection or sleep/wake, IBKR's HMDS farm may go inactive (error 2107).
+    This causes keepUpToDate subscriptions to stop delivering bars until HMDS activates.
+    
+    This function triggers HMDS activation by requesting a small amount of historical data.
+
+    Args:
+        ib: ib_insync.IB instance
+        contract: Qualified contract for the symbol
+        bar_size_setting: Bar size (e.g., "4 hours")
+        log_fn: Logging function
+        run_id: Current run ID
+        symbol: Symbol name for logging
+
+    Returns:
+        True if activation succeeded, False otherwise
+    """
+    try:
+        # Request 1 day of data to wake up HMDS
+        wake_bars = ib.reqHistoricalData(
+            contract,
+            endDateTime="",
+            durationStr="1 D",
+            barSizeSetting=bar_size_setting,
+            whatToShow="TRADES",
+            useRTH=False,
+            formatDate=1,
+            keepUpToDate=False,  # One-shot request
+        )
+        
+        log_fn({
+            "type": "hmds_activation_request",
+            "run_id": run_id,
+            "symbol": symbol,
+            "bars_received": len(wake_bars) if wake_bars else 0,
+        })
+        
+        # Brief delay to let HMDS fully activate
+        time.sleep(2.0)
+        return True
+        
+    except Exception as exc:  # noqa: BLE001
+        log_fn({
+            "type": "hmds_activation_failed",
+            "run_id": run_id,
+            "symbol": symbol,
+            "error": repr(exc),
+        })
+        return False
+
+
 def _attach_ib_error_logging(
     ib,  # noqa: ANN001
     *,
@@ -589,6 +658,10 @@ def _attach_ib_error_logging(
 def run_live_session(cfg: LiveSessionConfig) -> None:
     if not _HAVE_IB:
         raise RuntimeError("ib_insync is required; install it with 'pip install ib-insync'")
+    
+    # Suppress RuntimeWarning for unawaited coroutines from ib_insync
+    # ib_insync's reqHistoricalData creates coroutines internally but handles them
+    warnings.filterwarnings("ignore", category=RuntimeWarning, message=".*coroutine.*was never awaited.*")
 
     live_dir = Path(cfg.log_dir) if cfg.log_dir else None
 
@@ -629,6 +702,34 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
     ib = IB()  # type: ignore[call-arg]
 
     preferred_client_id = IbConfig.client_id if cfg.client_id is None else int(cfg.client_id)
+
+    # Initialize observability components (before state machine/reconnect controller)
+    live_dir_path = Path(live_dir) if live_dir else (Path(__file__).resolve().parents[1] / "ui_state" / "live")
+    status_manager = StatusManager(live_dir_path / "status.json")
+    alert_manager = AlertManager(live_dir_path / "alerts.jsonl")
+    bar_tracker = PersistentBarTracker(live_dir_path / "last_bar.json")
+
+    # Initialize state machine
+    state_machine = StateMachine(
+        initial_state=SystemState.INITIALIZING,
+        event_logger=_log,
+        run_id=run_id,
+    )
+
+    # Initialize reconnect controller (needs alert_manager)
+    reconnect_config = ReconnectConfig(
+        host=IbConfig.host,
+        port=IbConfig.port,
+        preferred_client_id=preferred_client_id,
+    )
+    reconnect_controller = ReconnectController(
+        ib=ib,
+        config=reconnect_config,
+        event_logger=_log,
+        run_id=run_id,
+        alert_manager=alert_manager,
+    )
+
     ts_print(
         f"[live] Connecting to TWS at {IbConfig.host}:{IbConfig.port} "
         f"(preferred clientId={preferred_client_id})",
@@ -637,22 +738,26 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
     detach_ib_error_logger: Callable[[], None] | None = None
 
     # Reconnect bookkeeping (wired later, after bars subscription exists).
-    shutdown_requested = False
     reconnect_stop = threading.Event()
     reconnect_thread: threading.Thread | None = None
     detach_disconnected_handler: Callable[[], None] | None = None
     
     # Connection health tracking
     connection_established_time: float | None = None
+    
+    # Shutdown flag (accessed by _heartbeat thread)
+    shutdown_requested = False
 
     try:
-        connected_client_id = _connect_with_unique_client_id(
+        state_machine.transition_to(SystemState.CONNECTING, reason="initial_connection")
+        connected_client_id = ConnectionManager.connect_with_unique_client_id(
             ib,
             host=IbConfig.host,
             port=IbConfig.port,
             preferred_client_id=preferred_client_id,
         )
         connection_established_time = time.time()
+        state_machine.transition_to(SystemState.CONNECTED, reason="connection_established")
         ts_print(f"[live] Connected (clientId={connected_client_id}).")
         _log(
             {
@@ -663,6 +768,23 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                 "client_id": int(connected_client_id),
                 "connection_time": connection_established_time,
             }
+        )
+        
+        # Initialize status.json with CONNECTED state
+        status_manager.update(
+            state=SystemState.CONNECTED.value,
+            connection_info={
+                "uptime_minutes": 0.0,
+                "last_reconnect": None,
+            },
+            last_bar_info={
+                "time": None,
+                "age_minutes": None,
+                "expected_next": None,
+            },
+            position_info={"status": "UNKNOWN", "quantity": 0.0},
+            alert_count=0,
+            kill_switch_enabled=bool(is_kill_switch_enabled(live_dir)),
         )
 
         # Critical for diagnosing "connected but no data".
@@ -700,6 +822,38 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                 # Not all brokers have connect(); ignore.
                 pass
 
+        # Cancel any stale orders from previous sessions to start fresh.
+        # This prevents issues with orphaned brackets or orders placed with old configs.
+        try:
+            open_orders = broker.get_open_orders() if hasattr(broker, "get_open_orders") else []
+            canceled_count = 0
+            for order in open_orders:
+                order_symbol = str(getattr(order, "symbol", ""))
+                if order_symbol == cfg.symbol:
+                    order_id = str(getattr(order, "order_id", ""))
+                    try:
+                        broker.cancel_order(order_id)
+                        canceled_count += 1
+                        _log({
+                            "type": "stale_order_canceled",
+                            "run_id": run_id,
+                            "symbol": cfg.symbol,
+                            "order_id": order_id,
+                        })
+                    except Exception as exc:
+                        _log({
+                            "type": "stale_order_cancel_failed",
+                            "run_id": run_id,
+                            "symbol": cfg.symbol,
+                            "order_id": order_id,
+                            "error": repr(exc),
+                        })
+            if canceled_count > 0:
+                ts_print(f"[live] Canceled {canceled_count} stale order(s) for {cfg.symbol}")
+                time.sleep(2.0)  # Give IBKR time to process cancellations
+        except Exception as exc:
+            ts_print(f"[live] Warning: failed to cleanup stale orders: {exc}")
+
         strat_cfg = make_strategy_config_from_defaults()
         exec_ctx = ExecutionContext(symbol=cfg.symbol)
 
@@ -709,6 +863,35 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
 
         # Track order lifecycle across snapshots (for `order_status` / `fill` events).
         order_state: dict[str, dict[str, object]] = {}
+
+        def _get_position_status() -> dict[str, object]:
+            """Get current position status for status reporting.
+            
+            Returns dict with 'status' (FLAT/OPEN/UNKNOWN) and 'quantity'.
+            """
+            # Return early if disconnected to avoid triggering unawaited coroutines
+            if not ib.isConnected():
+                return {"status": "UNKNOWN", "quantity": 0.0}
+            
+            try:
+                positions = broker.get_positions() if hasattr(broker, "get_positions") else []
+                if not positions:
+                    return {"status": "FLAT", "quantity": 0.0}
+                
+                # Sum quantities across all positions
+                total_qty = 0.0
+                for pos in positions:
+                    try:
+                        qty = float(getattr(pos, "quantity", 0.0))
+                        total_qty += qty
+                    except Exception:
+                        continue
+                
+                if abs(total_qty) < 0.01:
+                    return {"status": "FLAT", "quantity": 0.0}
+                return {"status": "OPEN", "quantity": total_qty}
+            except Exception:
+                return {"status": "UNKNOWN", "quantity": 0.0}
 
         def _log_broker_snapshot(*, where: str, bar_time: str | None = None) -> None:
             """Best-effort broker snapshot for observability.
@@ -738,20 +921,20 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
             except Exception:
                 acct = {}
 
-            _log(
-                {
-                    "type": "broker_snapshot",
-                    "run_id": run_id,
-                    "symbol": cfg.symbol,
-                    "frequency": cfg.frequency,
-                    "bar_time": bar_time,
-                    "where": where,
-                    "kill_switch_enabled": bool(is_kill_switch_enabled(live_dir)),
-                    "positions": positions,
-                    "open_orders": open_orders,
-                    "account_summary": acct,
-                }
-            )
+                _log(
+                    {
+                        "type": "broker_snapshot",
+                        "run_id": run_id,
+                        "symbol": cfg.symbol,
+                        "frequency": cfg.frequency,
+                        "bar_time": bar_time,
+                        "where": where,
+                        "kill_switch_enabled": bool(is_kill_switch_enabled(live_dir)),
+                        "positions": positions,
+                        "open_orders": open_orders,
+                        "account_summary": acct,
+                    }
+                )
 
             try:
                 order_state, lifecycle_events = derive_order_lifecycle_events(
@@ -769,37 +952,6 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                 # Never let observability crash the loop.
                 pass
 
-            # Check for positions without bracket orders
-            try:
-                # Try to get IB trades for more accurate order type detection
-                ib_trades = None
-                if hasattr(broker, "_ib"):
-                    ib_obj = getattr(broker, "_ib", None)
-                    if ib_obj and callable(getattr(ib_obj, "trades", None)):
-                        try:
-                            ib_trades = ib_obj.trades()
-                        except Exception:
-                            pass
-
-                bracket_warnings = check_positions_have_brackets(
-                    positions,
-                    open_orders,
-                    run_id=run_id,
-                    symbol=cfg.symbol,
-                    ib_trades=ib_trades,
-                )
-                for warning in bracket_warnings:
-                    _log(warning)
-                    # Also print to console for immediate visibility
-                    ts_print(
-                        f"[live] WARNING: Position in {warning['symbol']} "
-                        f"(qty={warning['quantity']}) lacks complete brackets: "
-                        f"has_tp={warning['has_tp']}, has_sl={warning['has_sl']} "
-                        f"(tp_orders={warning['tp_orders_count']}, sl_orders={warning['sl_orders_count']})"
-                    )
-            except Exception:
-                # Never let observability crash the loop.
-                pass
 
         bar_size_setting = _frequency_to_bar_size_setting(cfg.frequency)
 
@@ -841,9 +993,7 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                 "last_bar_time": initial_last_bar_time,
             }
         )
-        ts_print(
-            f"[live] Initial historical bars received: n={initial_n_bars} last={initial_last_bar_time}"
-        )
+        # Removed verbose logging: initial bars info (logged to JSONL instead)
 
         ts_print(f"[live] Subscribed to keepUpToDate bars ({bar_size_setting}) for {cfg.symbol}.")
         _log(
@@ -867,14 +1017,15 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
             "last_has_new_bar": None,
         }
 
-        # When false, we keep the event loop running but skip any trading actions.
-        trading_enabled = True
-
         # Best-effort dedupe for completed bars.
         last_completed_bar_time_iso: str | None = None
 
+        # State transition: subscribed to data, ready to trade
+        state_machine.transition_to(SystemState.SUBSCRIBED, reason="data_subscription_established")
+        state_machine.transition_to(SystemState.TRADING, reason="ready_to_trade")
+
         def _on_bar_update(bar_list, has_new_bar: bool) -> None:  # noqa: ANN001
-            nonlocal equity, has_open_position, bar_count, trading_enabled, last_completed_bar_time_iso
+            nonlocal equity, has_open_position, bar_count, last_completed_bar_time_iso
 
             # Track liveness even for in-progress bar updates.
             try:
@@ -888,6 +1039,12 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                 return
             if not bar_list:
                 return
+            
+            # Clear stale data alert when bars resume
+            try:
+                alert_manager.clear_alert(f"stale_data_{cfg.symbol}")
+            except Exception:
+                pass
 
             try:
                 b = bar_list[-1]
@@ -912,10 +1069,13 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                     pass
 
                 # Dedupe: resubscribe/reconnect can replay the last completed bar.
-                if bar_time_iso is not None and bar_time_iso == last_completed_bar_time_iso:
+                # Use persistent tracker for deduplication across restarts
+                bar_hash = compute_bar_hash(b)
+                if bar_time_iso is not None and bar_tracker.is_duplicate(bar_time_iso, bar_hash):
                     return
                 if bar_time_iso is not None:
                     last_completed_bar_time_iso = bar_time_iso
+                    bar_tracker.mark_processed(bar_time_iso, bar_hash)
 
                 bar = {
                     "Time": bar_time_raw,
@@ -942,7 +1102,7 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                 bar_count += 1
 
                 # During reconnect windows, keep logging bars but do not trade.
-                if not trading_enabled:
+                if not state_machine.can_trade():
                     return
                 every = max(1, int(getattr(cfg, "snapshot_every_n_bars", 1)))
                 if bar_count % every == 0:
@@ -955,13 +1115,31 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                 model_error_sigma = max(1e-6, 0.5 * current_price * 0.01)
                 atr = max(1e-6, current_price * 0.01)
 
+                # Query real account equity and buying power from broker.
+                real_equity = equity  # fallback to cfg.initial_equity
+                bp: float | None = None
+                try:
+                    acct = broker.get_account_summary() if hasattr(broker, "get_account_summary") else {}
+                    if acct:
+                        for key in ("NetLiquidation", "EquityWithLoanValue"):
+                            if key in acct and acct[key] > 0:
+                                real_equity = acct[key]
+                                break
+                        for key in ("BuyingPower", "AvailableFunds"):
+                            if key in acct and acct[key] > 0:
+                                bp = acct[key]
+                                break
+                except Exception:
+                    pass  # fall back to cfg.initial_equity
+
                 state = StrategyState(
                     current_price=current_price,
                     predicted_price=float(predicted_price),
                     model_error_sigma=float(model_error_sigma),
                     atr=float(atr),
-                    account_equity=float(equity),
+                    account_equity=float(real_equity),
                     has_open_position=bool(has_open_position),
+                    buying_power=bp,
                 )
 
                 plan = compute_tp_sl_and_size(state, strat_cfg)
@@ -1008,7 +1186,7 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                 _log(decision_event)
 
                 try:
-                    bracket_ids = submit_trade_plan_bracket(broker, plan, exec_ctx)
+                    bracket_ids = submit_trade_plan_bracket(broker, plan, exec_ctx, current_price=current_price)
                 except Exception as exc:  # noqa: BLE001
                     _log(
                         {
@@ -1050,15 +1228,19 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                 # Snapshot immediately after submitting an order.
                 _log_broker_snapshot(where="after_order_submit", bar_time=bar_time_iso)
 
+                # Show actual rounded quantity for clarity (plan.size is pre-rounding)
+                actual_qty = int(round(plan.size))
+                if actual_qty <= 0:
+                    actual_qty = 1
                 ts_print(
-                    f"[live] TRADE {cfg.symbol} dir={plan.direction:+d} size={plan.size:.2f} "
+                    f"[live] TRADE {cfg.symbol} dir={plan.direction:+d} size={actual_qty} (plan={plan.size:.2f}) "
                     f"tp={plan.tp_price:.2f} sl={plan.sl_price:.2f} "
                     f"entry_id={bracket_ids.entry_id if bracket_ids else 'N/A'}"
                 )
 
                 if cfg.stop_after_first_trade:
                     ts_print("[live] stop_after_first_trade=True; stopping event loop.")
-                    shutdown_requested = True
+                    state_machine.transition_to(SystemState.STOPPED, reason="stop_after_first_trade")
                     ib.disconnect()
 
             except Exception as exc:  # noqa: BLE001
@@ -1082,84 +1264,28 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
         # alive and attempt to reconnect + resubscribe.
 
         def _reconnect_loop() -> None:
-            nonlocal bars, trading_enabled, has_open_position, last_completed_bar_time_iso
+            nonlocal bars, has_open_position, last_completed_bar_time_iso
             nonlocal connection_established_time
 
-            backoff = 1.0
-            last_log_time = 0.0
-            
-            # Gateway health monitoring
-            failure_timestamps: list[float] = []  # Track recent failures
-            restart_window_detected = False
-            
             while not reconnect_stop.is_set():
+                # Use ReconnectController for all retry logic
+                success, connected_client_id = reconnect_controller.attempt_reconnect(
+                    is_market_hours_fn=lambda: _is_market_hours(premarket=True),
+                    is_trading_day_fn=_is_trading_day,
+                )
+
+                if not success:
+                    continue  # Backoff/sleep already handled by controller
+
+                # Track connection uptime for health monitoring
+                reconnect_time = time.time()
+                connection_uptime_seconds = None
+                if connection_established_time is not None:
+                    connection_uptime_seconds = reconnect_time - connection_established_time
+                connection_established_time = reconnect_time
+
+                # Re-qualify contract and re-subscribe keepUpToDate stream.
                 try:
-                    # Check if we're in a period when market could be open
-                    is_trading_day = _is_trading_day()
-                    is_market_time = _is_market_hours(premarket=True)
-                    
-                    # During completely closed market (weekends/holidays/night), use longer backoff
-                    if not is_trading_day or not is_market_time:
-                        # Market closed: exponential backoff 1-30 minutes
-                        off_hours_backoff = min(1800.0, max(60.0, backoff * 60.0))
-                        
-                        # Log at most once per 5 minutes during off hours to avoid spam
-                        now = time.time()
-                        if now - last_log_time >= 300.0:
-                            _log(
-                                {
-                                    "type": "reconnect_paused_off_hours",
-                                    "run_id": run_id,
-                                    "is_trading_day": is_trading_day,
-                                    "is_market_time": is_market_time,
-                                    "next_retry_seconds": off_hours_backoff,
-                                }
-                            )
-                            ts_print(
-                                f"[live] Market closed (trading_day={is_trading_day}, "
-                                f"market_time={is_market_time}); will retry in {off_hours_backoff:.0f}s"
-                            )
-                            last_log_time = now
-                        
-                        # Use regular sleep (not ib.sleep) since we're in a background thread
-                        time.sleep(off_hours_backoff)
-                        continue
-                    
-                    # Market hours or premarket: use normal backoff (1s -> 30s)
-                    # Use time.sleep instead of ib.sleep to avoid event loop issues in thread
-                    time.sleep(backoff)
-
-                    connected_client_id = _connect_with_unique_client_id(
-                        ib,
-                        host=IbConfig.host,
-                        port=IbConfig.port,
-                        preferred_client_id=preferred_client_id,
-                    )
-
-                    # Track connection uptime for health monitoring
-                    reconnect_time = time.time()
-                    connection_uptime_seconds = None
-                    if connection_established_time is not None:
-                        connection_uptime_seconds = reconnect_time - connection_established_time
-                    connection_established_time = reconnect_time
-                    
-                    _log(
-                        {
-                            "type": "broker_reconnected",
-                            "run_id": run_id,
-                            "host": IbConfig.host,
-                            "port": int(IbConfig.port),
-                            "client_id": int(connected_client_id),
-                            "connection_time": reconnect_time,
-                            "previous_connection_uptime_seconds": connection_uptime_seconds,
-                        }
-                    )
-                    ts_print(
-                        f"[live] Reconnected to TWS (clientId={connected_client_id}). "
-                        f"Previous uptime: {connection_uptime_seconds:.0f}s" if connection_uptime_seconds else "[live] Reconnected to TWS (clientId={connected_client_id})."
-                    )
-
-                    # Re-qualify contract and re-subscribe keepUpToDate stream.
                     contract2 = Stock(cfg.symbol, "SMART", "USD")  # type: ignore[call-arg]
                     ib.qualifyContracts(contract2)
 
@@ -1201,123 +1327,31 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
 
                     _log_broker_snapshot(where="after_reconnect")
 
-                    trading_enabled = True
+                    # Force HMDS activation to ensure keepUpToDate works after reconnect
+                    # Error 2107 (HMDS inactive) causes keepUpToDate to stop delivering bars
+                    ts_print("[live] Activating HMDS data farm after reconnection...")
+                    _activate_hmds(ib, contract2, bar_size_setting, _log, run_id, cfg.symbol)
+
+                    # Transition back to trading state
+                    state_machine.transition_to(SystemState.TRADING, reason="reconnect_successful")
+                    reconnect_controller.reset_backoff()
                     return
 
                 except Exception as exc:  # noqa: BLE001
-                    # Track failure for health monitoring
-                    now = time.time()
-                    failure_timestamps.append(now)
-                    # Keep only failures from last 2 minutes
-                    failure_timestamps[:] = [ts for ts in failure_timestamps if now - ts < 120.0]
-                    
-                    # Detect common non-transient errors that need longer backoff
-                    exc_str = str(exc).lower()
-                    error_repr = repr(exc).lower()
-                    
-                    # Check for TWS/Gateway not logged in or not ready
-                    is_not_logged_in = any([
-                        "not logged in" in exc_str,
-                        "not logged in" in error_repr,
-                        "not connected" in exc_str and "login" in exc_str,
-                        "no security definition" in exc_str,  # Can occur when TWS not ready
-                        "connection refused" in exc_str,
-                        "connection reset" in exc_str,
-                    ])
-                    
-                    # Check for Gateway restart indicators
-                    is_gateway_restart = any([
-                        "tws reset" in exc_str,
-                        "server reset" in exc_str,
-                        "reset by peer" in exc_str,
-                        "connection aborted" in exc_str,
-                    ]) or len(failure_timestamps) > 5  # >5 failures in 2 minutes
-                    
-                    # Check market status for logging decisions
-                    is_trading_day = _is_trading_day()
-                    is_market_time = _is_market_hours(premarket=True)
-                    
-                    # Detect typical Gateway restart window (11 PM - 12 AM EST on weekends)
+                    _log(
+                        {
+                            "type": "resubscribe_failed",
+                            "run_id": run_id,
+                            "error": repr(exc),
+                            "traceback": traceback.format_exc(),
+                        }
+                    )
+                    ts_print(f"[live] Resubscription failed after reconnect: {exc}")
+                    # Disconnect and retry
                     try:
-                        from datetime import datetime, timezone
-                        import zoneinfo
-                        eastern = zoneinfo.ZoneInfo("America/New_York")
-                        current_time = datetime.now(timezone.utc).astimezone(eastern)
-                        is_restart_window = (
-                            current_time.weekday() in (5, 6)  # Sat/Sun
-                            and 23 <= current_time.hour < 24  # 11 PM - 12 AM
-                        )
+                        ib.disconnect()
                     except Exception:
-                        is_restart_window = False
-                    
-                    # Handle Gateway restart scenario (detected or scheduled window)
-                    if is_gateway_restart or is_restart_window:
-                        # Gateway appears to be restarting: use very long backoff
-                        restart_backoff = 1800.0  # Fixed 30 min during restart
-                        
-                        if not restart_window_detected:
-                            restart_window_detected = True
-                            _log(
-                                {
-                                    "type": "gateway_restart_detected",
-                                    "run_id": run_id,
-                                    "error": repr(exc),
-                                    "failure_count_2min": len(failure_timestamps),
-                                    "is_restart_window": is_restart_window,
-                                    "is_restart_pattern": is_gateway_restart,
-                                    "next_retry_seconds": restart_backoff,
-                                }
-                            )
-                            ts_print(
-                                f"[live] IB Gateway restart detected "
-                                f"(failures={len(failure_timestamps)}, window={is_restart_window}). "
-                                f"Will retry in {restart_backoff:.0f}s (30 min)."
-                            )
-                        
-                        time.sleep(restart_backoff)
-                        backoff = 1.0  # Reset backoff after restart wait
-                        continue
-                    
-                    # If TWS not logged in (but not restarting), use longer backoff
-                    if is_not_logged_in:
-                        # Exponential backoff: 1 min -> 30 min
-                        login_backoff = min(1800.0, max(60.0, backoff * 10.0))
-                        
-                        # Log at most once per 5 minutes for login issues
-                        if now - last_log_time >= 300.0:
-                            _log(
-                                {
-                                    "type": "reconnect_failed_not_logged_in",
-                                    "run_id": run_id,
-                                    "error": repr(exc),
-                                    "next_retry_seconds": login_backoff,
-                                }
-                            )
-                            ts_print(
-                                f"[live] TWS/Gateway not ready (not logged in or connection issue). "
-                                f"Will retry in {login_backoff:.0f}s. Error: {exc}"
-                            )
-                            last_log_time = now
-                        
-                        time.sleep(login_backoff)
-                        # Increase backoff for next login attempt
-                        backoff = min(180.0, max(1.0, backoff * 1.8))
-                        continue
-                    
-                    # Normal reconnect failures: log during market hours only
-                    if is_trading_day and is_market_time:
-                        _log(
-                            {
-                                "type": "reconnect_failed",
-                                "run_id": run_id,
-                                "error": repr(exc),
-                                "traceback": traceback.format_exc(),
-                            }
-                        )
-                        ts_print(f"[live] Reconnect failed; will retry: {exc}")
-                    
-                    # Increase backoff for next attempt (capped at 30s during market hours)
-                    backoff = min(30.0, max(1.0, backoff * 1.8))
+                        pass
 
         def _start_reconnector() -> None:
             nonlocal reconnect_thread
@@ -1333,9 +1367,9 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
             reconnect_thread.start()
 
         def _on_disconnected() -> None:
-            nonlocal trading_enabled, shutdown_requested, connection_established_time
+            nonlocal connection_established_time
 
-            if shutdown_requested or reconnect_stop.is_set():
+            if not state_machine.is_running() or reconnect_stop.is_set():
                 return
 
             # Track connection uptime for health monitoring
@@ -1344,8 +1378,10 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
             if connection_established_time is not None:
                 connection_uptime_seconds = disconnect_time - connection_established_time
 
-            # Pause trading immediately. We will resume after resubscribe.
-            trading_enabled = False
+            # Transition to disconnected state, pause trading
+            state_machine.transition_to(SystemState.DISCONNECTED, reason="connection_lost")
+            state_machine.transition_to(SystemState.RECONNECTING, reason="attempting_reconnect")
+
             _log(
                 {
                     "type": "ib_disconnected",
@@ -1379,7 +1415,10 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
         hb_stop = threading.Event()
 
         def _heartbeat() -> None:
-            nonlocal trading_enabled
+            nonlocal shutdown_requested
+            last_poll_check_time = 0.0
+            poll_check_interval = 300.0  # Check every 5 minutes
+            
             while not hb_stop.wait(30.0):
                 try:
                     age = float(time.monotonic() - float(liveness.get("last_update_monotonic", 0.0)))
@@ -1401,11 +1440,148 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                         "is_market_open": is_market_open,
                     }
                 )
+                
+                # Update status.json with current metrics
+                try:
+                    # Calculate connection uptime
+                    uptime_minutes = None
+                    if connection_established_time is not None:
+                        uptime_minutes = (time.time() - connection_established_time) / 60.0
+                    
+                    # Calculate last bar age
+                    last_bar_time_str = liveness.get("last_bar_time")
+                    last_bar_age_minutes = None
+                    if last_bar_time_str:
+                        try:
+                            from dateutil import parser as date_parser
+                            last_bar_dt = date_parser.parse(last_bar_time_str)
+                            if last_bar_dt.tzinfo is None:
+                                last_bar_dt = last_bar_dt.replace(tzinfo=timezone.utc)
+                            last_bar_age_minutes = (datetime.now(timezone.utc) - last_bar_dt).total_seconds() / 60.0
+                        except Exception:
+                            pass
+                    
+                    # Get position status
+                    position_info = _get_position_status()
+                    
+                    # Update status file
+                    status_manager.update(
+                        state=state_machine.current.value,
+                        connection_info={
+                            "uptime_minutes": uptime_minutes,
+                            "last_reconnect": None,  # Could track this separately if needed
+                        },
+                        last_bar_info={
+                            "time": last_bar_time_str,
+                            "age_minutes": last_bar_age_minutes,
+                            "expected_next": None,  # Could calculate based on frequency
+                        },
+                        position_info=position_info,
+                        alert_count=alert_manager.count(),
+                        kill_switch_enabled=bool(is_kill_switch_enabled(live_dir)),
+                    )
+                except Exception:
+                    # Never crash heartbeat on status update failure
+                    pass
+                
+                # Proactive polling: check if historical data has newer bars than subscription
+                # This detects when IBKR's keepUpToDate stops working (common bug for larger bar sizes)
+                current_time = time.time()
+                if is_market_open and (current_time - last_poll_check_time >= poll_check_interval):
+                    last_poll_check_time = current_time
+                    try:
+                        # Request latest historical bar to compare with subscription
+                        # Skip if disconnected to avoid unawaited coroutines
+                        if not ib.isConnected():
+                            pass  # Skip check when disconnected
+                        else:
+                            # Get latest bar from historical data (non-keepUpToDate request)
+                            check_bars = ib.reqHistoricalData(
+                                contract,
+                                endDateTime="",
+                                durationStr="1 D",
+                                barSizeSetting=bar_size_setting,
+                                whatToShow="TRADES",
+                                useRTH=False,
+                                formatDate=1,
+                                keepUpToDate=False,  # One-time request
+                            )
+                            
+                            if check_bars and len(check_bars) > 0:
+                                latest_historical_bar = check_bars[-1]
+                                latest_historical_time = getattr(latest_historical_bar, "date", None)
+                                
+                                # Compare with last received bar from subscription
+                                last_subscription_bar_time_str = liveness.get("last_bar_time")
+                                
+                                if latest_historical_time and last_subscription_bar_time_str:
+                                    # Parse subscription bar time
+                                    from dateutil import parser as date_parser
+                                    try:
+                                        last_subscription_time = date_parser.parse(last_subscription_bar_time_str)
+                                        if last_subscription_time.tzinfo is None:
+                                            last_subscription_time = last_subscription_time.replace(tzinfo=timezone.utc)
+                                        
+                                        # Ensure historical time has timezone
+                                        if isinstance(latest_historical_time, datetime):
+                                            if latest_historical_time.tzinfo is None:
+                                                latest_historical_time = latest_historical_time.replace(tzinfo=timezone.utc)
+                                            
+                                            # If historical data has a newer bar, trigger reconnection
+                                            if latest_historical_time > last_subscription_time:
+                                                time_diff = (latest_historical_time - last_subscription_time).total_seconds()
+                                                _log(
+                                                    {
+                                                        "type": "keepuptodate_stale_detected",
+                                                        "run_id": run_id,
+                                                        "last_subscription_bar": last_subscription_bar_time_str,
+                                                        "latest_historical_bar": latest_historical_time.isoformat(),
+                                                        "time_diff_seconds": time_diff,
+                                                    }
+                                                )
+                                                # Add CRITICAL alert for keepUpToDate failure
+                                                alert_manager.add_alert(
+                                                    key=f"keepuptodate_stale_{cfg.symbol}",
+                                                    severity=AlertSeverity.CRITICAL,
+                                                    alert_type="keepuptodate_stale",
+                                                    message=f"keepUpToDate subscription stale: historical bar {time_diff:.0f}s newer than subscription",
+                                                )
+                                                ts_print(
+                                                    f"[live] keepUpToDate stale: latest historical bar is "
+                                                    f"{time_diff:.0f}s newer than subscription. Forcing reconnect..."
+                                                )
+                                            # Pause trading and force disconnect
+                                            state_machine.transition_to(
+                                                SystemState.DISCONNECTED, reason="stale_keepuptodate_data"
+                                            )
+                                            try:
+                                                ib.disconnect()
+                                            except Exception:
+                                                pass
+                                    except Exception as parse_exc:
+                                        # Failed to parse/compare times, skip this check
+                                        pass
+                    except Exception as poll_exc:
+                        # Polling failed, log but don't crash heartbeat
+                        _log(
+                            {
+                                "type": "keepuptodate_poll_error",
+                                "run_id": run_id,
+                                "error": repr(poll_exc),
+                            }
+                        )
 
                 # If we haven't received *any* bar updates for a while, surface it.
                 # Only warn during market hours to avoid spam when market is closed.
                 warn_after = _no_update_warning_threshold_seconds(cfg.frequency)
                 if age >= 0 and age > warn_after and is_market_open:
+                    # Add WARNING alert for stale data
+                    alert_manager.add_alert(
+                        key=f"stale_data_{cfg.symbol}",
+                        severity=AlertSeverity.WARNING,
+                        alert_type="stale_data",
+                        message=f"No bar updates for {age:.0f}s (threshold={warn_after:.0f}s)",
+                    )
                     ts_print(
                         f"[live] WARNING: no bar updates received for {age:.0f}s "
                         f"(threshold={warn_after:.0f}s, frequency={cfg.frequency}). "
@@ -1431,7 +1607,9 @@ def run_live_session(cfg: LiveSessionConfig) -> None:
                                 "forcing disconnect to trigger re-subscription..."
                             )
                             # Pause trading before disconnect
-                            trading_enabled = False
+                            state_machine.transition_to(
+                                SystemState.DISCONNECTED, reason="stale_bar_data"
+                            )
                             # Force disconnect to trigger reconnection logic
                             try:
                                 ib.disconnect()

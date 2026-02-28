@@ -253,6 +253,10 @@ class IBKRBrokerTws(Broker):
         if self._config.account:
             setattr(ib_order, "account", self._config.account)
 
+        # Enable extended hours trading when outside regular market hours
+        if not _is_regular_market_hours():
+            setattr(ib_order, "outsideRth", True)
+
         return ib_order
 
     # -------------
@@ -296,17 +300,22 @@ class IBKRBrokerTws(Broker):
         # Handle extended hours: convert market entry to limit if needed
         entry_action = "BUY" if bracket.side is Side.BUY else "SELL"
         if bracket.entry_order_type is OrderType.MARKET and not _is_regular_market_hours():
-            current_price = self._get_current_price(bracket.symbol)
-            if current_price is None:
-                raise ValueError(
-                    f"Cannot place market bracket order for {bracket.symbol} during extended hours: "
-                    "current price unavailable. Please use a limit entry order instead."
-                )
-            buffer = 0.01
-            if bracket.side is Side.BUY:
-                entry_limit_price = round(current_price * (1 + buffer), 2)
+            # If entry_limit_price is already provided, use it (avoids market data subscription issues)
+            if bracket.entry_limit_price is not None:
+                entry_limit_price = bracket.entry_limit_price
             else:
-                entry_limit_price = round(current_price * (1 - buffer), 2)
+                # Fallback: try to fetch current price from market data
+                current_price = self._get_current_price(bracket.symbol)
+                if current_price is None:
+                    raise ValueError(
+                        f"Cannot place market bracket order for {bracket.symbol} during extended hours: "
+                        "current price unavailable. Please use a limit entry order instead."
+                    )
+                buffer = 0.01
+                if bracket.side is Side.BUY:
+                    entry_limit_price = round(current_price * (1 + buffer), 2)
+                else:
+                    entry_limit_price = round(current_price * (1 - buffer), 2)
             entry_order = LimitOrder(entry_action, float(bracket.quantity), entry_limit_price)  # type: ignore[call-arg]
         elif bracket.entry_order_type is OrderType.MARKET:
             entry_order = MarketOrder(entry_action, float(bracket.quantity))  # type: ignore[call-arg]
@@ -323,6 +332,10 @@ class IBKRBrokerTws(Broker):
         if self._config.account:
             setattr(entry_order, "account", self._config.account)
 
+        # Enable extended hours trading when outside regular market hours
+        if not _is_regular_market_hours():
+            setattr(entry_order, "outsideRth", True)
+
         # Do not transmit entry yet; we need to attach children
         setattr(entry_order, "transmit", False)
 
@@ -333,10 +346,15 @@ class IBKRBrokerTws(Broker):
             raise RuntimeError("Failed to get orderId for entry order")
 
         # TP order (child): opposite side, LIMIT at tp_price
+        # Round to 2 decimals (penny tick size for US stocks)
         tp_action = "SELL" if bracket.side is Side.BUY else "BUY"
-        tp_order = LimitOrder(tp_action, float(bracket.quantity), float(bracket.tp_price))  # type: ignore[call-arg]
+        tp_price_rounded = round(float(bracket.tp_price), 2)
+        tp_order = LimitOrder(tp_action, float(bracket.quantity), tp_price_rounded)  # type: ignore[call-arg]
         if self._config.account:
             setattr(tp_order, "account", self._config.account)
+        # Enable extended hours for child orders too
+        if not _is_regular_market_hours():
+            setattr(tp_order, "outsideRth", True)
         setattr(tp_order, "parentId", int(entry_id))
         setattr(tp_order, "transmit", False)
 
@@ -346,14 +364,19 @@ class IBKRBrokerTws(Broker):
             raise RuntimeError("Failed to get orderId for TP order")
 
         # SL order (child): opposite side, STOP at sl_price
+        # Round to 2 decimals (penny tick size for US stocks)
         # For IBKR, we use Order() directly with orderType="STP" and auxPrice
         sl_order = Order()  # type: ignore[call-arg]
+        sl_price_rounded = round(float(bracket.sl_price), 2)
         setattr(sl_order, "action", tp_action)  # same as TP
         setattr(sl_order, "orderType", "STP")  # stop order
         setattr(sl_order, "totalQuantity", float(bracket.quantity))
-        setattr(sl_order, "auxPrice", float(bracket.sl_price))  # stop trigger price
+        setattr(sl_order, "auxPrice", sl_price_rounded)  # stop trigger price
         if self._config.account:
             setattr(sl_order, "account", self._config.account)
+        # Enable extended hours for child orders too
+        if not _is_regular_market_hours():
+            setattr(sl_order, "outsideRth", True)
         setattr(sl_order, "parentId", int(entry_id))
         setattr(sl_order, "transmit", True)  # transmit all three now
 

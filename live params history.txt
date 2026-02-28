@@ -1,0 +1,13 @@
+prod 15.12(не прави сделки)
+k_sigma_long	0.9
+k_sigma_short	1.2
+k_atr_long	2
+k_atr_short	0.6
+
+Текущо на Прод (14.02)
+k_sigma_long	0.5
+k_sigma_short	0.8
+k_atr_long	0.5
+k_atr_short	0.6
+risk_per_trade_pct	0.02
+reward_risk_ratio	2.5

@@ -297,6 +297,34 @@ class DataSubscribedEvent:
         return {"type": "data_subscribed", **asdict(self)}
 
 
+@dataclass
+class StateTransitionEvent:
+    """System state transition."""
+
+    run_id: str
+    from_state: str
+    to_state: str
+    reason: str | None = None
+    time_in_previous_state_seconds: float | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"type": "state_transition", **asdict(self)}
+
+
+@dataclass
+class AlertEvent:
+    """Actionable alert that requires attention."""
+
+    run_id: str
+    severity: str  # INFO, WARNING, CRITICAL
+    alert_type: str
+    message: str
+    key: str  # for deduplication
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"type": "alert", **asdict(self)}
+
+
 # Helper to write any event to log
 def write_event(
     log_path: Path,
@@ -317,6 +345,8 @@ def write_event(
         | HeartbeatEvent
         | DataInitialEvent
         | DataSubscribedEvent
+        | StateTransitionEvent
+        | AlertEvent
     ),
 ) -> None:
     """Write a typed event to the live log."""

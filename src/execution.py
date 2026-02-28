@@ -64,7 +64,9 @@ def trade_plan_to_order_request(plan: TradePlan, ctx: ExecutionContext) -> Order
     )
 
 
-def trade_plan_to_bracket_order(plan: TradePlan, ctx: ExecutionContext) -> BracketOrderRequest:
+def trade_plan_to_bracket_order(
+    plan: TradePlan, ctx: ExecutionContext, current_price: Optional[float] = None
+) -> BracketOrderRequest:
     """Convert a TradePlan into a BracketOrderRequest (entry + TP + SL).
 
     This creates a bracket order that includes:
@@ -75,6 +77,13 @@ def trade_plan_to_bracket_order(plan: TradePlan, ctx: ExecutionContext) -> Brack
     The TP and SL orders are automatically linked to the entry order by the
     broker, ensuring they only activate after entry fills and one cancels
     the other (OCO behavior).
+    
+    Args:
+        plan: TradePlan with direction, size, TP/SL prices
+        ctx: ExecutionContext with symbol
+        current_price: Optional current market price. If provided during extended
+            hours, will be used to create an aggressive limit entry order instead
+            of relying on market data subscription.
     """
 
     if plan.direction not in (+1, -1):
@@ -87,12 +96,21 @@ def trade_plan_to_bracket_order(plan: TradePlan, ctx: ExecutionContext) -> Brack
     if qty <= 0:
         qty = 1
 
+    # If current_price is provided, calculate aggressive limit price for extended hours
+    entry_limit_price = None
+    if current_price is not None:
+        buffer = 0.01  # 1% slippage buffer
+        if side is Side.BUY:
+            entry_limit_price = round(current_price * (1 + buffer), 2)
+        else:
+            entry_limit_price = round(current_price * (1 - buffer), 2)
+
     return BracketOrderRequest(
         symbol=ctx.symbol,
         side=side,
         quantity=float(qty),
         entry_order_type=OrderType.MARKET,
-        entry_limit_price=None,
+        entry_limit_price=entry_limit_price,
         tp_price=float(plan.tp_price),
         sl_price=float(plan.sl_price),
         time_in_force="DAY",
@@ -116,17 +134,23 @@ def submit_trade_plan(broker: Broker, plan: Optional[TradePlan], ctx: ExecutionC
 
 
 def submit_trade_plan_bracket(
-    broker: Broker, plan: Optional[TradePlan], ctx: ExecutionContext
+    broker: Broker, plan: Optional[TradePlan], ctx: ExecutionContext, current_price: Optional[float] = None
 ) -> Optional[BracketOrderIds]:
     """Submit a TradePlan as a bracket order (entry + TP + SL).
 
     If ``plan`` is None ("no trade"), this is a no-op and returns None.
 
     Returns BracketOrderIds with entry_id, tp_id, and sl_id on success.
+    
+    Args:
+        broker: Broker implementation
+        plan: Optional TradePlan to execute
+        ctx: ExecutionContext with symbol
+        current_price: Optional current market price for extended hours handling
     """
 
     if plan is None:
         return None
 
-    bracket = trade_plan_to_bracket_order(plan, ctx)
+    bracket = trade_plan_to_bracket_order(plan, ctx, current_price)
     return broker.place_bracket_order(bracket)

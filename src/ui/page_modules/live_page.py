@@ -37,6 +37,86 @@ def render_live_tab(
 
     live_dir = default_live_dir()
 
+    # Read status.json for at-a-glance health (Phase 6.1)
+    import json
+    status_file = live_dir / "status.json"
+    system_status = None
+    if status_file.exists():
+        try:
+            system_status = json.loads(status_file.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    # Read alerts.jsonl for active alerts (Phase 6.2)
+    alerts_file = live_dir / "alerts.jsonl"
+    recent_alerts = []
+    if alerts_file.exists():
+        try:
+            for line in alerts_file.read_text(encoding="utf-8").strip().split("\n"):
+                if line.strip():
+                    recent_alerts.append(json.loads(line))
+        except Exception:
+            pass
+
+    # Display system status banner (Phase 6.1)
+    if system_status:
+        state = system_status.get("state", "UNKNOWN")
+        alert_count = system_status.get("alerts", {}).get("count", 0)
+        kill_switch = system_status.get("kill_switch", False)
+        connection_status = system_status.get("connection", {}).get("status", "UNKNOWN")
+        
+        # Choose banner style based on health
+        if kill_switch:
+            st.warning(f"🛑 **Kill Switch ENABLED** | State: {state} | Connection: {connection_status}")
+        elif alert_count > 0:
+            st.warning(f"⚠️ **{alert_count} Active Alert(s)** | State: {state} | Connection: {connection_status}")
+        elif state in ["TRADING", "SUBSCRIBED"]:
+            st.success(f"✓ **System Healthy** | State: {state} | Connection: {connection_status}")
+        elif state in ["RECONNECTING", "DISCONNECTED"]:
+            st.error(f"❌ **Connection Issue** | State: {state} | Connection: {connection_status}")
+        else:
+            st.info(f"ℹ️ **Status**: {state} | Connection: {connection_status}")
+        
+        # Show additional status details in compact format
+        status_col1, status_col2, status_col3 = st.columns(3)
+        with status_col1:
+            uptime = system_status.get("connection", {}).get("uptime_minutes")
+            if uptime is not None:
+                st.caption(f"⏱️ Uptime: {uptime:.1f} min")
+        with status_col2:
+            last_bar_age = system_status.get("data_feed", {}).get("age_minutes")
+            if last_bar_age is not None:
+                st.caption(f"📊 Last bar: {last_bar_age:.1f} min ago")
+        with status_col3:
+            position = system_status.get("position", {})
+            pos_status = position.get("status", "UNKNOWN")
+            st.caption(f"📈 Position: {pos_status}")
+
+    # Display recent alerts (Phase 6.2)
+    if recent_alerts:
+        # Show last 10 alerts, most recent first
+        alerts_to_show = recent_alerts[-10:][::-1]
+        critical_alerts = [a for a in alerts_to_show if a.get("severity") == "CRITICAL"]
+        warning_alerts = [a for a in alerts_to_show if a.get("severity") == "WARNING"]
+        
+        with st.expander(
+            f"⚠️ Active Alerts ({len(critical_alerts)} critical, {len(warning_alerts)} warning)",
+            expanded=bool(critical_alerts),
+        ):
+            for alert in alerts_to_show:
+                severity = alert.get("severity", "INFO")
+                msg = alert.get("msg", "")
+                ts = alert.get("ts", "")
+                alert_type = alert.get("type", "")
+                
+                # Format based on severity
+                if severity == "CRITICAL":
+                    st.error(f"🔴 **{alert_type}**: {msg} ({ts})")
+                elif severity == "WARNING":
+                    st.warning(f"🟡 **{alert_type}**: {msg} ({ts})")
+                else:
+                    st.info(f"🔵 **{alert_type}**: {msg} ({ts})")
+
     col_a, col_b, col_c = st.columns([2, 1, 1])
     with col_a:
         st.caption(f"Live log directory: `{live_dir}`")
