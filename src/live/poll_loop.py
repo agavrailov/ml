@@ -15,6 +15,7 @@ so oversleeping through a bar boundary simply triggers the cycle on wake.
 from __future__ import annotations
 
 import os
+import threading
 import time
 import traceback
 from datetime import datetime, timedelta, timezone
@@ -143,37 +144,58 @@ def _frequency_to_bar_size_setting(freq: str) -> str:
 # Market hours helpers (simplified from ibkr_live_session.py)
 # ---------------------------------------------------------------------------
 
-def _is_market_hours(*, premarket: bool = True) -> bool:
-    """Check if current time is within US market hours."""
+def _is_market_hours(*, premarket: bool = True, at: datetime | None = None) -> bool:
+    """Check if a given time is within US market hours.
+
+    Args:
+        premarket: Include pre-market hours (4 AM ET) in the window.
+        at: Specific datetime to check.  Defaults to wall-clock now.
+    """
     try:
         eastern = _get_eastern_tz()
-        now = datetime.now(timezone.utc).astimezone(eastern)
-        if now.weekday() >= 5:
+        t = at.astimezone(eastern) if at is not None else datetime.now(timezone.utc).astimezone(eastern)
+        if t.weekday() >= 5:
             return False
-        minutes = now.hour * 60 + now.minute
+        minutes = t.hour * 60 + t.minute
         start = 4 * 60 if premarket else 9 * 60 + 30
         return start <= minutes < 16 * 60
     except Exception:
         return True  # conservative fallback
 
 
-def _is_trading_day() -> bool:
-    """Check if today is a trading day (basic weekday check + holiday calendar)."""
+def _is_trading_day(*, at: datetime | None = None) -> bool:
+    """Check if a given date is a trading day (weekday + holiday calendar).
+
+    Args:
+        at: Specific datetime to check.  Defaults to wall-clock now.
+    """
     try:
         eastern = _get_eastern_tz()
-        now = datetime.now(timezone.utc).astimezone(eastern)
-        if now.weekday() >= 5:
+        t = at.astimezone(eastern) if at is not None else datetime.now(timezone.utc).astimezone(eastern)
+        if t.weekday() >= 5:
             return False
         try:
             import pandas_market_calendars as mcal
             nyse = mcal.get_calendar("NASDAQ")
-            today_str = now.strftime("%Y-%m-%d")
+            today_str = t.strftime("%Y-%m-%d")
             schedule = nyse.schedule(start_date=today_str, end_date=today_str)
             return len(schedule) > 0
         except Exception:
             return True  # weekday, assume trading day
     except Exception:
         return True
+
+
+# Maximum seconds past the target bar boundary before trading is suppressed.
+# The cycle still runs (model update, logging) but no orders are submitted.
+_STALE_BAR_THRESHOLD_SECS: float = 15 * 60  # 15 minutes
+
+# Hard timeout for a single poll cycle.  If a cycle (connect + fetch + process
+# + disconnect) takes longer than this, a background timer force-disconnects
+# the IB instance so that any hanging ib_insync call aborts immediately.
+# This prevents the process from being stuck for hours when TWS connectivity
+# flaps during PC sleep.
+_CYCLE_TIMEOUT_SECS: float = 180  # 3 minutes
 
 
 # ---------------------------------------------------------------------------
@@ -198,8 +220,13 @@ def _run_single_cycle(
     equity: float,
     has_open_position: bool,
     order_state: dict,
+    suppress_trading: bool = False,
 ) -> tuple[float, bool, dict]:
     """Execute one connect-fetch-process-disconnect cycle.
+
+    Args:
+        suppress_trading: If True the cycle still fetches bars and updates
+            the model / logs, but skips order submission (stale-bar guard).
 
     Returns updated (equity, has_open_position, order_state).
     """
@@ -210,6 +237,19 @@ def _run_single_cycle(
 
     ib = IB()  # type: ignore[call-arg]
     broker = None
+
+    # Hard timeout: if the cycle hasn't finished in _CYCLE_TIMEOUT_SECS,
+    # force-disconnect so hanging ib_insync calls abort.
+    def _force_disconnect():
+        ts_print("[poll] Cycle timeout: forcing disconnect.")
+        try:
+            ib.disconnect()
+        except Exception:
+            pass
+
+    cycle_timer = threading.Timer(_CYCLE_TIMEOUT_SECS, _force_disconnect)
+    cycle_timer.daemon = True
+    cycle_timer.start()
 
     try:
         # --- Connect ---
@@ -425,6 +465,11 @@ def _run_single_cycle(
                 f"[poll] {cfg.symbol} close={current_price:.2f} "
                 f"pred={predicted_price:.2f} -> no trade"
             )
+        elif suppress_trading:
+            decision_event["action"] = "TRADE"
+            decision_event["blocked_by_stale_bar"] = True
+            log_fn(decision_event)
+            ts_print("[poll] Stale bar (wake from sleep); skipping order submission.")
         elif is_kill_switch_enabled(live_dir):
             decision_event["action"] = "TRADE"
             decision_event["blocked_by_kill_switch"] = True
@@ -502,6 +547,7 @@ def _run_single_cycle(
         return equity, has_open_position, order_state
 
     finally:
+        cycle_timer.cancel()
         # Always disconnect
         try:
             if broker is not None:
@@ -619,12 +665,27 @@ def run_poll_loop(cfg) -> None:
                 while datetime.now(timezone.utc).astimezone(eastern) < target:
                     time.sleep(30)
 
-            # --- Skip if market is closed ---
-            if not _is_trading_day() or not _is_market_hours(premarket=True):
-                ts_print("[poll] Market closed, skipping cycle.")
+            # Detect wake-from-sleep: if we overshot target significantly,
+            # the PC was likely sleeping.
+            wake_now = datetime.now(timezone.utc).astimezone(eastern)
+            overshoot_secs = (wake_now - target).total_seconds()
+            if overshoot_secs > 60:
+                ts_print(
+                    f"[poll] Wake from sleep detected: overshot target by "
+                    f"{overshoot_secs / 60:.1f} min"
+                )
+
+            # --- Skip if market was closed at the bar boundary ---
+            # Use the *target* time (when the bar completed) so that bars
+            # from market hours are still processed after PC wake.
+            if not _is_trading_day(at=target) or not _is_market_hours(premarket=True, at=target):
+                ts_print("[poll] Market closed at bar time, skipping cycle.")
                 continue
 
             # --- Execute cycle with retries ---
+            # Suppress trading when the bar is stale (PC slept past threshold).
+            stale = overshoot_secs > _STALE_BAR_THRESHOLD_SECS
+
             success = False
             for attempt in range(1, max_retries + 1):
                 try:
@@ -645,6 +706,7 @@ def run_poll_loop(cfg) -> None:
                         equity=equity,
                         has_open_position=has_open_position,
                         order_state=order_state,
+                        suppress_trading=stale,
                     )
                     success = True
                     break

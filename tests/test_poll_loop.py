@@ -12,8 +12,11 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from src.live.poll_loop import (
+    _STALE_BAR_THRESHOLD_SECS,
     _frequency_to_bar_size_setting,
     _frequency_to_minutes,
+    _is_market_hours,
+    _is_trading_day,
     compute_next_bar_boundary,
 )
 
@@ -156,6 +159,101 @@ class TestComputeNextBarBoundary:
         # Should produce 15:02 in whatever tz it interprets as Eastern
         assert result.hour == 15
         assert result.minute == 2
+
+
+# ---------------------------------------------------------------------------
+# _is_market_hours / _is_trading_day with `at` parameter
+# ---------------------------------------------------------------------------
+
+
+class TestIsMarketHoursAt:
+    _EST = timezone(timedelta(hours=-5))
+
+    def test_during_regular_hours(self):
+        at = datetime(2026, 2, 26, 10, 30, tzinfo=self._EST)  # Thu 10:30
+        assert _is_market_hours(premarket=True, at=at) is True
+
+    def test_after_close(self):
+        at = datetime(2026, 2, 26, 17, 0, tzinfo=self._EST)  # Thu 17:00
+        assert _is_market_hours(premarket=True, at=at) is False
+
+    def test_premarket_4am(self):
+        at = datetime(2026, 2, 26, 4, 0, tzinfo=self._EST)  # Thu 04:00
+        assert _is_market_hours(premarket=True, at=at) is True
+
+    def test_before_premarket(self):
+        at = datetime(2026, 2, 26, 3, 59, tzinfo=self._EST)  # Thu 03:59
+        assert _is_market_hours(premarket=True, at=at) is False
+
+    def test_weekend_returns_false(self):
+        at = datetime(2026, 2, 28, 10, 0, tzinfo=self._EST)  # Sat 10:00
+        assert _is_market_hours(premarket=True, at=at) is False
+
+    def test_no_at_uses_now(self):
+        # Should not raise (backward compat)
+        _is_market_hours(premarket=True)
+
+
+class TestIsTradingDayAt:
+    _EST = timezone(timedelta(hours=-5))
+
+    def test_weekday(self):
+        at = datetime(2026, 2, 26, 12, 0, tzinfo=self._EST)  # Thursday
+        assert _is_trading_day(at=at) is True
+
+    def test_saturday(self):
+        at = datetime(2026, 2, 28, 12, 0, tzinfo=self._EST)  # Saturday
+        assert _is_trading_day(at=at) is False
+
+    def test_sunday(self):
+        at = datetime(2026, 3, 1, 12, 0, tzinfo=self._EST)  # Sunday
+        assert _is_trading_day(at=at) is False
+
+    def test_no_at_uses_now(self):
+        # Should not raise (backward compat)
+        _is_trading_day()
+
+
+class TestSleepWakeBarProcessing:
+    """Regression: bars from market hours must NOT be skipped after PC wake."""
+
+    _EST = timezone(timedelta(hours=-5))
+
+    def test_bar_at_1302_wake_at_1800_should_not_skip(self):
+        """Target 13:02 EST (during market), PC wakes at 18:00 EST.
+
+        Old code checked current time -> skipped.  New code checks target -> runs.
+        """
+        target = datetime(2026, 2, 26, 13, 2, tzinfo=self._EST)  # Thu 13:02
+        assert _is_trading_day(at=target) is True
+        assert _is_market_hours(premarket=True, at=target) is True
+
+    def test_bar_at_2202_should_skip(self):
+        """Target 22:02 EST — well outside market hours, should skip."""
+        target = datetime(2026, 2, 26, 22, 2, tzinfo=self._EST)
+        assert _is_market_hours(premarket=True, at=target) is False
+
+    def test_bar_on_saturday_should_skip(self):
+        target = datetime(2026, 2, 28, 13, 2, tzinfo=self._EST)  # Saturday
+        assert _is_trading_day(at=target) is False
+
+    def test_staleness_suppresses_trading_not_cycle(self):
+        """Overshoot > threshold -> cycle runs but trading suppressed."""
+        target = datetime(2026, 2, 26, 13, 2, tzinfo=self._EST)  # Thu 13:02
+        wake = datetime(2026, 2, 26, 18, 0, tzinfo=self._EST)    # Thu 18:00
+        overshoot = (wake - target).total_seconds()
+        # Bar was during market hours -> cycle should NOT be skipped
+        assert _is_trading_day(at=target) is True
+        assert _is_market_hours(premarket=True, at=target) is True
+        # But overshoot exceeds threshold -> trading should be suppressed
+        assert overshoot > _STALE_BAR_THRESHOLD_SECS
+
+    def test_small_overshoot_allows_trading(self):
+        """Overshoot < threshold -> trading proceeds normally."""
+        target = datetime(2026, 2, 26, 13, 2, tzinfo=self._EST)
+        wake = datetime(2026, 2, 26, 13, 4, tzinfo=self._EST)  # 2 min late
+        overshoot = (wake - target).total_seconds()
+        assert overshoot < _STALE_BAR_THRESHOLD_SECS
 
 
 # ---------------------------------------------------------------------------

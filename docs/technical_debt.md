@@ -126,6 +126,19 @@ This file tracks known complexity/tech-debt items that were introduced intention
 
 ---
 
+## Poll Cycle Timeout & Stale-Bar Guard (March 2026)
+
+**Problem**: When the PC sleeps mid-cycle, TWS connectivity flaps (Error 1100 flood) and ib_insync calls hang indefinitely — blocking the entire process for hours until manual Ctrl+C.
+
+**Solution**:
+- **Cycle timeout** (`_CYCLE_TIMEOUT_SECS = 180`): A `threading.Timer` force-disconnects the IB instance after 3 minutes, causing any hanging ib_insync call to abort. The existing retry logic (3 attempts) then kicks in.
+- **Stale-bar guard** (`_STALE_BAR_THRESHOLD_SECS = 900`): If the cycle runs >15 min after the target bar boundary, bar processing / model update still happens but order submission is suppressed (`blocked_by_stale_bar`).
+- **Market hours check uses target time**: Prevents skipping valid bars when PC wakes after market close.
+
+**Complexity note**: The `threading.Timer` is a daemon thread that only calls `ib.disconnect()` — minimal surface area. The timer is always cancelled in the `finally` block on normal completion.
+
+---
+
 ## Persistent Connection Architecture (February 2026) - DEPRECATED
 
 **Status**: Replaced by poll-based connect-on-demand architecture
