@@ -183,6 +183,7 @@ class PredictionContext:
     features_to_use: List[str]
     tsteps: int
     bias_correction_mean_residual: float = 0.0
+    model_rmse_logret: float = 0.0
 
 
 def build_prediction_context(
@@ -339,6 +340,20 @@ def build_prediction_context(
         except Exception:
             bias_mean_residual = 0.0
 
+    # Load model RMSE from the paired .metrics.json file (same path, different extension).
+    model_rmse_logret = 0.0
+    metrics_path = os.path.splitext(model_path)[0] + ".metrics.json"
+    if os.path.exists(metrics_path):
+        try:
+            with open(metrics_path, "r") as f:
+                metrics_data = json.load(f)
+            val_loss = float(metrics_data.get("validation_loss", 0.0))
+            if val_loss > 0:
+                import math
+                model_rmse_logret = math.sqrt(val_loss)
+        except Exception:
+            pass
+
     return PredictionContext(
         model=prediction_model,
         scaler_params=scaler_params,
@@ -347,6 +362,7 @@ def build_prediction_context(
         features_to_use=features_to_use,
         tsteps=tsteps,
         bias_correction_mean_residual=bias_mean_residual,
+        model_rmse_logret=model_rmse_logret,
     )
 
 

@@ -354,9 +354,11 @@ def _run_single_cycle(
         except Exception:
             positions, open_orders, all_orders = [], [], []
 
-        # Reconcile position state from broker
+        # Reconcile position state from broker — only count positions for the managed symbol
         has_open_position = any(
-            abs(float(getattr(p, "quantity", 0.0))) >= 0.01 for p in positions
+            getattr(p, "symbol", "") == cfg.symbol
+            and abs(float(getattr(p, "quantity", 0.0))) >= 0.01
+            for p in positions
         )
 
         # Order lifecycle events
@@ -383,11 +385,12 @@ def _run_single_cycle(
             "open_orders": [repr(o) for o in open_orders],
         })
 
-        # --- Bracket check ---
+        # --- Bracket check — only for the managed symbol ---
         try:
             ib_trades = list(ib.trades()) if hasattr(ib, "trades") else []
+            managed_positions = [p for p in positions if getattr(p, "symbol", "") == cfg.symbol]
             bracket_warnings = check_positions_have_brackets(
-                positions, open_orders,
+                managed_positions, open_orders,
                 run_id=run_id, symbol=cfg.symbol, ib_trades=ib_trades,
             )
             for w in bracket_warnings:
@@ -405,7 +408,10 @@ def _run_single_cycle(
         predicted_price = predictor.update_and_predict(bar)
         current_price = float(bar["Close"])
 
-        model_error_sigma = max(1e-6, 0.5 * current_price * 0.01)
+        # Use the model's actual RMSE (in log-return space) as the uncertainty estimate.
+        # Falls back to 0.5% of price if the metrics file was not available at load time.
+        _rmse = predictor.model_rmse_logret if predictor.model_rmse_logret > 0 else 0.005
+        model_error_sigma = max(1e-6, _rmse * current_price)
         atr = max(1e-6, current_price * 0.01)
 
         # Query real account equity and buying power from broker.
@@ -447,6 +453,8 @@ def _run_single_cycle(
 
         plan = compute_tp_sl_and_size(state, strat_cfg)
 
+        _pred_return = (float(predicted_price) / current_price) - 1.0 if current_price > 0 else 0.0
+        _sigma_ret = float(model_error_sigma) / current_price if current_price > 0 else 0.0
         decision_event = {
             "type": "decision",
             "run_id": run_id,
@@ -455,7 +463,15 @@ def _run_single_cycle(
             "bar_time": bar_time_iso,
             "close": current_price,
             "predicted_price": float(predicted_price),
+            "predicted_return_pct": round(_pred_return * 100, 4),
+            "sigma_return_pct": round(_sigma_ret * 100, 4),
+            "long_threshold_pct": round((strat_cfg.k_sigma_long + strat_cfg.k_atr_long) * _sigma_ret * 100, 4),
             "has_open_position_before": bool(has_open_position),
+            "no_trade_reason": (
+                "open_position" if bool(has_open_position)
+                else "signal_rejected" if plan is None
+                else "trade_signal"
+            ),
         }
 
         if plan is None:

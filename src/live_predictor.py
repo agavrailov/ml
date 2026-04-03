@@ -59,6 +59,7 @@ class LivePredictor:
     def __init__(self, *, ctx: PredictionContext, config: Optional[LivePredictorConfig] = None) -> None:
         self.ctx = ctx
         self.config = config or LivePredictorConfig(frequency=FREQUENCY, tsteps=ctx.tsteps)
+        self.model_rmse_logret: float = ctx.model_rmse_logret
 
         # Keep raw bars. We store as dict/Series so we can build a DataFrame.
         self._buffer: Deque[dict] = deque(maxlen=self.config.max_window)
