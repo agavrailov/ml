@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
+from src.broker import OrderRequest, OrderType, Side
 from src.config import IB as IbConfig, get_hourly_data_csv_path
 from src.execution import ExecutionContext, submit_trade_plan_bracket
 from src.live.alerts import AlertManager, AlertSeverity
@@ -386,6 +387,7 @@ def _run_single_cycle(
         })
 
         # --- Bracket check — only for the managed symbol ---
+        bracket_warnings: list[dict] = []
         try:
             ib_trades = list(ib.trades()) if hasattr(ib, "trades") else []
             managed_positions = [p for p in positions if getattr(p, "symbol", "") == cfg.symbol]
@@ -401,6 +403,74 @@ def _run_single_cycle(
                     alert_type="missing_brackets",
                     message=f"Position {cfg.symbol} qty={w.get('quantity')} missing brackets",
                 )
+        except Exception:
+            pass
+
+        # --- Bracket auto-repair ---
+        # If a position has been unprotected (no TP/SL) for two consecutive bar
+        # cycles, close it at market immediately to cap the naked exposure.
+        # One-bar grace period handles the race where the bracket fill lands
+        # between our snapshot and the order going active.
+        try:
+            if bracket_warnings and bar_time_iso is not None:
+                prev_unprotected = bar_tracker.get_unprotected_since(cfg.symbol)
+                if prev_unprotected is not None:
+                    # Second consecutive bar unprotected → emergency market close
+                    closed_qty = 0.0
+                    for p in managed_positions:
+                        qty = float(getattr(p, "quantity", 0.0))
+                        if abs(qty) < 0.01:
+                            continue
+                        close_side = Side.SELL if qty > 0 else Side.BUY
+                        try:
+                            broker.place_order(OrderRequest(
+                                symbol=cfg.symbol,
+                                side=close_side,
+                                quantity=abs(qty),
+                                order_type=OrderType.MARKET,
+                            ))
+                            closed_qty += abs(qty)
+                        except Exception as close_exc:
+                            log_fn({
+                                "type": "bracket_autorepair_order_error",
+                                "run_id": run_id,
+                                "symbol": cfg.symbol,
+                                "bar_time": bar_time_iso,
+                                "error": repr(close_exc),
+                            })
+                    log_fn({
+                        "type": "bracket_autorepair_closed",
+                        "run_id": run_id,
+                        "symbol": cfg.symbol,
+                        "bar_time": bar_time_iso,
+                        "first_unprotected_bar": prev_unprotected,
+                        "closed_qty": closed_qty,
+                    })
+                    ts_print(
+                        f"[poll] BRACKET AUTO-REPAIR: {cfg.symbol} naked position "
+                        f"(unprotected since {prev_unprotected}), closed {closed_qty} shares at market."
+                    )
+                    alert_manager.add_alert(
+                        key=f"autorepair_{cfg.symbol}",
+                        severity=AlertSeverity.CRITICAL,
+                        alert_type="bracket_autorepair",
+                        message=(
+                            f"{cfg.symbol} position closed at market by auto-repair "
+                            f"(unprotected since {prev_unprotected})"
+                        ),
+                    )
+                    bar_tracker.clear_unprotected(cfg.symbol)
+                    has_open_position = False
+                else:
+                    # First bar unprotected — record it, give one more cycle
+                    bar_tracker.mark_unprotected(cfg.symbol, bar_time_iso)
+                    ts_print(
+                        f"[poll] WARNING: {cfg.symbol} position missing brackets "
+                        f"(bar {bar_time_iso}). Will auto-close next cycle if still unprotected."
+                    )
+            else:
+                # Brackets healthy (or no position) — clear any stale flag
+                bar_tracker.clear_unprotected(cfg.symbol)
         except Exception:
             pass
 
@@ -661,7 +731,7 @@ def run_poll_loop(cfg) -> None:
     state_machine.transition_to(SystemState.SLEEPING, reason="initial")
 
     max_retries = 3
-    retry_delay = 30.0
+    _retry_base_delay = 30.0  # seconds; doubles each attempt (30 → 60)
 
     try:
         while True:
@@ -742,6 +812,7 @@ def run_poll_loop(cfg) -> None:
                         SystemState.ERROR, reason=f"cycle_error_attempt_{attempt}",
                     )
                     if attempt < max_retries:
+                        retry_delay = _retry_base_delay * (2 ** (attempt - 1))
                         time.sleep(retry_delay)
 
             if not success:

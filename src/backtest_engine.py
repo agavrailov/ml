@@ -41,8 +41,8 @@ class BacktestConfig:
 
     # Commission per unit per leg. The total commission for a round-trip
     # trade is: commission_per_unit_per_leg * size * 2.
-    # Default is 0.005 USD per share per leg, matching IBKR fixed pricing.
-    commission_per_unit_per_leg: float = 0.005
+    # IBKR tiered pricing: $0.001 per share per leg (min $1 per order).
+    commission_per_unit_per_leg: float = 0.001
 
     # Minimum commission per order (per leg). Total minimum round-trip
     # commission is 2 * min_commission_per_order.

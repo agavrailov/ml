@@ -10,7 +10,16 @@ from pathlib import Path
 
 
 class PersistentBarTracker:
-    """Tracks last processed bar across restarts for deduplication."""
+    """Tracks last processed bar across restarts for deduplication.
+
+    Also tracks unprotected positions (missing brackets) for auto-repair.
+    State JSON schema:
+        {
+            "time": "<iso>",
+            "hash": "<8-char-md5>",
+            "unprotected_since": {"NVDA": "<iso-of-first-unprotected-bar>"}
+        }
+    """
 
     def __init__(self, state_file_path: Path):
         """Initialize bar tracker.
@@ -29,7 +38,10 @@ class PersistentBarTracker:
             bar_time_iso: Bar timestamp in ISO format
             bar_hash: Hash of bar OHLC data
         """
-        self._last_processed = {"time": bar_time_iso, "hash": bar_hash}
+        state = self._last_processed or {}
+        state["time"] = bar_time_iso
+        state["hash"] = bar_hash
+        self._last_processed = state
         self._save()
 
     def is_duplicate(self, bar_time_iso: str, bar_hash: str) -> bool:
@@ -48,6 +60,54 @@ class PersistentBarTracker:
             self._last_processed.get("time") == bar_time_iso
             and self._last_processed.get("hash") == bar_hash
         )
+
+    # ------------------------------------------------------------------
+    # Unprotected-position tracking (bracket auto-repair)
+    # ------------------------------------------------------------------
+
+    def mark_unprotected(self, symbol: str, bar_time_iso: str) -> None:
+        """Record that a position was found without bracket orders.
+
+        Called when bracket check fails. If the symbol is already marked,
+        the original timestamp is preserved (only the first detection matters).
+
+        Args:
+            symbol: Trading symbol (e.g., "NVDA")
+            bar_time_iso: Bar timestamp when the missing bracket was first seen
+        """
+        state = self._last_processed or {}
+        unprotected = dict(state.get("unprotected_since") or {})
+        if symbol not in unprotected:
+            unprotected[symbol] = bar_time_iso
+        state["unprotected_since"] = unprotected
+        self._last_processed = state
+        self._save()
+
+    def clear_unprotected(self, symbol: str) -> None:
+        """Clear unprotected status for a symbol (brackets are healthy again).
+
+        Args:
+            symbol: Trading symbol to clear
+        """
+        state = self._last_processed or {}
+        unprotected = dict(state.get("unprotected_since") or {})
+        unprotected.pop(symbol, None)
+        state["unprotected_since"] = unprotected
+        self._last_processed = state
+        self._save()
+
+    def get_unprotected_since(self, symbol: str) -> str | None:
+        """Return the bar timestamp when unprotection was first detected, or None.
+
+        Args:
+            symbol: Trading symbol to query
+
+        Returns:
+            ISO timestamp string if unprotected, None if brackets are healthy
+        """
+        if self._last_processed is None:
+            return None
+        return (self._last_processed.get("unprotected_since") or {}).get(symbol)
 
     def _save(self) -> None:
         """Save state to disk (best-effort)."""

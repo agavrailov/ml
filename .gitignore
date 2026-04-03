@@ -26,3 +26,5 @@ data/processed/missing_trading_days.json
 *.jsonl
 runs
 skills
+CLAUDE.local.md
+*.exe
