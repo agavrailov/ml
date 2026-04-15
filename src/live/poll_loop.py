@@ -158,6 +158,8 @@ def _is_market_hours(*, premarket: bool = True, at: datetime | None = None) -> b
         if t.weekday() >= 5:
             return False
         minutes = t.hour * 60 + t.minute
+        if _GW_RESTART_START_MINUTES <= minutes < _GW_RESTART_END_MINUTES:
+            return False  # IB Gateway restart window — skip cycle
         start = 4 * 60 if premarket else 9 * 60 + 30
         return start <= minutes < 16 * 60
     except Exception:
@@ -186,6 +188,11 @@ def _is_trading_day(*, at: datetime | None = None) -> bool:
     except Exception:
         return True
 
+
+# IB Gateway daily restart window (ET minutes).  reqHistoricalData hangs during
+# this period, burning all retries.  _is_market_hours() blackouts cycles here.
+_GW_RESTART_START_MINUTES: int = 3 * 60       # 03:00 ET
+_GW_RESTART_END_MINUTES: int = 5 * 60 + 30   # 05:30 ET (30 min buffer past documented 05:00)
 
 # Maximum seconds past the target bar boundary before trading is suppressed.
 # The cycle still runs (model update, logging) but no orders are submitted.
@@ -460,7 +467,11 @@ def _run_single_cycle(
                         ),
                     )
                     bar_tracker.clear_unprotected(cfg.symbol)
-                    has_open_position = False
+                    # Keep has_open_position = True for this cycle so the strategy
+                    # does NOT enter a new trade while the close order is still
+                    # in-flight.  The next cycle's broker snapshot will confirm the
+                    # position is flat and allow a fresh entry then.
+                    has_open_position = True
                 else:
                     # First bar unprotected — record it, give one more cycle
                     bar_tracker.mark_unprotected(cfg.symbol, bar_time_iso)
@@ -819,6 +830,12 @@ def run_poll_loop(cfg) -> None:
                 ts_print("[poll] All retries exhausted, skipping to next bar.")
                 state_machine.transition_to(
                     SystemState.SLEEPING, reason="retries_exhausted",
+                )
+                alert_manager.add_alert(
+                    key="cycle_retries_exhausted",
+                    severity=AlertSeverity.CRITICAL,
+                    alert_type="cycle_retries_exhausted",
+                    message=f"Bar cycle failed all {max_retries} retries — bar skipped",
                 )
 
     except KeyboardInterrupt:
