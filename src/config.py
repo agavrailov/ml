@@ -10,6 +10,7 @@ from typing import List
 # --- Base paths ---
 # Project root can be overridden if needed (e.g. for tests or deployment)
 BASE_DIR = os.path.abspath(os.getenv("ML_LSTM_BASE_DIR", os.path.join(os.path.dirname(__file__), "..")))
+BEST_HPS_PATH = os.path.join(BASE_DIR, "models", "best_hyperparameters.json")
 
 
 # ---------------------------
@@ -300,7 +301,7 @@ BACKTEST_WINDOW = BacktestWindowConfig()
 def load_tuned_hyperparameters(
     frequency: str,
     tsteps: int,
-    best_hps_path: str = "best_hyperparameters.json",
+    best_hps_path: str = BEST_HPS_PATH,
 ) -> dict:
     """Return tuned hyperparameters for (frequency, tsteps), or an empty dict.
 
@@ -341,7 +342,7 @@ def load_tuned_hyperparameters(
 def get_run_hyperparameters(
     frequency: str | None = None,
     tsteps: int | None = None,
-    best_hps_path: str = "best_hyperparameters.json",
+    best_hps_path: str = BEST_HPS_PATH,
 ) -> dict:
     """Return effective hyperparameters for a run.
 
@@ -603,7 +604,7 @@ def get_latest_best_model_path(target_frequency=None, tsteps=None):
 
         return latest, bias_path, None, None, None
 
-    best_hps_path = os.path.join(BASE_DIR, "best_hyperparameters.json")
+    best_hps_path = BEST_HPS_PATH
     if not os.path.exists(best_hps_path):
         return _fallback_latest()
 

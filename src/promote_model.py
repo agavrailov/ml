@@ -6,7 +6,7 @@ from datetime import datetime # Moved import to top
 # Add the project root to the Python path to import src modules
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.config import get_latest_model_path, MODEL_REGISTRY_DIR, BASE_DIR
+from src.config import get_latest_model_path, MODEL_REGISTRY_DIR, BASE_DIR, BEST_HPS_PATH
 
 
 def promote_model(*, frequency: str | None = None, tsteps: int | None = None) -> None:
@@ -36,7 +36,7 @@ def promote_model(*, frequency: str | None = None, tsteps: int | None = None) ->
     #
     #     my_lstm_model_{frequency}_tsteps{tsteps}_{timestamp}.keras
     #
-    best_hps_path = os.path.join(BASE_DIR, "best_hyperparameters.json")
+    best_hps_path = BEST_HPS_PATH
     fname = os.path.basename(latest_model_path)
 
     freq_key = None

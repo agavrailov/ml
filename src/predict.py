@@ -37,6 +37,7 @@ from src.config import (
     N_LSTM_LAYERS,
     STATEFUL,
     FEATURES_TO_USE_OPTIONS,
+    BEST_HPS_PATH,
 )
 
 
@@ -268,7 +269,7 @@ def build_prediction_context(
 
     best_hps: dict = {}
     # Ensure best_hps_path is an absolute path for robust checking
-    best_hps_path = os.path.abspath(os.path.join(script_dir, "best_hyperparameters.json"))
+    best_hps_path = BEST_HPS_PATH
 
     if os.path.exists(best_hps_path):
         try:

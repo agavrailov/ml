@@ -9,7 +9,7 @@ import keras_tuner as kt
 
 from src.config import (
     TRAINING_DATA_CSV, SCALER_PARAMS_JSON, TSTEPS, N_FEATURES,
-    ROWS_AHEAD, TR_SPLIT, EPOCHS
+    ROWS_AHEAD, TR_SPLIT, EPOCHS, BEST_HPS_PATH,
 )
 from src.data_utils import create_sequences_for_stateful_lstm, get_effective_data_length
 
@@ -126,7 +126,7 @@ if __name__ == "__main__":
 
     # Save the best hyperparameters to a file
     best_hps_dict = best_hps.values
-    with open('best_hyperparameters.json', 'w') as f:
+    with open(BEST_HPS_PATH, 'w') as f:
         json.dump(best_hps_dict, f, indent=4)
     
     print("Best hyperparameters saved to 'best_hyperparameters.json'")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 # Import UI components for modern styling
 from src.ui import components
+from src.config import BEST_HPS_PATH as _BEST_HPS_PATH
 
 
 def _build_train_job_request_obj(
@@ -317,7 +318,7 @@ def render_train_tab(
     # ---- Registry models table (filtered by frequency) ----
     st.markdown("### Models in registry (filtered by frequency)")
 
-    best_hps_path_train = Path(__file__).resolve().parents[3] / "best_hyperparameters.json"
+    best_hps_path_train = Path(_BEST_HPS_PATH)
 
     registry_dir = Path(MODEL_REGISTRY_DIR)
     st.caption(f"Registry: `{registry_dir}`")

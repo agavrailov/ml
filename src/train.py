@@ -28,7 +28,7 @@ from src.config import (
     FREQUENCY, TSTEPS, get_training_data_csv_path, get_scaler_params_json_path,
     get_hourly_data_csv_path, N_LSTM_LAYERS, STATEFUL,
     FEATURES_TO_USE_OPTIONS, OPTIMIZER_NAME, LOSS_FUNCTION,
-    get_run_hyperparameters,
+    get_run_hyperparameters, BEST_HPS_PATH,
 )
 import src.config # Import src.config as a module
 
@@ -292,7 +292,7 @@ if __name__ == "__main__":
 
         # Load best hyperparameters if available
         best_hps_overall = {}
-        best_hps_path = 'best_hyperparameters.json'
+        best_hps_path = BEST_HPS_PATH
         if os.path.exists(best_hps_path):
             try:
                 with open(best_hps_path, 'r') as f:

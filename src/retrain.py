@@ -19,7 +19,8 @@ from src.data_processing import convert_minute_to_hourly, prepare_keras_input_da
 from src.config import (
     TSTEPS, ROWS_AHEAD, TR_SPLIT, N_FEATURES, BATCH_SIZE,
     EPOCHS, LEARNING_RATE, LSTM_UNITS,
-    PROCESSED_DATA_DIR, HOURLY_DATA_CSV, TRAINING_DATA_CSV, SCALER_PARAMS_JSON, MODEL_REGISTRY_DIR, get_latest_model_path, get_active_model_path
+    PROCESSED_DATA_DIR, HOURLY_DATA_CSV, TRAINING_DATA_CSV, SCALER_PARAMS_JSON, MODEL_REGISTRY_DIR, get_latest_model_path, get_active_model_path,
+    BEST_HPS_PATH,
 )
 from src.experiments import log_experiment
 
@@ -35,7 +36,7 @@ def retrain_model(lstm_units=LSTM_UNITS, learning_rate=LEARNING_RATE, epochs=EPO
 
     # Load best hyperparameters if available
     best_hps = {}
-    best_hps_path = 'best_hyperparameters.json'
+    best_hps_path = BEST_HPS_PATH
     if os.path.exists(best_hps_path):
         with open(best_hps_path, 'r') as f:
             best_hps = json.load(f)
@@ -199,7 +200,7 @@ if __name__ == "__main__":
 
     # Load best hyperparameters if available
     best_hps = {}
-    best_hps_path = 'best_hyperparameters.json'
+    best_hps_path = BEST_HPS_PATH
     if os.path.exists(best_hps_path):
         with open(best_hps_path, 'r') as f:
             best_hps = json.load(f)

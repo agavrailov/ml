@@ -16,6 +16,7 @@ from src.config import (
     FEATURES_TO_USE_OPTIONS,
     RAW_DATA_CSV,
     get_run_hyperparameters,
+    BEST_HPS_PATH,
 )
 from src.data_processing import convert_minute_to_timeframe
 from src.train import train_model
@@ -125,7 +126,7 @@ def run_experiments():
     """
     results = []
     best_hps_overall = {}
-    best_hps_path = 'best_hyperparameters.json'
+    best_hps_path = BEST_HPS_PATH
 
     # Load existing best hyperparameters if available
     if os.path.exists(best_hps_path):
