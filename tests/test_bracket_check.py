@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from src.ibkr_live_session import check_positions_have_brackets
+from src.live.order_utils import check_positions_have_brackets
 
 
 @dataclass

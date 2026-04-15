@@ -74,16 +74,3 @@ def test_config_library_read_active_config_with_meta(mock_repo_root: Path) -> No
     data = config_library.read_active_config()
     assert isinstance(data, dict)
     assert data["meta"]["frequency"] == "60min"
-
-
-def test_no_update_warning_threshold_seconds_is_frequency_aware() -> None:
-    from src.ibkr_live_session import _no_update_warning_threshold_seconds
-
-    # For 60min, threshold = max(300, 2 * 3600) = 7200s.
-    assert _no_update_warning_threshold_seconds("60min") == 7200.0
-
-    # For 240min, threshold = 2 * 240 * 60 = 28800s.
-    assert _no_update_warning_threshold_seconds("240min") == 28800.0
-
-    # Unknown values fall back to the base 5 minutes.
-    assert _no_update_warning_threshold_seconds("weird") == 300.0

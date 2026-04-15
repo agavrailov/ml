@@ -238,7 +238,7 @@ def _run_single_cycle(
 
     Returns updated (equity, has_open_position, order_state).
     """
-    from src.ibkr_live_session import (
+    from src.live.order_utils import (
         check_positions_have_brackets,
         derive_order_lifecycle_events,
     )

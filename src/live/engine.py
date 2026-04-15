@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from src.ibkr_live_session import LiveSessionConfig, run_live_session
+from src.ibkr_live_session import LiveSessionConfig
 
 
 @dataclass

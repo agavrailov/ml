@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from src.ibkr_live_session import derive_order_lifecycle_events
+from src.live.order_utils import derive_order_lifecycle_events
 
 
 @dataclass
