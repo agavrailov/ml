@@ -146,7 +146,7 @@ def run_paper_trading_over_dataframe(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Simulated paper-trading loop over historical NVDA data.")
+    parser = argparse.ArgumentParser(description="Simulated paper-trading loop over historical OHLC data.")
     parser.add_argument(
         "--frequency",
         type=str,
@@ -172,12 +172,18 @@ def main() -> None:
         help="Optional end date (YYYY-MM-DD) for the paper-trade window.",
     )
     parser.add_argument(
+        "--symbol",
+        type=str,
+        default="NVDA",
+        help="Ticker symbol to paper-trade (e.g. NVDA, MSFT). Default: NVDA.",
+    )
+    parser.add_argument(
         "--csv-path",
         type=str,
         default=None,
         help=(
-            "Optional override for the input OHLC CSV. When omitted, the NVDA "
-            "file under data/processed/ for the chosen frequency is used."
+            "Optional override for the input OHLC CSV. When omitted, the file "
+            "under data/processed/ for the chosen symbol and frequency is used."
         ),
     )
     parser.add_argument(
@@ -194,13 +200,12 @@ def main() -> None:
     args = parser.parse_args()
 
     freq = args.frequency
+    symbol = args.symbol.upper()
     initial_equity = float(args.initial_equity)
-    csv_path = args.csv_path or get_hourly_data_csv_path(freq)
+    csv_path = args.csv_path or get_hourly_data_csv_path(freq, symbol=symbol)
 
     if args.csv_path is None:
-        # Use centralized loader so that all invariants for hourly OHLC data
-        # (schema, Time monotonicity, NaNs) are enforced consistently.
-        data_full = load_hourly_ohlc(freq)
+        data_full = pd.read_csv(csv_path)
     else:
         data_full = pd.read_csv(csv_path)
     data, date_from, date_to = _apply_date_range(
@@ -236,7 +241,7 @@ def main() -> None:
     _plot_price_and_equity_with_trades(
         data,
         result,
-        symbol="NVDA",
+        symbol=symbol,
         freq=freq,
         k_sigma_err=cfg.k_sigma_err,
         k_atr_min_tp=cfg.k_atr_min_tp,

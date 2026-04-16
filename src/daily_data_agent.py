@@ -7,10 +7,10 @@ from datetime import datetime
 import pandas as pd
 
 from src.config import (
-    RAW_DATA_CSV,
     PROCESSED_DATA_DIR,
     FREQUENCY,
-    NVDA_CONTRACT_DETAILS,
+    CONTRACT_REGISTRY,
+    get_raw_data_csv_path,
 )
 from src.ingestion import (
     fetch_historical_data,
@@ -46,16 +46,13 @@ async def _run_subprocess(cmd: list[str]) -> dict:
     return {"stdout": stdout, "stderr": stderr}
 
 
-def run_gap_analysis() -> list[dict]:
-    """Run analyze_gaps.py and return the parsed gaps list.
-
-    This function acts as the "gap analysis tool" for the daily agent.
-    """
+def run_gap_analysis(raw_csv_path: str) -> list[dict]:
+    """Run analyze_gaps.py on *raw_csv_path* and return the parsed gaps list."""
     analyze_gaps_script_path = os.path.abspath(
         os.path.join(os.path.dirname(__file__), "analyze_gaps.py")
     )
 
-    cmd = [sys.executable, analyze_gaps_script_path, RAW_DATA_CSV, GAP_ANALYSIS_OUTPUT_JSON]
+    cmd = [sys.executable, analyze_gaps_script_path, raw_csv_path, GAP_ANALYSIS_OUTPUT_JSON]
     print(f"[agent] Running gap analysis: {' '.join(cmd)}")
 
     try:
@@ -85,32 +82,36 @@ def run_gap_analysis() -> list[dict]:
     return gaps
 
 
-async def ingest_new_data() -> None:
-    """Fetch new minute data from IB and append to RAW_DATA_CSV.
+async def ingest_new_data(symbol: str) -> None:
+    """Fetch new minute data from IB for *symbol* and append to its raw CSV.
 
     The underlying fetch_historical_data function will only pull data beyond the
-    last timestamp present in RAW_DATA_CSV when strict_range=False.
+    last timestamp present in the raw CSV when strict_range=False.
     It already uses the configured TWS_MAX_CONCURRENT_REQUESTS semaphore to push
     IB concurrency to your configured limit safely.
     """
+    if symbol not in CONTRACT_REGISTRY:
+        raise ValueError(f"Symbol '{symbol}' not found in CONTRACT_REGISTRY. Add it to src/config.py.")
+
+    raw_csv = get_raw_data_csv_path(symbol)
     end_date = datetime.now()
     default_start_date = datetime(2024, 1, 1)
 
     print(
-        f"[agent] Starting ingestion from {default_start_date} to {end_date} "
-        f"into {RAW_DATA_CSV}"
+        f"[agent] Starting ingestion for {symbol} from {default_start_date} to {end_date} "
+        f"into {raw_csv}"
     )
     await fetch_historical_data(
-        contract_details=NVDA_CONTRACT_DETAILS,
+        contract_details=CONTRACT_REGISTRY[symbol],
         end_date=end_date,
         start_date=default_start_date,
-        file_path=RAW_DATA_CSV,
+        file_path=raw_csv,
         strict_range=False,
     )
 
 
-async def _backfill_gaps_from_tws(gaps: list[dict]) -> None:
-    """Attempt to backfill each identified gap using TWS historical data.
+async def _backfill_gaps_from_tws(gaps: list[dict], symbol: str) -> None:
+    """Attempt to backfill each identified gap using TWS historical data for *symbol*.
 
     For each gap, we request historical minute bars from IB/TWS using the
     ingestion core (`fetch_historical_data`) with `strict_range=True` so that
@@ -120,7 +121,9 @@ async def _backfill_gaps_from_tws(gaps: list[dict]) -> None:
     if not gaps:
         return
 
-    print(f"[agent] Attempting TWS backfill for {len(gaps)} gaps...")
+    raw_csv = get_raw_data_csv_path(symbol)
+    contract = CONTRACT_REGISTRY[symbol]
+    print(f"[agent] Attempting TWS backfill for {len(gaps)} gaps ({symbol})...")
 
     for gap in gaps:
         try:
@@ -141,16 +144,16 @@ async def _backfill_gaps_from_tws(gaps: list[dict]) -> None:
         )
 
         await fetch_historical_data(
-            contract_details=NVDA_CONTRACT_DETAILS,
+            contract_details=contract,
             end_date=end,
             start_date=start,
-            file_path=RAW_DATA_CSV,
+            file_path=raw_csv,
             strict_range=True,
         )
 
 
-def smart_fill_gaps() -> None:
-    """Apply TWS-based backfill + forward-fill gap handling on RAW_DATA_CSV.
+def smart_fill_gaps(symbol: str) -> None:
+    """Apply TWS-based backfill + forward-fill gap handling for *symbol*'s raw CSV.
 
     Strategy:
         1. Run `analyze_gaps.py` to detect long weekday gaps.
@@ -159,29 +162,31 @@ def smart_fill_gaps() -> None:
         3. Re-run gap analysis; any remaining gaps are assumed to be genuine
            upstream holes and are filled via `fill_gaps` (forward-fill).
     """
-    if not os.path.exists(RAW_DATA_CSV):
-        print(f"[agent] RAW_DATA_CSV not found at {RAW_DATA_CSV}; skipping gap filling.")
+    raw_csv = get_raw_data_csv_path(symbol)
+
+    if not os.path.exists(raw_csv):
+        print(f"[agent] Raw CSV not found at {raw_csv}; skipping gap filling for {symbol}.")
         return
 
     # 1) Initial gap detection.
-    gaps = run_gap_analysis()
+    gaps = run_gap_analysis(raw_csv)
     if not gaps:
-        print("[agent] No long weekday gaps detected; skipping backfill/fill.")
+        print(f"[agent] No long weekday gaps detected for {symbol}; skipping backfill/fill.")
         return
 
-    if not os.path.exists(RAW_DATA_CSV):
-        print(f"[agent] RAW_DATA_CSV not found at {RAW_DATA_CSV} after gap analysis; skipping.")
+    if not os.path.exists(raw_csv):
+        print(f"[agent] Raw CSV not found at {raw_csv} after gap analysis; skipping.")
         return
 
     # 2) Attempt TWS backfill for identified gaps.
     try:
-        asyncio.run(_backfill_gaps_from_tws(gaps))
+        asyncio.run(_backfill_gaps_from_tws(gaps, symbol))
     except RuntimeError as e:
         # In case we're already inside an event loop (unlikely here), just log.
         print(f"[agent] Warning: could not run TWS backfill coroutine: {e}")
 
     # 3) Re-run gap analysis to see what remains after TWS backfill.
-    remaining_gaps = run_gap_analysis()
+    remaining_gaps = run_gap_analysis(raw_csv)
 
     initial_gap_count = len(gaps)
     remaining_gap_count = len(remaining_gaps)
@@ -197,18 +202,18 @@ def smart_fill_gaps() -> None:
     )
 
     if not remaining_gaps:
-        print("[agent] No remaining long weekday gaps after TWS backfill; skipping forward-fill.")
+        print(f"[agent] No remaining long weekday gaps after TWS backfill for {symbol}; skipping forward-fill.")
         return
 
     # 4) Forward-fill remaining gaps as a fallback.
-    if not os.path.exists(RAW_DATA_CSV):
-        print(f"[agent] RAW_DATA_CSV not found at {RAW_DATA_CSV} before forward-fill; skipping.")
+    if not os.path.exists(raw_csv):
+        print(f"[agent] Raw CSV not found at {raw_csv} before forward-fill; skipping.")
         return
 
-    df = pd.read_csv(RAW_DATA_CSV, parse_dates=["DateTime"])
+    df = pd.read_csv(raw_csv, parse_dates=["DateTime"])
     df_filled = fill_gaps(df, remaining_gaps)
-    df_filled.to_csv(RAW_DATA_CSV, index=False)
-    print("[agent] Saved gap-filled raw data back to RAW_DATA_CSV.")
+    df_filled.to_csv(raw_csv, index=False)
+    print(f"[agent] Saved gap-filled raw data back to {raw_csv}.")
 
 
 def resample_and_add_features(symbol: str = "NVDA") -> None:
@@ -242,53 +247,55 @@ def run_daily_pipeline(
 
     Args:
         skip_ingestion: When True, skip IB/TWS data ingestion. Useful for dry runs.
-        symbols: List of symbols to process. Defaults to ["NVDA"].
+        symbols: List of symbols to process. Defaults to the portfolio symbol list
+                 from configs/portfolio.json (via get_configured_symbols()).
     """
+    from src.core.config_resolver import get_configured_symbols
     if symbols is None:
-        symbols = ["NVDA"]
+        symbols = get_configured_symbols()
 
-    print("[agent] --- Daily Data Pipeline Agent start ---")
+    print(f"[agent] --- Daily Data Pipeline Agent start | symbols={symbols} ---")
 
-    os.makedirs(os.path.dirname(RAW_DATA_CSV), exist_ok=True)
+    # 1) Ingest + clean + gap-fill per symbol
+    for sym in symbols:
+        raw_csv = get_raw_data_csv_path(sym)
+        os.makedirs(os.path.dirname(raw_csv), exist_ok=True)
 
-    # 1) Ingest new raw minute data
-    if skip_ingestion:
-        print("[agent] Skipping IB data ingestion (dry run mode).")
-    else:
-        asyncio.run(ingest_new_data())
+        if skip_ingestion:
+            print(f"[agent] Skipping IB data ingestion for {sym} (dry run mode).")
+        else:
+            asyncio.run(ingest_new_data(sym))
 
-    # 2) Clean and deduplicate
-    if os.path.exists(RAW_DATA_CSV):
-        print("[agent] Cleaning raw minute data...")
-        clean_raw_minute_data(RAW_DATA_CSV)
-    else:
-        print(f"[agent] RAW_DATA_CSV not found at {RAW_DATA_CSV}; skipping cleaning.")
+        # 2) Clean and deduplicate
+        if os.path.exists(raw_csv):
+            print(f"[agent] Cleaning raw minute data for {sym}...")
+            clean_raw_minute_data(raw_csv)
+        else:
+            print(f"[agent] Raw CSV not found at {raw_csv}; skipping cleaning for {sym}.")
 
-    # 3) Analyze and fill gaps
-    print("[agent] Analyzing and filling gaps...")
-    smart_fill_gaps()
+        # 3) Analyze and fill gaps
+        print(f"[agent] Analyzing and filling gaps for {sym}...")
+        smart_fill_gaps(sym)
 
-    # 3b) Run a raw data quality snapshot so that any severe issues are
-    # visible in logs even when no UI is running. We do *not* fail the daily
-    # pipeline on warnings or failures here; that decision can be made by the
-    # caller based on the summary.
-    if os.path.exists(RAW_DATA_CSV):
-        print("[agent] Running raw minute data quality checks (snapshot)...")
-        checks = analyze_raw_minute_data(RAW_DATA_CSV)
-        kpi = compute_quality_kpi(checks)
-        print(
-            "[agent] Data quality snapshot | score={score:.1f} / 100 | "
-            "pass={n_pass} warn={n_warn} fail={n_fail}".format(
-                score=kpi.get("score_0_100", 0.0),
-                n_pass=kpi.get("n_pass", 0),
-                n_warn=kpi.get("n_warn", 0),
-                n_fail=kpi.get("n_fail", 0),
+        # 3b) Raw data quality snapshot
+        if os.path.exists(raw_csv):
+            print(f"[agent] Running raw minute data quality checks for {sym}...")
+            checks = analyze_raw_minute_data(raw_csv)
+            kpi = compute_quality_kpi(checks)
+            print(
+                "[agent] Data quality snapshot | symbol={sym} | score={score:.1f} / 100 | "
+                "pass={n_pass} warn={n_warn} fail={n_fail}".format(
+                    sym=sym,
+                    score=kpi.get("score_0_100", 0.0),
+                    n_pass=kpi.get("n_pass", 0),
+                    n_warn=kpi.get("n_warn", 0),
+                    n_fail=kpi.get("n_fail", 0),
+                )
             )
-        )
 
     # 4) Create curated-minute snapshot for each symbol
     for sym in symbols:
-        print(f"[agent] Processing symbol: {sym}")
+        print(f"[agent] Processing curated-minute snapshot for {sym}...")
         run_transform_minute_bars(sym)
 
     # 5) Resample to hourly and engineer features

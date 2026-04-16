@@ -448,6 +448,11 @@ ACTIVE_MODEL_PATH_FILE = PATHS.active_model_path_file  # legacy; kept for backwa
 RAW_DATA_CSV = PATHS.raw_data_csv("NVDA")
 RAW_DATA_CSV_NVDA = RAW_DATA_CSV  # legacy alias
 
+def get_raw_data_csv_path(symbol: str = "NVDA") -> str:
+    """Return the raw-minute CSV path for the given symbol."""
+    return PATHS.raw_data_csv(symbol)
+
+
 def get_hourly_data_csv_path(frequency, symbol: str = "NVDA", processed_data_dir=PROCESSED_DATA_DIR):
     """Generates the path for the resampled data CSV based on the given frequency and symbol."""
     return PATHS.hourly_data_csv(frequency, symbol)
