@@ -42,8 +42,9 @@ def load_hourly_ohlc(frequency: str) -> pd.DataFrame:
 def load_hourly_features(
     frequency: str,
     features_to_use: List[str],
+    symbol: str = "NVDA",
 ) -> Tuple[pd.DataFrame, List[str]]:
-    """Load hourly OHLC data and engineer features for a given frequency.
+    """Load hourly OHLC data and engineer features for a given frequency and symbol.
 
     This is a thin wrapper around :func:`prepare_keras_input_data` that
     first resolves the hourly CSV path via config and then prepares the
@@ -55,6 +56,8 @@ def load_hourly_features(
         Resampling frequency string, e.g. ``"15min"`` or ``"60min"``.
     features_to_use:
         List of feature names to keep in the final frame.
+    symbol:
+        Ticker symbol (default ``"NVDA"``).
 
     Returns
     -------
@@ -65,7 +68,7 @@ def load_hourly_features(
         The list of feature column names actually present.
     """
 
-    csv_path = get_hourly_data_csv_path(frequency)
+    csv_path = get_hourly_data_csv_path(frequency, symbol=symbol)
     df_filtered, feature_cols = prepare_keras_input_data(csv_path, features_to_use)
     validate_feature_frame(
         df_filtered,

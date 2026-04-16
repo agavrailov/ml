@@ -47,6 +47,7 @@ def train_model(
     features_to_use: list[str] | None = None,
     train_start_date: str | None = None,
     train_end_date: str | None = None,
+    symbol: str = "NVDA",
 ):
     """Train an LSTM model for the given frequency/tsteps using tuned defaults.
 
@@ -77,18 +78,18 @@ def train_model(
     n_features_dynamic = len(features_to_use)
 
     # --- Data Preparation ---
-    hourly_data_path = get_hourly_data_csv_path(frequency)  # Get path to the hourly data
-    scaler_params_path = get_scaler_params_json_path(frequency)
+    hourly_data_path = get_hourly_data_csv_path(frequency, symbol=symbol)
+    scaler_params_path = get_scaler_params_json_path(frequency, symbol=symbol)
 
     if not os.path.exists(hourly_data_path):
         print(
-            f"Error: Hourly data not found for frequency {frequency} at {hourly_data_path}. "
-            "Skipping training."
+            f"Error: Hourly data not found for frequency {frequency}, symbol {symbol} "
+            f"at {hourly_data_path}. Skipping training."
         )
         return None
 
     # Use centralized data helper to load engineered feature frame.
-    df_featured, feature_cols = load_hourly_features(frequency, features_to_use)
+    df_featured, feature_cols = load_hourly_features(frequency, features_to_use, symbol=symbol)
 
     # Apply explicit training window when provided; otherwise fall back to the
     # historical cutoff used so far (Time >= 2023-01-01).
@@ -266,13 +267,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train LSTM model for a given frequency and TSTEPS.")
     parser.add_argument("--frequency", type=str, default=FREQUENCY, help="Resample frequency, e.g. 15min, 30min, 60min")
     parser.add_argument("--tsteps", type=int, default=TSTEPS, help="Number of time steps (sequence length)")
+    parser.add_argument("--symbol", type=str, default="NVDA", help="Symbol to train (e.g. NVDA, MSFT)")
     args = parser.parse_args()
 
     # Ensure data/processed exists
     os.makedirs(PROCESSED_DATA_DIR, exist_ok=True)
 
     importlib.reload(src.config)  # Ensure latest config is loaded
-    print(f"\n--- Training model for frequency: {args.frequency}, TSTEPS: {args.tsteps} ---")
+    print(f"\n--- Training model for frequency: {args.frequency}, TSTEPS: {args.tsteps}, symbol: {args.symbol} ---")
 
     training_results = train_model(
         frequency=args.frequency,
@@ -284,6 +286,7 @@ if __name__ == "__main__":
         n_lstm_layers=N_LSTM_LAYERS,  # Pass N_LSTM_LAYERS from config
         stateful=STATEFUL,
         features_to_use=FEATURES_TO_USE_OPTIONS[0],  # Pass the default feature set
+        symbol=args.symbol,
     )
 
     if training_results is not None:
@@ -338,6 +341,20 @@ if __name__ == "__main__":
         with open(best_hps_path, 'w') as f:
             json.dump(best_hps_overall, f, indent=4)
         print(f"\nUpdated best hyperparameters saved to {best_hps_path}")
+
+        # Register in symbol_registry.json
+        from src.model_registry import update_best_model
+        hps_snapshot = get_run_hyperparameters(args.frequency, args.tsteps)
+        update_best_model(
+            symbol=args.symbol.upper(),
+            frequency=args.frequency,
+            tsteps=args.tsteps,
+            val_loss=final_loss,
+            model_path=model_path,
+            bias_path=bias_correction_path,
+            hparams=hps_snapshot,
+        )
+        print(f"Registered {args.symbol.upper()} {args.frequency} tsteps={args.tsteps} in symbol_registry.json")
 
         print("\n--- Training Summary ---")
         print(
