@@ -20,39 +20,32 @@ from typing import Optional
 
 import pandas as pd
 
-from src.config import RAW_DATA_CSV, PROCESSED_DATA_DIR  # type: ignore
+from src.config import PATHS, PROCESSED_DATA_DIR  # type: ignore
 from src.data_processing import clean_raw_minute_data  # type: ignore
 
-# Single curated-minute file for now; simple and explicit.
+# Legacy constant for NVDA (kept for backwards-compatible imports).
 CURATED_MINUTE_PATH = os.path.join(PROCESSED_DATA_DIR, "nvda_minute_curated.csv")
 
 
 def run_transform_minute_bars(symbol: str = "NVDA") -> str:
-    """Clean raw minute data and write a curated-minute CSV.
+    """Clean raw minute data for ``symbol`` and write a curated-minute CSV.
 
-    For now this is a thin wrapper around ``clean_raw_minute_data`` followed by
-    copying the cleaned raw data into a curated file. Gap analysis/filling is
-    intentionally left to other components to keep this step simple and atomic.
-
+    Uses symbol-parameterized paths so any registered symbol can be processed.
     Returns the path to the curated-minute CSV.
     """
-    # v1 is NVDA-only; symbol is accepted for future compatibility.
-    if symbol.upper() != "NVDA":
-        print(
-            f"run_transform_minute_bars currently only supports NVDA; "
-            f"received symbol={symbol}. Proceeding with RAW_DATA_CSV={RAW_DATA_CSV}."
-        )
+    raw_csv = PATHS.raw_data_csv(symbol)
+    curated_path = os.path.join(PROCESSED_DATA_DIR, f"{symbol.lower()}_minute_curated.csv")
 
-    if not os.path.exists(RAW_DATA_CSV):
+    if not os.path.exists(raw_csv):
         raise FileNotFoundError(
-            f"Raw minute data not found at {RAW_DATA_CSV}. Run ingestion first."
+            f"Raw minute data not found at {raw_csv}. Run ingestion first."
         )
 
     # Clean in-place (dedupe, sort, ensure DateTime column).
-    clean_raw_minute_data(RAW_DATA_CSV)
+    clean_raw_minute_data(raw_csv)
 
     # Load cleaned raw data and write to curated path.
-    df = pd.read_csv(RAW_DATA_CSV)
+    df = pd.read_csv(raw_csv)
     # Keep the canonical columns used elsewhere.
     expected_cols = [
         col
@@ -62,10 +55,10 @@ def run_transform_minute_bars(symbol: str = "NVDA") -> str:
     df_out = df[expected_cols].copy()
 
     os.makedirs(PROCESSED_DATA_DIR, exist_ok=True)
-    df_out.to_csv(CURATED_MINUTE_PATH, index=False)
+    df_out.to_csv(curated_path, index=False)
 
-    print(f"Curated minute data written to {CURATED_MINUTE_PATH}")
-    return CURATED_MINUTE_PATH
+    print(f"Curated minute data written to {curated_path}")
+    return curated_path
 
 
 def _load_bars(path: str, start: Optional[datetime], end: Optional[datetime]) -> pd.DataFrame:
@@ -82,22 +75,18 @@ def _load_bars(path: str, start: Optional[datetime], end: Optional[datetime]) ->
 
 
 def get_raw_bars(symbol: str, start: Optional[datetime] = None, end: Optional[datetime] = None) -> pd.DataFrame:
-    """Return raw minute bars for ``symbol`` between ``start`` and ``end``.
-
-    Currently scoped to NVDA and backed by ``RAW_DATA_CSV``.
-    """
-    # symbol is accepted for future use; we only support NVDA today.
-    return _load_bars(RAW_DATA_CSV, start, end)
+    """Return raw minute bars for ``symbol`` between ``start`` and ``end``."""
+    raw_csv = PATHS.raw_data_csv(symbol)
+    return _load_bars(raw_csv, start, end)
 
 
 def get_curated_bars(symbol: str, start: Optional[datetime] = None, end: Optional[datetime] = None) -> pd.DataFrame:
     """Return curated minute bars for ``symbol`` between ``start`` and ``end``.
 
-    Backed by ``CURATED_MINUTE_PATH``; call ``run_transform_minute_bars`` first
-    if the file does not exist.
+    Call ``run_transform_minute_bars(symbol)`` first if the file does not exist.
     """
-    # symbol is accepted for future use; we only support NVDA today.
-    return _load_bars(CURATED_MINUTE_PATH, start, end)
+    curated_path = os.path.join(PROCESSED_DATA_DIR, f"{symbol.lower()}_minute_curated.csv")
+    return _load_bars(curated_path, start, end)
 
 
 def main() -> None:

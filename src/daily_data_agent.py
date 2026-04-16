@@ -234,12 +234,19 @@ def resample_and_add_features() -> None:
     # df_featured.to_csv(featured_path, index=False)
 
 
-def run_daily_pipeline(skip_ingestion: bool = False) -> None:
+def run_daily_pipeline(
+    skip_ingestion: bool = False,
+    symbols: list[str] | None = None,
+) -> None:
     """Top-level entry point to be run once per day.
 
     Args:
         skip_ingestion: When True, skip IB/TWS data ingestion. Useful for dry runs.
+        symbols: List of symbols to process. Defaults to ["NVDA"].
     """
+    if symbols is None:
+        symbols = ["NVDA"]
+
     print("[agent] --- Daily Data Pipeline Agent start ---")
 
     os.makedirs(os.path.dirname(RAW_DATA_CSV), exist_ok=True)
@@ -279,9 +286,10 @@ def run_daily_pipeline(skip_ingestion: bool = False) -> None:
             )
         )
 
-    # 4) Create curated-minute snapshot from cleaned, gap-filled raw data
-    print("[agent] Creating curated-minute snapshot...")
-    run_transform_minute_bars("NVDA")
+    # 4) Create curated-minute snapshot for each symbol
+    for sym in symbols:
+        print(f"[agent] Processing symbol: {sym}")
+        run_transform_minute_bars(sym)
 
     # 5) Resample to hourly and engineer features
     resample_and_add_features()

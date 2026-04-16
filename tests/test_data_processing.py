@@ -149,3 +149,23 @@ def test_prepare_keras_input_data(setup_teardown_data_processing_test):
         else:
             if 'ML_LSTM_FREQUENCY' in os.environ:
                 del os.environ['ML_LSTM_FREQUENCY']
+
+
+def test_run_daily_pipeline_loops_over_symbols(tmp_path):
+    """Pipeline should call run_transform_minute_bars for each requested symbol."""
+    from unittest.mock import patch, MagicMock
+
+    with patch("src.daily_data_agent.run_transform_minute_bars") as mock_transform, \
+         patch("src.daily_data_agent.clean_raw_minute_data"), \
+         patch("src.daily_data_agent.smart_fill_gaps"), \
+         patch("src.daily_data_agent.run_gap_analysis", return_value=[]), \
+         patch("src.daily_data_agent.resample_and_add_features"), \
+         patch("src.daily_data_agent.analyze_raw_minute_data", return_value=[]), \
+         patch("src.daily_data_agent.compute_quality_kpi", return_value={}), \
+         patch("os.path.exists", return_value=True), \
+         patch("os.makedirs"):
+        from src.daily_data_agent import run_daily_pipeline
+        run_daily_pipeline(skip_ingestion=True, symbols=["NVDA", "MSFT"])
+    calls = [c.args[0] for c in mock_transform.call_args_list]
+    assert "NVDA" in calls
+    assert "MSFT" in calls

@@ -15,9 +15,10 @@ from src.ingestion.curated_minute import (
 def tmp_paths(tmp_path, monkeypatch):
     """Set up temporary raw and curated paths for curated-minute tests.
 
-    We monkeypatch the module-level paths in ``src.ingestion.curated_minute`` so
-    tests do not touch real project data under ``data/``.
+    We monkeypatch PATHS and PROCESSED_DATA_DIR in ``src.ingestion.curated_minute``
+    so tests do not touch real project data under ``data/``.
     """
+    from unittest.mock import MagicMock
     from src import ingestion as ingestion_pkg
     from src.ingestion import curated_minute as cm
 
@@ -28,8 +29,10 @@ def tmp_paths(tmp_path, monkeypatch):
     raw_path.parent.mkdir(parents=True, exist_ok=True)
     curated_dir.mkdir(parents=True, exist_ok=True)
 
-    # Patch module-level constants used by the helpers
-    monkeypatch.setattr(cm, "RAW_DATA_CSV", str(raw_path))
+    # Patch PATHS so raw_data_csv(symbol) returns the tmp raw path
+    mock_paths = MagicMock()
+    mock_paths.raw_data_csv.side_effect = lambda sym="NVDA": str(raw_path)
+    monkeypatch.setattr(cm, "PATHS", mock_paths)
     monkeypatch.setattr(cm, "PROCESSED_DATA_DIR", str(curated_dir))
     monkeypatch.setattr(cm, "CURATED_MINUTE_PATH", str(curated_path))
 
