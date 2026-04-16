@@ -234,9 +234,14 @@ def _save_strategy_defaults_to_config(
         st.error(f"Failed to save strategy defaults: {exc}")
 
 
-def _load_strategy_defaults() -> dict:
-    """Return effective strategy defaults from config_resolver."""
-    defaults = get_strategy_defaults()
+def _load_strategy_defaults(symbol: str | None = None) -> dict:
+    """Return effective strategy defaults from config_resolver.
+
+    When ``symbol`` is provided, resolves per-symbol overrides first
+    (configs/symbols/{SYMBOL}/active.json) before falling back to the global
+    config and code defaults.
+    """
+    defaults = get_strategy_defaults(symbol)
     # Add backwards-compatible aliases for legacy code.
     defaults["k_sigma_err"] = defaults["k_sigma_long"]
     defaults["k_atr_min_tp"] = defaults["k_atr_long"]

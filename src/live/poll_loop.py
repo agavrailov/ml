@@ -772,7 +772,7 @@ def run_poll_loop(cfg) -> None:
         loaded = predictor.warmup_from_csv(historical_csv, cfg.frequency)
         ts_print(f"[poll] Predictor warmed up with {loaded} bars from {historical_csv}")
 
-    strat_cfg = make_strategy_config_from_defaults()
+    strat_cfg = make_strategy_config_from_defaults(symbol=cfg.symbol)
     exec_ctx = ExecutionContext(symbol=cfg.symbol)
 
     # Portfolio state path (optional — only if portfolio.json exists)

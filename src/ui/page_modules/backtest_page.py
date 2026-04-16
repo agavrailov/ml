@@ -54,11 +54,25 @@ def render_backtest_tab(
 
     # Borrow ideas from Streamlit demo-stockpeers: use bordered containers and URL query params for state.
     with st.container(border=True):
-        # Row 1: Frequency, dates, trade direction (all in one row)
-        col_freq, col_start, col_end, col_trade = st.columns([1, 2, 2, 2])
+        # Row 1: Symbol, Frequency, dates, trade direction
+        col_sym, col_freq, col_start, col_end, col_trade = st.columns([1, 1, 2, 2, 2])
 
         # Read query params (if any)
         _qp = st.query_params if hasattr(st, "query_params") else {}
+
+        from src.core.config_resolver import get_configured_symbols
+        _available_symbols = get_configured_symbols()
+
+        with col_sym:
+            _qp_sym = _qp.get("symbol") if _qp else None
+            _default_sym = _qp_sym if _qp_sym in _available_symbols else _available_symbols[0]
+            try:
+                _sym_index = _available_symbols.index(_default_sym)
+            except ValueError:
+                _sym_index = 0
+            selected_symbol = st.selectbox("Symbol", _available_symbols, index=_sym_index, key="bt_symbol")
+            if hasattr(st, "query_params"):
+                st.query_params["symbol"] = selected_symbol
 
         with col_freq:
             _available_freqs = getattr(cfg_mod, "RESAMPLE_FREQUENCIES", ["15min"])
@@ -136,8 +150,8 @@ def render_backtest_tab(
     # ==========================================================================
     st.markdown("### ▶ Strategy Parameters")
     
-    # Load current defaults and parameter grid
-    _defaults = load_strategy_defaults()
+    # Load current defaults and parameter grid (per-symbol when available)
+    _defaults = load_strategy_defaults(selected_symbol)
     params_df_initial = load_params_grid(_defaults)
 
     # Action buttons row: Load from production vs Save to production
@@ -145,8 +159,8 @@ def render_backtest_tab(
     
     with col_load:
         if st.button("↓ Load from Production Config", width='stretch'):
-            # Reload defaults and rebuild grid
-            _defaults = load_strategy_defaults()
+            # Reload defaults and rebuild grid (per-symbol)
+            _defaults = load_strategy_defaults(selected_symbol)
             params_df_initial = load_params_grid(_defaults)
             # Force update by clearing cached state
             if "strategy_params" in st.session_state:
@@ -155,7 +169,7 @@ def render_backtest_tab(
             st.rerun()
     
     with col_gen:
-        predictions_csv_path = get_predictions_csv_path("nvda", freq)
+        predictions_csv_path = get_predictions_csv_path(selected_symbol.lower(), freq)
         if st.button("⚡ Generate Predictions CSV", width='stretch'):
             try:
                 with st.spinner(f"Generating predictions for {freq}..."):
@@ -208,7 +222,7 @@ def render_backtest_tab(
                     k_atr_short=k_atr_short_val,
                     enable_longs=enable_longs_flag,
                     allow_shorts=allow_shorts_flag,
-                    symbol="NVDA",
+                    symbol=selected_symbol,
                     frequency=freq,
                     source="ui_manual_deploy",
                 )

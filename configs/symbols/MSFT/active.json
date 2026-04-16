@@ -1,36 +1,22 @@
 {
   "meta": {
-    "id": "cfg_20260403_retrain",
-    "symbol": "NVDA",
+    "id": "cfg_msft_placeholder",
+    "symbol": "MSFT",
     "frequency": "60min",
-    "created_at_utc": "2026-04-03T00:00:00+00:00",
-    "label": "RC2-retrain",
-    "source": "ui_manual_deploy",
-    "promoted_at_utc": "2026-04-03T00:00:00+00:00",
-    "updated_at_utc": "2026-04-03T00:00:00+00:00"
+    "created_at_utc": "2026-04-16T00:00:00+00:00",
+    "label": "MSFT initial — tune after first backtest",
+    "source": "manual",
+    "updated_at_utc": "2026-04-16T00:00:00+00:00"
   },
   "strategy": {
-    "risk_per_trade_pct": 0.02,
+    "risk_per_trade_pct": 0.015,
     "reward_risk_ratio": 2.5,
-    "k_sigma_long": 0.35,
-    "k_sigma_short": 0.5,
-    "k_atr_long": 0.45,
-    "k_atr_short": 0.5,
+    "k_sigma_long": 0.40,
+    "k_sigma_short": 0.55,
+    "k_atr_long": 0.50,
+    "k_atr_short": 0.55,
     "enable_longs": true,
     "allow_shorts": true
   },
-  "metrics": {
-    "total_return": 0.792,
-    "cagr": 0.624,
-    "max_drawdown": -0.060,
-    "sharpe_ratio": 2.88,
-    "win_rate": 0.458,
-    "profit_factor": 1.96,
-    "equity_price_corr": null,
-    "period": "20250101 -> 20260402",
-    "n_trades": 107,
-    "n_trades_long": 58,
-    "n_trades_short": 49,
-    "final_equity": 17920.0
-  }
+  "metrics": null
 }

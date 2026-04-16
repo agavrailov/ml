@@ -211,17 +211,17 @@ def smart_fill_gaps() -> None:
     print("[agent] Saved gap-filled raw data back to RAW_DATA_CSV.")
 
 
-def resample_and_add_features() -> None:
+def resample_and_add_features(symbol: str = "NVDA") -> None:
     """Convert curated minute data to hourly and add features for FREQUENCY."""
     os.makedirs(PROCESSED_DATA_DIR, exist_ok=True)
 
+    curated_path = os.path.join(PROCESSED_DATA_DIR, f"{symbol.lower()}_minute_curated.csv")
     print(f"[agent] Converting curated minute data to {FREQUENCY} and saving to processed dir.")
-    convert_minute_to_timeframe(CURATED_MINUTE_PATH, FREQUENCY, PROCESSED_DATA_DIR)
+    hourly_path = convert_minute_to_timeframe(curated_path, FREQUENCY, PROCESSED_DATA_DIR, symbol=symbol)
 
-    from src.config import FEATURES_TO_USE_OPTIONS, get_hourly_data_csv_path
+    from src.config import FEATURES_TO_USE_OPTIONS
 
     features = FEATURES_TO_USE_OPTIONS[0]
-    hourly_path = get_hourly_data_csv_path(FREQUENCY, PROCESSED_DATA_DIR)
 
     if not os.path.exists(hourly_path):
         print(f"[agent] Hourly data CSV not found at {hourly_path}; skipping feature engineering.")
@@ -292,12 +292,25 @@ def run_daily_pipeline(
         run_transform_minute_bars(sym)
 
     # 5) Resample to hourly and engineer features
-    resample_and_add_features()
+    for sym in symbols:
+        resample_and_add_features(sym)
 
     print("[agent] --- Daily Data Pipeline Agent completed ---")
 
 
 if __name__ == "__main__":
-    # Simple CLI: allow `--skip-ingestion` for dry runs
-    skip = "--skip-ingestion" in sys.argv
-    run_daily_pipeline(skip_ingestion=skip)
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Daily data pipeline agent.")
+    parser.add_argument(
+        "--skip-ingestion",
+        action="store_true",
+        help="Skip IB/TWS data ingestion (dry run).",
+    )
+    parser.add_argument(
+        "--symbol",
+        default="NVDA",
+        help="Ticker symbol to process (default: NVDA).",
+    )
+    args = parser.parse_args()
+    run_daily_pipeline(skip_ingestion=args.skip_ingestion, symbols=[args.symbol])

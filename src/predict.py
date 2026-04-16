@@ -190,8 +190,9 @@ class PredictionContext:
 def build_prediction_context(
     frequency: str,
     tsteps: int,
+    symbol: str = "NVDA",
 ) -> PredictionContext:
-    """Build and return a PredictionContext for a given (frequency, tsteps)."""
+    """Build and return a PredictionContext for a given (frequency, tsteps, symbol)."""
 
     script_dir = os.path.dirname(__file__)
 
@@ -323,9 +324,17 @@ def build_prediction_context(
             "chosen from metadata/config."
         ) from e
 
-    scaler_params_path = get_scaler_params_json_path(frequency)
+    scaler_params_path = get_scaler_params_json_path(frequency, symbol)
     if not os.path.exists(scaler_params_path):
-        raise FileNotFoundError(f"Scaler parameters not found at {scaler_params_path}.")
+        # Fallback to legacy path (no symbol prefix) for backwards compatibility
+        from src.config import PROCESSED_DATA_DIR as _PDD
+        legacy_path = os.path.join(_PDD, f"scaler_params_{frequency}.json")
+        if os.path.exists(legacy_path):
+            scaler_params_path = legacy_path
+        else:
+            raise FileNotFoundError(
+                f"Scaler parameters not found at {scaler_params_path} or legacy path {legacy_path}."
+            )
 
     with open(scaler_params_path, "r") as f:
         scaler_params = json.load(f)

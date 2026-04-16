@@ -50,7 +50,7 @@ def test_build_prediction_context_falls_back_to_registry_latest(monkeypatch, tmp
     monkeypatch.setattr(predict, "MODEL_REGISTRY_DIR", str(reg))
     monkeypatch.setattr(predict, "get_latest_best_model_path", lambda **_: (None, None, None, None, None))
     monkeypatch.setattr(predict, "get_active_model_path", lambda **_: None)
-    monkeypatch.setattr(predict, "get_scaler_params_json_path", lambda _frequency: str(scaler_path))
+    monkeypatch.setattr(predict, "get_scaler_params_json_path", lambda _frequency, _symbol=None: str(scaler_path))
 
     loaded_paths: list[str] = []
 
@@ -99,7 +99,7 @@ def test_build_prediction_context_uses_model_inferred_architecture(monkeypatch, 
         lambda **_: (str(model_path), None, None, 64, 1),
     )
     monkeypatch.setattr(predict, "get_active_model_path", lambda **_: None)
-    monkeypatch.setattr(predict, "get_scaler_params_json_path", lambda _frequency: str(scaler_path))
+    monkeypatch.setattr(predict, "get_scaler_params_json_path", lambda _frequency, _symbol=None: str(scaler_path))
 
     class LSTM:  # noqa: N801 - intentional class name for inference
         def __init__(self, units: int) -> None:
@@ -145,7 +145,7 @@ def test_build_prediction_context_raises_when_no_model_found(monkeypatch, tmp_pa
     monkeypatch.setattr(predict, "MODEL_REGISTRY_DIR", str(reg))
     monkeypatch.setattr(predict, "get_latest_best_model_path", lambda **_: (None, None, None, None, None))
     monkeypatch.setattr(predict, "get_active_model_path", lambda **_: None)
-    monkeypatch.setattr(predict, "get_scaler_params_json_path", lambda _frequency: str(scaler_path))
+    monkeypatch.setattr(predict, "get_scaler_params_json_path", lambda _frequency, _symbol=None: str(scaler_path))
 
     with pytest.raises(FileNotFoundError) as e:
         predict.build_prediction_context(frequency=freq, tsteps=tsteps)

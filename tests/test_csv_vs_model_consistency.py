@@ -44,7 +44,7 @@ def test_model_vs_csv_equity_parity(tmp_path: Path) -> None:
     preds.to_csv(preds_path, index=False)
 
     # Fake model provider: returns exactly the same series as in preds.
-    def _fake_model_provider(data_arg: pd.DataFrame, frequency: str):  # noqa: ARG001
+    def _fake_model_provider(data_arg: pd.DataFrame, frequency: str, symbol: str = "NVDA"):  # noqa: ARG001
         series = (data_arg["Close"].to_numpy(dtype=float) * 1.01).astype(float)
 
         def provider(i: int, row: pd.Series) -> float:  # type: ignore[name-defined]

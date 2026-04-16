@@ -43,14 +43,15 @@ class SessionConfig:
     backend: Optional[str] = None  # When None, fall back to config.BROKER_BACKEND.
 
 
-def make_strategy_config_from_defaults() -> StrategyConfig:
+def make_strategy_config_from_defaults(symbol: str | None = None) -> StrategyConfig:
     """Build a StrategyConfig using effective strategy defaults.
 
-    Merges code defaults from src.config with user overrides from configs/active.json.
-    This ensures live trading respects the configuration deployed from the UI.
+    Merges code defaults from src.config with user overrides from the active config.
+    Resolution order: configs/symbols/{SYMBOL}/active.json → configs/active.json → code defaults.
+    This ensures live trading respects the per-symbol configuration deployed from the UI.
     """
-    defaults = get_strategy_defaults()
-    
+    defaults = get_strategy_defaults(symbol)
+
     return StrategyConfig(
         risk_per_trade_pct=defaults["risk_per_trade_pct"],
         reward_risk_ratio=defaults["reward_risk_ratio"],
@@ -156,7 +157,7 @@ def run_session_over_dataframe(
     if len(predictions) != len(data):
         raise ValueError("predictions length must match data length for this simple session runner")
 
-    strat_cfg = make_strategy_config_from_defaults()
+    strat_cfg = make_strategy_config_from_defaults(symbol=cfg.symbol)
     ctx = ExecutionContext(symbol=cfg.symbol)
 
     equity = cfg.initial_equity

@@ -18,7 +18,8 @@ def convert_minute_to_timeframe(
     input_csv_path: str,
     frequency: str,
     processed_data_dir: str = PROCESSED_DATA_DIR,
-) -> None:
+    symbol: str = "nvda",
+) -> str:
     """Resample minute-level OHLC data to a coarser timeframe and save as CSV.
 
     Args:
@@ -28,9 +29,13 @@ def convert_minute_to_timeframe(
             ``pandas.DataFrame.resample``.
         processed_data_dir: Target directory where the resampled CSV will be
             written.
+        symbol: Ticker symbol used to name the output file (lowercased).
+
+    Returns:
+        Path to the written output CSV.
     """
     # Build output path from the provided processed_data_dir to keep tests and runtime aligned
-    output_csv_path = os.path.join(processed_data_dir, f"nvda_{frequency}.csv")
+    output_csv_path = os.path.join(processed_data_dir, f"{symbol.lower()}_{frequency}.csv")
     print(f"Converting minute data from {input_csv_path} to {frequency} frequency.")
     print(f"Output will be saved to {output_csv_path}")
     
@@ -67,6 +72,7 @@ def convert_minute_to_timeframe(
     # Save the resampled data to a new CSV file
     df_resampled.to_csv(output_csv_path, index=False)
     print(f"Successfully converted minute data to {frequency} and saved to {output_csv_path}")
+    return output_csv_path
 
 def add_features(df: pd.DataFrame, features_to_generate: list[str]) -> pd.DataFrame:
     """Add technical indicators and time-based features to a price DataFrame.

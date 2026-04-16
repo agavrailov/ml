@@ -40,6 +40,7 @@ from src.config import (
     get_latest_best_model_path,
     get_predictions_csv_path,
 )
+from src.core.config_resolver import get_strategy_defaults
 from src.strategy import StrategyConfig
 # Lazy import: predict module loads TensorFlow, only needed for model-mode backtests
 # from src.predict import build_prediction_context, predict_sequence_batch
@@ -205,7 +206,7 @@ def _estimate_atr_like(data: pd.DataFrame, window: int = 14) -> float:
     return float(cleaned.mean()) if not cleaned.empty else 1.0
 
 
-def _make_model_prediction_provider(data: pd.DataFrame, frequency: str) -> tuple[PredictionProvider, np.ndarray]:
+def _make_model_prediction_provider(data: pd.DataFrame, frequency: str, symbol: str = "NVDA") -> tuple[PredictionProvider, np.ndarray]:
     """Return a prediction provider using the LSTM model.
 
     This implementation builds a reusable prediction context (model + scaler +
@@ -224,7 +225,7 @@ def _make_model_prediction_provider(data: pd.DataFrame, frequency: str) -> tuple
     os.makedirs(PREDICTIONS_DIR, exist_ok=True)
     checkpoint_path = os.path.join(
         PREDICTIONS_DIR,
-        f"nvda_{frequency}_model_predictions_checkpoint.csv",
+        f"{symbol.lower()}_{frequency}_model_predictions_checkpoint.csv",
     )
 
     # If a full-length checkpoint exists, load and reuse it *only* when it is
@@ -292,7 +293,7 @@ def _make_model_prediction_provider(data: pd.DataFrame, frequency: str) -> tuple
     print("Building prediction context and running batched model predictions...", flush=True)
     # Lazy import: only load TensorFlow when actually running model predictions
     from src.predict import build_prediction_context, predict_sequence_batch
-    ctx = build_prediction_context(frequency=frequency, tsteps=TSTEPS)
+    ctx = build_prediction_context(frequency=frequency, tsteps=TSTEPS, symbol=symbol)
 
     df = data.copy()
     if "Time" in df.columns:
@@ -448,6 +449,7 @@ def run_backtest_on_dataframe(
     commission_per_unit_per_leg: float | None = None,
     min_commission_per_order: float | None = None,
     predictions_csv: Optional[str] = None,
+    symbol: str = "NVDA",
     # Optional overrides for strategy parameters (use config defaults when None).
     risk_per_trade_pct: float | None = None,
     reward_risk_ratio: float | None = None,
@@ -483,26 +485,32 @@ def run_backtest_on_dataframe(
     # a single global scalar.
     atr_series = _compute_atr_series(data, window=14)
 
-    # Strategy defaults come from STRATEGY_DEFAULTS so that risk and noise
-    # parameters are centralized in config.py. Allow callers to override
-    # individual knobs for optimization / UI workflows.
-    base_sigma = float(k_sigma_err) if k_sigma_err is not None else K_SIGMA_ERR
-    base_atr = float(k_atr_min_tp) if k_atr_min_tp is not None else K_ATR_MIN_TP
+    # Resolve per-symbol strategy defaults (configs/symbols/{SYMBOL}/active.json →
+    # configs/active.json → code defaults), then allow callers to override individual
+    # knobs for optimization / UI workflows.
+    _sym_defaults = get_strategy_defaults(symbol)
 
-    k_sigma_long_eff = float(k_sigma_long) if k_sigma_long is not None else base_sigma
-    k_sigma_short_eff = float(k_sigma_short) if k_sigma_short is not None else base_sigma
-    k_atr_long_eff = float(k_atr_long) if k_atr_long is not None else base_atr
-    k_atr_short_eff = float(k_atr_short) if k_atr_short is not None else base_atr
+    # k_sigma_err / k_atr_min_tp are shared overrides (apply to both sides when set).
+    # Per-side params take precedence; fall through to the shared override, then to
+    # the per-symbol per-side default.  Using per-side defaults ensures the short
+    # threshold is not silently clobbered by the long-side value.
+    _shared_sigma = float(k_sigma_err) if k_sigma_err is not None else None
+    _shared_atr   = float(k_atr_min_tp) if k_atr_min_tp is not None else None
+
+    k_sigma_long_eff  = float(k_sigma_long)  if k_sigma_long  is not None else (_shared_sigma if _shared_sigma is not None else _sym_defaults["k_sigma_long"])
+    k_sigma_short_eff = float(k_sigma_short) if k_sigma_short is not None else (_shared_sigma if _shared_sigma is not None else _sym_defaults["k_sigma_short"])
+    k_atr_long_eff    = float(k_atr_long)    if k_atr_long    is not None else (_shared_atr   if _shared_atr   is not None else _sym_defaults["k_atr_long"])
+    k_atr_short_eff   = float(k_atr_short)   if k_atr_short   is not None else (_shared_atr   if _shared_atr   is not None else _sym_defaults["k_atr_short"])
 
     strat_cfg = StrategyConfig(
-        risk_per_trade_pct=float(risk_per_trade_pct) if risk_per_trade_pct is not None else RISK_PER_TRADE_PCT,
-        reward_risk_ratio=float(reward_risk_ratio) if reward_risk_ratio is not None else REWARD_RISK_RATIO,
+        risk_per_trade_pct=float(risk_per_trade_pct) if risk_per_trade_pct is not None else _sym_defaults["risk_per_trade_pct"],
+        reward_risk_ratio=float(reward_risk_ratio) if reward_risk_ratio is not None else _sym_defaults["reward_risk_ratio"],
         k_sigma_long=k_sigma_long_eff,
         k_sigma_short=k_sigma_short_eff,
         k_atr_long=k_atr_long_eff,
         k_atr_short=k_atr_short_eff,
-        enable_longs=True if enable_longs is None else bool(enable_longs),
-        allow_shorts=False if allow_shorts is None else bool(allow_shorts),
+        enable_longs=_sym_defaults["enable_longs"] if enable_longs is None else bool(enable_longs),
+        allow_shorts=_sym_defaults["allow_shorts"] if allow_shorts is None else bool(allow_shorts),
     )
 
     # Use the mean ATR as a scalar proxy for backwards compatibility, but
@@ -537,10 +545,10 @@ def run_backtest_on_dataframe(
         # sigma logic. `_make_model_prediction_provider` will load the
         # checkpoint (without recomputing predictions) and return the same
         # provider and sigma series that model-mode would use.
-        default_checkpoint = os.path.join(PREDICTIONS_DIR, f"nvda_{freq}_model_predictions_checkpoint.csv")
+        default_checkpoint = os.path.join(PREDICTIONS_DIR, f"{symbol.lower()}_{freq}_model_predictions_checkpoint.csv")
         try:
             if os.path.abspath(predictions_csv) == os.path.abspath(default_checkpoint):
-                provider, model_error_sigma_series = _make_model_prediction_provider(data, frequency=freq)
+                provider, model_error_sigma_series = _make_model_prediction_provider(data, frequency=freq, symbol=symbol)
             else:
                 preds_df = _load_predictions_csv(predictions_csv)
 
@@ -641,7 +649,7 @@ def run_backtest_on_dataframe(
 
             model_error_sigma_series = atr_series.copy()
     elif prediction_mode == "model":
-        provider, model_error_sigma_series = _make_model_prediction_provider(data, frequency=freq)
+        provider, model_error_sigma_series = _make_model_prediction_provider(data, frequency=freq, symbol=symbol)
     elif prediction_mode == "naive":
         # Legacy/simple baseline: use Close as the predicted price.
         def provider(i: int, row: pd.Series) -> float:  # type: ignore[override]
@@ -1298,10 +1306,17 @@ def main() -> None:
         action="store_true",
         help="Print a clean summary report with key figures. Plot is always saved.",
     )
+    parser.add_argument(
+        "--symbol",
+        type=str,
+        default="NVDA",
+        help="Ticker symbol to backtest (e.g. NVDA, MSFT). Default: NVDA.",
+    )
 
     args = parser.parse_args()
 
     freq = args.frequency
+    symbol = args.symbol.upper()
     initial_equity = float(args.initial_equity)
     prediction_mode = args.prediction_mode
     commission_per_unit_per_leg = float(args.commission_per_unit_per_leg)
@@ -1312,15 +1327,14 @@ def main() -> None:
         csv_path = args.csv_path
         data_full = pd.read_csv(csv_path)
     else:
-        csv_path = get_hourly_data_csv_path(freq)
+        csv_path = get_hourly_data_csv_path(freq, symbol=symbol)
         if not os.path.exists(csv_path):
             raise FileNotFoundError(
-                f"'{csv_path}' not found. Please run 'python -m src.data_pipeline' "
+                f"'{csv_path}' not found. Please run 'python -m src.daily_data_agent --symbol {symbol}' "
                 "to generate the necessary data files, or provide a valid "
                 "--csv-path argument."
             )
-        # Use centralized data helper to load the default OHLC CSV.
-        data_full = load_hourly_ohlc(freq)
+        data_full = pd.read_csv(csv_path)
 
     # Basic sanity check for required columns.
     required_cols = {"Open", "High", "Low", "Close"}
@@ -1342,7 +1356,7 @@ def main() -> None:
     # Default predictions CSV when using CSV mode and no explicit path is given.
     eff_predictions_csv = predictions_csv
     if prediction_mode == "csv" and eff_predictions_csv is None:
-        eff_predictions_csv = get_predictions_csv_path("nvda", freq)
+        eff_predictions_csv = get_predictions_csv_path(symbol.lower(), freq)
 
     result = run_backtest_on_dataframe(
         data,
@@ -1352,6 +1366,7 @@ def main() -> None:
         commission_per_unit_per_leg=commission_per_unit_per_leg,
         min_commission_per_order=min_commission_per_order,
         predictions_csv=eff_predictions_csv,
+        symbol=symbol,
     )
 
     if not args.report:
@@ -1421,7 +1436,7 @@ def main() -> None:
     plot_path = _plot_price_and_equity_with_trades(
         data,
         result,
-        symbol="NVDA",
+        symbol=symbol,
         freq=freq,
         k_sigma_err=K_SIGMA_ERR,
         k_atr_min_tp=K_ATR_MIN_TP,
@@ -1433,7 +1448,7 @@ def main() -> None:
     # Print clean report when --report flag is set.
     if args.report:
         _print_report(
-            symbol="NVDA",
+            symbol=symbol,
             freq=freq,
             period_str=period_str,
             n_trades=len(result.trades),

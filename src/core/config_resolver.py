@@ -137,14 +137,23 @@ def save_strategy_defaults(
     frequency: str | None = None,
     source: str | None = None,
 ) -> None:
-    """Save strategy parameter overrides to configs/active.json.
+    """Save strategy parameter overrides.
+
+    When ``symbol`` is provided, writes to ``configs/symbols/{SYMBOL}/active.json``
+    so each symbol keeps independent thresholds. Without a symbol, falls back to
+    the global ``configs/active.json`` (backwards-compatible).
 
     Does NOT edit src/config.py (which remains read-only for the UI).
-
-    Optional metadata (symbol/frequency/source) is stored under "meta" so that
-    promotions into production carry enough context to avoid mixing timeframes.
     """
-    active = _load_active_config()
+    from datetime import datetime, timezone
+
+    # Determine target file: per-symbol or global.
+    if symbol:
+        target_path = _get_repo_root() / "configs" / "symbols" / symbol.strip().upper() / "active.json"
+        active = _try_load_json(str(target_path)) or {}
+    else:
+        active = _load_active_config()
+
     active.setdefault("strategy", {})
 
     active["strategy"]["risk_per_trade_pct"] = float(risk_per_trade_pct)
@@ -153,24 +162,53 @@ def save_strategy_defaults(
     active["strategy"]["k_sigma_short"] = float(k_sigma_short)
     active["strategy"]["k_atr_long"] = float(k_atr_long)
     active["strategy"]["k_atr_short"] = float(k_atr_short)
-    
-    # Save trading mode if provided
+
     if enable_longs is not None:
         active["strategy"]["enable_longs"] = bool(enable_longs)
     if allow_shorts is not None:
         active["strategy"]["allow_shorts"] = bool(allow_shorts)
 
     # Best-effort metadata for safety/auditability.
-    if symbol is not None or frequency is not None or source is not None:
-        from datetime import datetime, timezone
+    active.setdefault("meta", {})
+    if symbol is not None:
+        active["meta"]["symbol"] = str(symbol).strip().upper()
+    if frequency is not None:
+        active["meta"]["frequency"] = str(frequency).strip()
+    if source is not None:
+        active["meta"]["source"] = str(source).strip() or None
+    active["meta"]["updated_at_utc"] = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
-        active.setdefault("meta", {})
-        if symbol is not None:
-            active["meta"]["symbol"] = str(symbol).strip().upper()
-        if frequency is not None:
-            active["meta"]["frequency"] = str(frequency).strip()
-        if source is not None:
-            active["meta"]["source"] = str(source).strip() or None
-        active["meta"]["updated_at_utc"] = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    if symbol:
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_text(json.dumps(active, indent=2, ensure_ascii=False), encoding="utf-8")
+    else:
+        _save_active_config(active)
 
-    _save_active_config(active)
+
+def get_configured_symbols() -> list[str]:
+    """Return the list of symbols that have a per-symbol config directory.
+
+    Reads ``configs/portfolio.json`` first (authoritative source for the active
+    portfolio), then falls back to listing subdirectories under
+    ``configs/symbols/`` that contain an ``active.json``.  Always includes at
+    least ``"NVDA"`` as a safe default.
+    """
+    root = _get_repo_root()
+
+    # 1. Portfolio config is the primary source.
+    portfolio_path = root / "configs" / "portfolio.json"
+    data = _try_load_json(str(portfolio_path))
+    if data and isinstance(data.get("symbols"), list) and data["symbols"]:
+        return [str(s).strip().upper() for s in data["symbols"]]
+
+    # 2. Fall back to any symbol that has a configs/symbols/{SYM}/active.json.
+    symbols_dir = root / "configs" / "symbols"
+    if symbols_dir.is_dir():
+        found = sorted(
+            p.parent.name.upper()
+            for p in symbols_dir.glob("*/active.json")
+        )
+        if found:
+            return found
+
+    return ["NVDA"]
