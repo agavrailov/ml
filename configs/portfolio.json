@@ -1,6 +1,6 @@
 {
   "_comment": "Edit this file to add/remove symbols. base_client_id: NVDA=10, MSFT=11, etc.",
-  "symbols": ["NVDA"],
+  "symbols": ["NVDA", "MSFT"],
   "frequency": "60min",
   "tsteps": 5,
   "base_client_id": 10,
