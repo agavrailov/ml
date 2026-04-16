@@ -30,6 +30,8 @@ def test_load_strategy_defaults_matches_config_module(tmp_path: Path, monkeypatc
         "k_atr_short",
         "risk_per_trade_pct",
         "reward_risk_ratio",
+        "enable_longs",
+        "allow_shorts",
     }
     assert set(defaults.keys()) == expected_keys
 

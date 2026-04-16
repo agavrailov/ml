@@ -1,0 +1,30 @@
+{
+  "meta": {
+    "id": "cfg_20251218_154904_755dfa47",
+    "symbol": "NVDA",
+    "frequency": "1min",
+    "created_at_utc": "2025-12-18T15:49:04+00:00",
+    "label": "Some config for testing 1m",
+    "source": "ui_backtest"
+  },
+  "strategy": {
+    "risk_per_trade_pct": 0.001,
+    "reward_risk_ratio": 2.5,
+    "k_sigma_long": 4.0,
+    "k_sigma_short": 0.7,
+    "k_atr_long": 3.0,
+    "k_atr_short": 0.7
+  },
+  "metrics": {
+    "total_return": -0.25139016217797183,
+    "cagr": -0.29381172729824223,
+    "max_drawdown": -0.2556866022073242,
+    "sharpe_ratio": -5.074459714744872,
+    "win_rate": 0.2993762993762994,
+    "profit_factor": 0.7715511629811396,
+    "equity_price_corr": -0.12245719297841993,
+    "period": "20250101 -> 20251101",
+    "n_trades": 1443,
+    "final_equity": 7486.098378220282
+  }
+}

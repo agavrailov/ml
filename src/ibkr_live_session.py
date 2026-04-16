@@ -92,12 +92,10 @@ def _is_market_hours(*, premarket: bool = True) -> bool:
     Returns True during trading hours (Mon-Fri only), False otherwise.
     """
     try:
-        from datetime import datetime, timezone
         import zoneinfo
     except ImportError:
         # Fallback if zoneinfo not available (Python < 3.9)
         try:
-            from datetime import datetime, timezone
             from backports.zoneinfo import ZoneInfo as zoneinfo  # type: ignore[import]
         except ImportError:
             # If we can't determine timezone, conservatively assume market hours

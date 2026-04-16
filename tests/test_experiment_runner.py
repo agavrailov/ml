@@ -175,7 +175,8 @@ def test_run_experiments_basic_flow(mock_dependencies, capsys):
         assert "MAE: 5.0000" in captured.out
         assert "Correlation: 0.9000" in captured.out
         assert "All experiment results saved to 'experiment_results.json'" in captured.out
-        assert "Updated best hyperparameters saved to 'best_hyperparameters.json'" in captured.out
+        assert "Updated best hyperparameters saved to" in captured.out
+        assert "best_hyperparameters.json" in captured.out
 
 def test_run_single_experiment_train_model_returns_none(mock_dependencies, capsys):
     params = {

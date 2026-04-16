@@ -967,6 +967,10 @@ def run_backtest_for_ui(
     )
 
     # Trades DataFrame (may be empty).
+    _TRADE_COLUMNS = [
+        "entry_index", "exit_index", "entry_price", "exit_price",
+        "size", "direction", "commission", "gross_pnl", "pnl",
+    ]
     trades_records = [
         {
             "entry_index": t.entry_index,
@@ -981,7 +985,10 @@ def run_backtest_for_ui(
         }
         for t in result.trades
     ]
-    trades_df = pd.DataFrame(trades_records)
+    trades_df = (
+        pd.DataFrame(trades_records) if trades_records
+        else pd.DataFrame(columns=_TRADE_COLUMNS)
+    )
 
     # Attach a few helpful metadata fields to metrics for display.
     enriched_metrics = dict(metrics)

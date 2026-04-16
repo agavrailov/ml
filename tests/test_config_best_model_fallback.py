@@ -95,6 +95,7 @@ def test_get_latest_best_model_path_prefers_best_hps_when_present(
 
     monkeypatch.setattr(config, "BASE_DIR", str(tmp_path))
     monkeypatch.setattr(config, "MODEL_REGISTRY_DIR", str(reg))
+    monkeypatch.setattr(config, "BEST_HPS_PATH", str(best_path))
 
     model_path, *_ = config.get_latest_best_model_path(target_frequency="1min", tsteps=5)
 

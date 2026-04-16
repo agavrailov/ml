@@ -1,0 +1,30 @@
+{
+  "meta": {
+    "id": "cfg_20260214_184745_b1ebbd5e",
+    "symbol": "NVDA",
+    "frequency": "60min",
+    "created_at_utc": "2026-02-14T18:47:45+00:00",
+    "label": "RC2 - 600trades",
+    "source": "ui_backtest"
+  },
+  "strategy": {
+    "risk_per_trade_pct": 0.02,
+    "reward_risk_ratio": 2.5,
+    "k_sigma_long": 0.5,
+    "k_sigma_short": 0.7999999999999999,
+    "k_atr_long": 0.5,
+    "k_atr_short": 0.6
+  },
+  "metrics": {
+    "total_return": 432.9154678199898,
+    "cagr": 6.822298158652108,
+    "max_drawdown": -0.18798007112538778,
+    "sharpe_ratio": 4.239106478535468,
+    "win_rate": 0.4542372881355932,
+    "profit_factor": 1.4202904497232343,
+    "equity_price_corr": 0.051266446895952424,
+    "period": "20221230 -> 20251212",
+    "n_trades": 590,
+    "final_equity": 4339154.6781998975
+  }
+}

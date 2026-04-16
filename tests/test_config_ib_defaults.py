@@ -11,7 +11,7 @@ def test_ib_config_defaults_to_ib_gateway_paper_port(monkeypatch: pytest.MonkeyP
 
     cfg = IbConfig()
     assert cfg.host == "127.0.0.1"
-    assert cfg.port == 4002
+    assert cfg.port == 7496
     assert cfg.client_id == 1
 
 

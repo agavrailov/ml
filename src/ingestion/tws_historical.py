@@ -367,7 +367,7 @@ def trigger_historical_ingestion(
             target_file = file_path
         else:
             target_file = PATHS.raw_data_csv(sym)
-        print(f"[ingestion] Fetching {sym} → {target_file}")
+        print(f"[ingestion] Fetching {sym} -> {target_file}")
         asyncio.run(
             fetch_historical_data(
                 contract_details=contract_details,

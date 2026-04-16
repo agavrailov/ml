@@ -99,7 +99,7 @@ class TestBacktestJobContract:
 
         equity_df = pd.read_csv(store.get_job_dir(job_id) / "artifacts" / "equity.csv")
         assert "Time" in equity_df.columns
-        assert "Equity" in equity_df.columns
+        assert "equity" in equity_df.columns
         assert len(equity_df) > 0
 
     def test_backtest_trades_csv_schema(self, job_id: str, sample_predictions_csv: Path):
@@ -123,7 +123,7 @@ class TestBacktestJobContract:
         backtest_job.run(job_id, request)
 
         trades_df = pd.read_csv(store.get_job_dir(job_id) / "artifacts" / "trades.csv")
-        expected_cols = {"EntryTime", "ExitTime", "Direction", "Size", "PnL"}
+        expected_cols = {"entry_index", "exit_index", "entry_price", "exit_price", "size", "direction", "pnl"}
         assert expected_cols.issubset(set(trades_df.columns))
 
     def test_backtest_metrics_json_schema(
@@ -296,7 +296,7 @@ class TestWalkForwardJobContract:
             test_span_months=1,
             train_lookback_months=3,
             min_lookback_months=1,
-            first_test_start=None,
+            first_test_start="2024-01-15",
             predictions_csv=str(sample_predictions_csv),
             parameter_sets=[
                 {
@@ -330,7 +330,7 @@ class TestWalkForwardJobContract:
             test_span_months=1,
             train_lookback_months=3,
             min_lookback_months=1,
-            first_test_start=None,
+            first_test_start="2024-01-15",
             predictions_csv=str(sample_predictions_csv),
             parameter_sets=[
                 {
@@ -383,7 +383,7 @@ class TestWalkForwardJobContract:
             test_span_months=1,
             train_lookback_months=3,
             min_lookback_months=1,
-            first_test_start=None,
+            first_test_start="2024-01-15",
             predictions_csv=str(sample_predictions_csv),
             parameter_sets=[
                 {

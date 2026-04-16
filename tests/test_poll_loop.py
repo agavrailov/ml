@@ -177,8 +177,8 @@ class TestIsMarketHoursAt:
         at = datetime(2026, 2, 26, 17, 0, tzinfo=self._EST)  # Thu 17:00
         assert _is_market_hours(premarket=True, at=at) is False
 
-    def test_premarket_4am(self):
-        at = datetime(2026, 2, 26, 4, 0, tzinfo=self._EST)  # Thu 04:00
+    def test_premarket_6am(self):
+        at = datetime(2026, 2, 26, 6, 0, tzinfo=self._EST)  # Thu 06:00 (premarket, outside GW restart)
         assert _is_market_hours(premarket=True, at=at) is True
 
     def test_before_premarket(self):
