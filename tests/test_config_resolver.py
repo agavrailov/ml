@@ -171,3 +171,22 @@ def test_load_strategy_defaults_malformed_active_json(mock_repo_root, temp_confi
 
     # Should use config.py defaults.
     assert defaults["risk_per_trade_pct"] == STRATEGY_DEFAULTS.risk_per_trade_pct
+
+
+def test_get_strategy_defaults_per_symbol(tmp_path, monkeypatch):
+    """config_resolver should read from configs/symbols/{SYMBOL}/active.json if present."""
+    import json as _json
+    from src.core import config_resolver as cr
+
+    symbol_dir = tmp_path / "configs" / "symbols" / "MSFT"
+    symbol_dir.mkdir(parents=True)
+    (symbol_dir / "active.json").write_text(_json.dumps({
+        "strategy": {"k_sigma_long": 0.99},
+        "meta": {"symbol": "MSFT"}
+    }))
+
+    # Patch _get_repo_root to return tmp_path
+    monkeypatch.setattr(cr, "_get_repo_root", lambda: tmp_path)
+
+    defaults = cr.get_strategy_defaults(symbol="MSFT")
+    assert defaults["k_sigma_long"] == pytest.approx(0.99)

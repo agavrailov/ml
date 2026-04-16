@@ -11,6 +11,7 @@ and eliminating regex-based edits that were a major source of regressions.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,16 @@ def _get_repo_root() -> Path:
 def _get_active_config_path() -> Path:
     """Return the path to configs/active.json."""
     return _get_repo_root() / "configs" / "active.json"
+
+
+def _try_load_json(path: str) -> dict | None:
+    """Load a JSON file, returning None on any error or if absent."""
+    try:
+        content = Path(path).read_text(encoding="utf-8").strip()
+        data = json.loads(content) if content else None
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
 
 
 def _load_active_config() -> dict[str, Any]:
@@ -54,12 +65,13 @@ def _save_active_config(config: dict[str, Any]) -> None:
     path.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def get_strategy_defaults() -> dict[str, float | bool]:
+def get_strategy_defaults(symbol: str | None = None) -> dict[str, float | bool]:
     """Return effective strategy defaults by merging config.py + active.json.
 
-    Priority:
-    1. User overrides from configs/active.json (highest)
-    2. Code defaults from src/config.py
+    Resolution order:
+      1. configs/symbols/{SYMBOL}/active.json  (if symbol is specified and file exists)
+      2. configs/active.json                   (global fallback)
+      3. src/config.py STRATEGY_DEFAULTS       (code defaults)
 
     Returns a dict with keys:
         risk_per_trade_pct, reward_risk_ratio,
@@ -70,8 +82,18 @@ def get_strategy_defaults() -> dict[str, float | bool]:
     # Import inside function to avoid circular imports at module load time.
     from src.config import STRATEGY_DEFAULTS
 
-    active = _load_active_config()
-    strategy_overrides = active.get("strategy", {})
+    # 1. Per-symbol config
+    strategy_overrides: dict = {}
+    if symbol:
+        symbol_path = str(_get_repo_root() / "configs" / "symbols" / symbol.upper() / "active.json")
+        data = _try_load_json(symbol_path)
+        if data and "strategy" in data:
+            strategy_overrides = data["strategy"]
+
+    # 2. Global active.json fallback
+    if not strategy_overrides:
+        active = _load_active_config()
+        strategy_overrides = active.get("strategy", {})
 
     return {
         "risk_per_trade_pct": float(
