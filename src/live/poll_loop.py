@@ -253,12 +253,16 @@ def _run_single_cycle(
 
     # Hard timeout: if the cycle hasn't finished in _CYCLE_TIMEOUT_SECS,
     # force-disconnect so hanging ib_insync calls abort.
+    # IMPORTANT: disconnect BEFORE printing.  On Windows, Quick Edit Mode causes
+    # WriteFile() to block when the user clicks the console.  If ts_print runs
+    # first it acquires TextIOWrapper._lock; the main thread (also stuck in
+    # ts_print) never releases it, so ib.disconnect() is never reached.
     def _force_disconnect():
-        ts_print("[poll] Cycle timeout: forcing disconnect.")
         try:
             ib.disconnect()
         except Exception:
             pass
+        ts_print("[poll] Cycle timeout: forcing disconnect.")
 
     cycle_timer = threading.Timer(_CYCLE_TIMEOUT_SECS, _force_disconnect)
     cycle_timer.daemon = True
@@ -706,6 +710,39 @@ def _run_single_cycle(
 # Main loop
 # ---------------------------------------------------------------------------
 
+def _disable_windows_quick_edit() -> None:
+    """Disable Windows console Quick Edit mode.
+
+    Quick Edit mode causes the process to block whenever the user clicks the
+    console window to select text.  The block happens inside WriteFile() which
+    holds the TextIOWrapper lock; any other thread that tries to write to
+    stdout (e.g. the cycle-timeout timer thread) also blocks, preventing
+    ib.disconnect() from being called.  The result is that the cycle timer
+    never fires properly and the daemon can be frozen for tens of minutes.
+
+    Safe no-op on non-Windows or when not attached to a console.
+    """
+    import sys
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        stdin_handle = kernel32.GetStdHandle(-10)  # STD_INPUT_HANDLE
+        if stdin_handle in (0, -1):
+            return
+        mode = ctypes.c_ulong(0)
+        if not kernel32.GetConsoleMode(stdin_handle, ctypes.byref(mode)):
+            return
+        ENABLE_QUICK_EDIT_MODE = 0x0040
+        ENABLE_EXTENDED_FLAGS  = 0x0080  # must be set when clearing QuickEdit
+        new_mode = (mode.value & ~ENABLE_QUICK_EDIT_MODE) | ENABLE_EXTENDED_FLAGS
+        kernel32.SetConsoleMode(stdin_handle, new_mode)
+        ts_print("[poll] Windows Quick Edit mode disabled (prevents console-freeze deadlock).")
+    except Exception:
+        pass  # Not a real console, or no permissions — silently ignore
+
+
 def run_poll_loop(cfg) -> None:
     """Run the poll-based live trading loop.
 
@@ -716,6 +753,8 @@ def run_poll_loop(cfg) -> None:
     """
     if not _HAVE_IB:
         raise RuntimeError("ib_insync is required; pip install ib-insync")
+
+    _disable_windows_quick_edit()
 
     run_id = getattr(cfg, "run_id", None) or create_run_id()
     live_dir = Path(cfg.log_dir) if getattr(cfg, "log_dir", None) else None

@@ -5,16 +5,16 @@
     "frequency": "60min",
     "created_at_utc": "2026-04-16T00:00:00+00:00",
     "label": "MSFT initial — tune after first backtest",
-    "source": "manual",
-    "updated_at_utc": "2026-04-16T00:00:00+00:00"
+    "source": "grid_search_strategy_msft.py",
+    "updated_at_utc": "2026-04-16T11:19:25+00:00"
   },
   "strategy": {
     "risk_per_trade_pct": 0.015,
     "reward_risk_ratio": 2.5,
-    "k_sigma_long": 0.40,
-    "k_sigma_short": 0.55,
-    "k_atr_long": 0.50,
-    "k_atr_short": 0.55,
+    "k_sigma_long": 0.4,
+    "k_sigma_short": 0.7,
+    "k_atr_long": 0.75,
+    "k_atr_short": 0.5,
     "enable_longs": true,
     "allow_shorts": true
   },

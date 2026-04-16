@@ -24,15 +24,25 @@ def run_walkforward(
     t_end: str | None,
     predictions_csv: str | None,
     first_test_start: str | None,
+    # Optional strategy parameter overrides (None = use per-symbol config defaults)
+    k_sigma_long: float | None = None,
+    k_sigma_short: float | None = None,
+    k_atr_long: float | None = None,
+    k_atr_short: float | None = None,
+    risk_per_trade_pct: float | None = None,
+    reward_risk_ratio: float | None = None,
 ) -> pd.DataFrame:
-    """Run 3-month walk-forward backtests over the available data.
+    """Run walk-forward backtests over the available data.
 
     This script does **not** retrain the model per fold; it assumes that
     per-bar predictions are already available in ``predictions_csv`` and
     evaluates strategy performance across successive 3-month test windows.
     """
 
-    df_full = load_hourly_ohlc(frequency)
+    hourly_csv = cfg.get_hourly_data_csv_path(frequency, symbol=symbol)
+    if not os.path.exists(hourly_csv):
+        raise SystemExit(f"Hourly OHLC data not found at {hourly_csv}.")
+    df_full = pd.read_csv(hourly_csv)
     if "Time" not in df_full.columns or df_full.empty:
         raise SystemExit("Hourly OHLC data must be non-empty and contain a 'Time' column.")
 
@@ -73,6 +83,13 @@ def run_walkforward(
             frequency=frequency,
             prediction_mode="csv",
             predictions_csv=predictions_csv,
+            symbol=symbol,
+            k_sigma_long=k_sigma_long,
+            k_sigma_short=k_sigma_short,
+            k_atr_long=k_atr_long,
+            k_atr_short=k_atr_short,
+            risk_per_trade_pct=risk_per_trade_pct,
+            reward_risk_ratio=reward_risk_ratio,
         )
         metrics = _compute_backtest_metrics(result, initial_equity=cfg.INITIAL_EQUITY, data=test_df)
 
