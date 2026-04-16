@@ -229,6 +229,8 @@ def _run_single_cycle(
     has_open_position: bool,
     order_state: dict,
     suppress_trading: bool = False,
+    portfolio_state_path: Path | None = None,
+    portfolio_config_path: str | None = None,
 ) -> tuple[float, bool, dict]:
     """Execute one connect-fetch-process-disconnect cycle.
 
@@ -522,6 +524,23 @@ def _run_single_cycle(
         except Exception:
             pass  # fall back to cfg.initial_equity
 
+        # --- Portfolio capital cap ---
+        # If a shared portfolio state file is present, use the capital allocator
+        # to further limit buying_power to this symbol's allocation.
+        if portfolio_state_path is not None:
+            try:
+                from src.portfolio.state import PortfolioStateManager
+                from src.portfolio.loader import make_allocator_from_config
+                _ps = PortfolioStateManager(portfolio_state_path)
+                _alloc = make_allocator_from_config(portfolio_config_path)
+                _cap = _ps.available_capital_for(cfg.symbol, _alloc)
+                if buying_power is None:
+                    buying_power = _cap
+                else:
+                    buying_power = min(buying_power, _cap)
+            except Exception:
+                pass  # degrade gracefully — no portfolio cap applied
+
         state = StrategyState(
             current_price=current_price,
             predicted_price=float(predicted_price),
@@ -587,6 +606,17 @@ def _run_single_cycle(
                     broker, plan, exec_ctx, current_price=current_price,
                 )
                 has_open_position = True
+
+                # Update portfolio state so sibling daemons see this exposure
+                if portfolio_state_path is not None:
+                    try:
+                        from src.portfolio.state import PortfolioStateManager
+                        _ps = PortfolioStateManager(portfolio_state_path)
+                        _size = max(1, int(round(plan.size)))
+                        _mv = _size * current_price * plan.direction
+                        _ps.write_position(cfg.symbol, quantity=_size * plan.direction, market_value=_mv)
+                    except Exception:
+                        pass
 
                 log_fn({
                     "type": "order_submitted",
@@ -723,13 +753,21 @@ def run_poll_loop(cfg) -> None:
     predictor = LivePredictor.from_config(
         LivePredictorConfig(frequency=cfg.frequency, tsteps=cfg.tsteps),
     )
-    historical_csv = get_hourly_data_csv_path(cfg.frequency)
+    historical_csv = get_hourly_data_csv_path(cfg.frequency, symbol=getattr(cfg, "symbol", "NVDA"))
     if os.path.exists(historical_csv):
         loaded = predictor.warmup_from_csv(historical_csv, cfg.frequency)
         ts_print(f"[poll] Predictor warmed up with {loaded} bars from {historical_csv}")
 
     strat_cfg = make_strategy_config_from_defaults()
     exec_ctx = ExecutionContext(symbol=cfg.symbol)
+
+    # Portfolio state path (optional — only if portfolio.json exists)
+    from src.config import BASE_DIR as _BASE_DIR
+    _portfolio_cfg_path = os.path.join(_BASE_DIR, "configs", "portfolio.json")
+    _portfolio_state_path: Path | None = (
+        live_dir_path.parent / "portfolio" / "state.json"
+        if os.path.exists(_portfolio_cfg_path) else None
+    )
 
     equity = float(cfg.initial_equity)
     has_open_position = False
@@ -804,6 +842,8 @@ def run_poll_loop(cfg) -> None:
                         has_open_position=has_open_position,
                         order_state=order_state,
                         suppress_trading=stale,
+                        portfolio_state_path=_portfolio_state_path,
+                        portfolio_config_path=_portfolio_cfg_path if _portfolio_state_path else None,
                     )
                     success = True
                     break
