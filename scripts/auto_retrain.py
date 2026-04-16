@@ -136,20 +136,40 @@ def _stage_train(
     *,
     frequency: str,
     tsteps: int,
+    symbol: str = "NVDA",
     log: list[str],
 ) -> dict[str, Any]:
     """Train a new model. Returns stage dict + (val_loss, model_path, bias_path)."""
     t0 = _now_s()
-    log.append(f"Stage 2: training  frequency={frequency}  tsteps={tsteps}")
+    log.append(f"Stage 2: training  frequency={frequency}  tsteps={tsteps}  symbol={symbol}")
     try:
         from src.train import train_model
         val_loss, model_path, bias_path = train_model(
             frequency=frequency,
             tsteps=tsteps,
+            symbol=symbol,
         )
         dur = _now_s() - t0
         log.append(f"  Training finished in {dur:.1f}s  val_loss={val_loss:.6f}")
         log.append(f"  New model: {model_path}")
+
+        # Register in symbol_registry.json (only if better than existing)
+        try:
+            from src.model_registry import update_best_model
+            from src.config import get_run_hyperparameters
+            hps = get_run_hyperparameters(frequency, tsteps)
+            update_best_model(
+                symbol=symbol.upper(),
+                frequency=frequency,
+                tsteps=tsteps,
+                val_loss=val_loss,
+                model_path=model_path,
+                bias_path=bias_path,
+                hparams=hps,
+            )
+        except Exception:
+            pass  # registry update is best-effort
+
         return {
             "status": "ok",
             "new_val_loss": val_loss,
@@ -477,7 +497,7 @@ def run_auto_retrain(
         # -------------------------------------------------------------------
         # Stage 2: Train
         # -------------------------------------------------------------------
-        s2 = _stage_train(frequency=frequency, tsteps=tsteps, log=log)
+        s2 = _stage_train(frequency=frequency, tsteps=tsteps, symbol=symbol, log=log)
         stages["training"] = s2
         if s2["status"] != "ok":
             log.append("Aborting: training failed.")
@@ -663,7 +683,11 @@ def main() -> None:
     )
     parser.add_argument(
         "--symbol", default=DEFAULT_SYMBOL,
-        help=f"Symbol label for predictions/walkforward (default: {DEFAULT_SYMBOL})",
+        help=f"Single symbol (legacy, default: {DEFAULT_SYMBOL})",
+    )
+    parser.add_argument(
+        "--symbols", nargs="+", default=None,
+        help="Symbols to retrain (default: reads from configs/portfolio.json)",
     )
     parser.add_argument(
         "--dry-run", action="store_true",
@@ -671,13 +695,31 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    report = run_auto_retrain(
-        frequency=args.frequency,
-        tsteps=args.tsteps,
-        symbol=args.symbol,
-        dry_run=args.dry_run,
-    )
-    sys.exit(0 if report.get("error") is None else 1)
+    # Resolve symbol list
+    if args.symbols:
+        symbols = [s.upper() for s in args.symbols]
+    else:
+        try:
+            from src.portfolio.loader import load_portfolio_config
+            symbols = load_portfolio_config()["symbols"]
+        except Exception:
+            symbols = [args.symbol.upper()]  # legacy single-symbol fallback
+
+    reports = []
+    overall_exit = 0
+    for sym in symbols:
+        print(f"\n[auto_retrain] === Symbol: {sym} ===")
+        report = run_auto_retrain(
+            frequency=args.frequency,
+            tsteps=args.tsteps,
+            symbol=sym.lower(),
+            dry_run=args.dry_run,
+        )
+        reports.append(report)
+        if report.get("error"):
+            overall_exit = 1
+
+    sys.exit(overall_exit)
 
 
 if __name__ == "__main__":
