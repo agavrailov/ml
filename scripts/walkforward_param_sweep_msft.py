@@ -98,7 +98,7 @@ def run_sweep(
         min_sharpe   = fold_df["sharpe_ratio"].min()
 
         print(
-            f"         → folds={n_folds} mean_sharpe={mean_sharpe:.2f} "
+            f"         -> folds={n_folds} mean_sharpe={mean_sharpe:.2f} "
             f"min_sharpe={min_sharpe:.2f} mean_pf={mean_pf:.2f} "
             f"mean_dd={mean_dd*100:.1f}% pct_pos={pct_positive*100:.0f}%",
             flush=True,
