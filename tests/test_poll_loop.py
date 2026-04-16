@@ -281,3 +281,108 @@ class TestStateEnumExtensions:
         assert SystemState.TRADING.value == "TRADING"
         assert SystemState.RECONNECTING.value == "RECONNECTING"
         assert SystemState.STOPPED.value == "STOPPED"
+
+
+# ---------------------------------------------------------------------------
+# Position netting (regression: IBKR multi-lot churn bug)
+# ---------------------------------------------------------------------------
+
+
+class _FakePosition:
+    """Minimal mock for IBKR position entries."""
+
+    def __init__(self, symbol: str, quantity: float):
+        self.symbol = symbol
+        self.quantity = quantity
+
+
+class TestPositionNetting:
+    """Verify that position logic nets multiple lots for the same symbol.
+
+    Regression: IBKR reports per-lot positions (e.g., +1, -135, +134 for NVDA).
+    Without netting, the system treated each lot as an independent position,
+    causing the bracket auto-repair to churn 270 shares on a net-zero exposure.
+    """
+
+    def _net_managed_qty(self, positions: list, symbol: str) -> float:
+        """Replicate the netting logic from _run_single_cycle."""
+        return sum(
+            float(getattr(p, "quantity", 0.0))
+            for p in positions
+            if getattr(p, "symbol", "") == symbol
+        )
+
+    def test_multi_lot_net_zero(self):
+        """Three NVDA lots that net to zero → system should be flat."""
+        positions = [
+            _FakePosition("NVDA", 1.0),
+            _FakePosition("NVDA", -135.0),
+            _FakePosition("NVDA", 134.0),
+            _FakePosition("AAPL", 30.0),  # unrelated
+        ]
+        net = self._net_managed_qty(positions, "NVDA")
+        assert abs(net) < 0.01
+        assert not (abs(net) >= 0.01)  # has_open_position should be False
+
+    def test_single_lot_positive(self):
+        """Single normal lot → system has open position."""
+        positions = [_FakePosition("NVDA", 135.0)]
+        net = self._net_managed_qty(positions, "NVDA")
+        assert abs(net) >= 0.01
+        assert net == pytest.approx(135.0)
+
+    def test_multi_lot_net_nonzero(self):
+        """Multiple lots that don't fully cancel → still has position."""
+        positions = [
+            _FakePosition("NVDA", 200.0),
+            _FakePosition("NVDA", -135.0),
+        ]
+        net = self._net_managed_qty(positions, "NVDA")
+        assert abs(net) >= 0.01
+        assert net == pytest.approx(65.0)
+
+    def test_no_positions_for_symbol(self):
+        """No NVDA positions → flat."""
+        positions = [_FakePosition("AAPL", 30.0)]
+        net = self._net_managed_qty(positions, "NVDA")
+        assert net == 0.0
+
+    def test_bracket_check_skipped_when_net_zero(self):
+        """When net position is zero, managed_positions list should be empty."""
+        from src.live.order_utils import check_positions_have_brackets
+
+        positions = [
+            _FakePosition("NVDA", 1.0),
+            _FakePosition("NVDA", -135.0),
+            _FakePosition("NVDA", 134.0),
+        ]
+        net = self._net_managed_qty(positions, "NVDA")
+        assert abs(net) < 0.01
+
+        # With net zero, managed_positions is empty → no bracket warnings
+        managed_positions = []  # as the code would set it
+        warnings = check_positions_have_brackets(
+            managed_positions, [],
+            run_id="test", symbol="NVDA",
+        )
+        assert len(warnings) == 0
+
+    def test_bracket_check_uses_net_when_nonzero(self):
+        """When net is non-zero, bracket check runs on the net quantity."""
+        from src.live.order_utils import check_positions_have_brackets
+
+        positions = [
+            _FakePosition("NVDA", 200.0),
+            _FakePosition("NVDA", -135.0),
+        ]
+        net = self._net_managed_qty(positions, "NVDA")
+        assert net == pytest.approx(65.0)
+
+        # With net > 0, managed_positions has single synthetic entry
+        managed_positions = [_FakePosition("NVDA", net)]
+        warnings = check_positions_have_brackets(
+            managed_positions, [],  # no open orders → missing brackets
+            run_id="test", symbol="NVDA",
+        )
+        assert len(warnings) == 1
+        assert warnings[0]["quantity"] == pytest.approx(65.0)

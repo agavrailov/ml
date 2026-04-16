@@ -1,11 +1,11 @@
 {
-  "_comment": "Edit this file to add/remove symbols. base_client_id: NVDA=10, MSFT=11, etc.",
-  "symbols": ["NVDA", "MSFT"],
+  "_comment": "Edit this file to add/remove symbols. Client IDs: NVDA=10, MSFT=11, JPM=12, XOM=13, UNH=14, AMZN=15.",
+  "symbols": ["NVDA", "MSFT", "JPM", "XOM"],
   "frequency": "60min",
   "tsteps": 5,
   "base_client_id": 10,
   "allocation": {
     "max_gross_exposure_pct": 0.80,
-    "max_per_symbol_pct": 0.30
+    "max_per_symbol_pct": 0.25
   }
 }

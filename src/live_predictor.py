@@ -46,6 +46,7 @@ class LivePredictorConfig:
 
     frequency: str = FREQUENCY
     tsteps: int = TSTEPS
+    symbol: str = "NVDA"
     warmup_extra: int = 20
     max_window: int = field(init=False)
 
@@ -67,7 +68,9 @@ class LivePredictor:
     @classmethod
     def from_config(cls, config: Optional[LivePredictorConfig] = None) -> "LivePredictor":
         config = config or LivePredictorConfig()
-        ctx = build_prediction_context(frequency=config.frequency, tsteps=config.tsteps)
+        ctx = build_prediction_context(
+            frequency=config.frequency, tsteps=config.tsteps, symbol=config.symbol,
+        )
         return cls(ctx=ctx, config=config)
 
     def warmup_from_csv(self, csv_path: str, frequency: str) -> int:

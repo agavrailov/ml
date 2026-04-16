@@ -37,7 +37,7 @@ def test_backtest_path_helpers_use_backtests_dir_and_lowercase() -> None:
     equity = Path(config.get_equity_csv_path("NVDA", "15min"))
 
     # Filenames should be correct and lowercase.
-    assert pred.name == "nvda_15min_predictions.csv"
+    assert pred.name == "nvda_15min_model_predictions_checkpoint.csv"
     assert trades.name == "nvda_15min_trades.csv"
     assert equity.name == "nvda_15min_equity.csv"
 

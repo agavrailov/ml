@@ -1,0 +1,21 @@
+{
+  "meta": {
+    "id": "cfg_amzn_initial",
+    "symbol": "AMZN",
+    "frequency": "60min",
+    "created_at_utc": "2026-04-16T00:00:00+00:00",
+    "label": "AMZN initial conservative — tune after first backtest",
+    "source": "copied from MSFT template, conservative defaults"
+  },
+  "strategy": {
+    "risk_per_trade_pct": 0.015,
+    "reward_risk_ratio": 2.5,
+    "k_sigma_long": 0.35,
+    "k_sigma_short": 0.7,
+    "k_atr_long": 0.45,
+    "k_atr_short": 0.8,
+    "enable_longs": true,
+    "allow_shorts": true
+  },
+  "metrics": null
+}

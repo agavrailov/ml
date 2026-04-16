@@ -39,6 +39,7 @@ from src.config import (
     FEATURES_TO_USE_OPTIONS,
     BEST_HPS_PATH,
 )
+from src.model_registry import get_best_model_entry
 
 
 def _safe_model_input_shape(model: Any) -> Optional[tuple[int | None, int | None, int | None]]:
@@ -202,47 +203,61 @@ def build_prediction_context(
     lstm_units_trained = None
     n_lstm_layers_trained = None
 
-    # Try to get the latest best model and its associated parameters
-    (
-        best_model_path_candidate,
-        best_bias_correction_path_candidate,
-        best_features_to_use_trained_candidate,
-        best_lstm_units_trained_candidate,
-        best_n_lstm_layers_trained_candidate,
-    ) = get_latest_best_model_path(target_frequency=frequency, tsteps=tsteps)
+    # ── Primary: symbol-aware model registry ─────────────────────────
+    registry_entry = get_best_model_entry(symbol, frequency, tsteps)
+    if registry_entry:
+        candidate = registry_entry.get("model_path")
+        if candidate and os.path.exists(candidate):
+            model_path = candidate
+            bias_correction_path = registry_entry.get("bias_path")
+            hps = registry_entry.get("hparams") or {}
+            features_to_use_trained = hps.get("features_to_use")
+            lstm_units_trained = hps.get("lstm_units")
+            n_lstm_layers_trained = hps.get("n_lstm_layers")
 
-    if best_model_path_candidate:
-        abs_best_model_path = os.path.abspath(os.path.join(script_dir, best_model_path_candidate))
-        if os.path.exists(abs_best_model_path):
-            model_path = abs_best_model_path
-            bias_correction_path = best_bias_correction_path_candidate
-            features_to_use_trained = best_features_to_use_trained_candidate
-            lstm_units_trained = best_lstm_units_trained_candidate
-            n_lstm_layers_trained = best_n_lstm_layers_trained_candidate
+    # ── Legacy fallback (best_hyperparameters.json — not symbol-aware) ──
+    # Only attempt for NVDA backwards compatibility; the legacy files have
+    # no symbol key so they can only resolve correctly for NVDA (the original
+    # single-symbol default).  All other symbols must be in the registry.
+    if not model_path and symbol.upper() == "NVDA":
+        (
+            best_model_path_candidate,
+            best_bias_correction_path_candidate,
+            best_features_to_use_trained_candidate,
+            best_lstm_units_trained_candidate,
+            best_n_lstm_layers_trained_candidate,
+        ) = get_latest_best_model_path(target_frequency=frequency, tsteps=tsteps)
 
-    # Fallback to active model if no best model found or path doesn't exist
-    if not model_path:
-        active_model_path_candidate = get_active_model_path(frequency=frequency, tsteps=tsteps)
-        if active_model_path_candidate:
-            abs_active_model_path = os.path.abspath(os.path.join(script_dir, active_model_path_candidate))
-            if os.path.exists(abs_active_model_path):
-                model_path = abs_active_model_path
-                # When using active model, the trained parameters are not available,
-                # so they should default to None and be picked up from best_hps or global defaults.
+        if best_model_path_candidate:
+            abs_best_model_path = os.path.abspath(os.path.join(script_dir, best_model_path_candidate))
+            if os.path.exists(abs_best_model_path):
+                model_path = abs_best_model_path
+                bias_correction_path = best_bias_correction_path_candidate
+                features_to_use_trained = best_features_to_use_trained_candidate
+                lstm_units_trained = best_lstm_units_trained_candidate
+                n_lstm_layers_trained = best_n_lstm_layers_trained_candidate
+
+        # Fallback to active model
+        if not model_path:
+            active_model_path_candidate = get_active_model_path(frequency=frequency, tsteps=tsteps)
+            if active_model_path_candidate:
+                abs_active_model_path = os.path.abspath(os.path.join(script_dir, active_model_path_candidate))
+                if os.path.exists(abs_active_model_path):
+                    model_path = abs_active_model_path
+                    features_to_use_trained = None
+                    lstm_units_trained = None
+                    n_lstm_layers_trained = None
+                    bias_correction_path = None
+
+        # Final legacy fallback: newest matching model file in registry dir.
+        if not model_path:
+            registry_model_path = _find_latest_registry_model_path(frequency=frequency, tsteps=tsteps)
+            if registry_model_path and os.path.exists(registry_model_path):
+                model_path = registry_model_path
                 features_to_use_trained = None
                 lstm_units_trained = None
                 n_lstm_layers_trained = None
-                bias_correction_path = None  # tied to best model metadata
-
-    # Final fallback: look for the newest matching model in the registry.
-    if not model_path:
-        registry_model_path = _find_latest_registry_model_path(frequency=frequency, tsteps=tsteps)
-        if registry_model_path and os.path.exists(registry_model_path):
-            model_path = registry_model_path
-            features_to_use_trained = None
-            lstm_units_trained = None
-            n_lstm_layers_trained = None
-            bias_correction_path = None
+                bias_correction_path = None
 
     if not model_path or not os.path.exists(model_path):
         # Message includes the legacy substring "No best model found for frequency"
@@ -250,7 +265,7 @@ def build_prediction_context(
         # available yet.
         raise FileNotFoundError(
             f"No best model found for frequency {frequency} (no best model or active model found for TSTEPS {tsteps}). "
-            "Please train a model or update models/active_model.txt."
+            f"Symbol: {symbol}. Please train a model or update models/symbol_registry.json."
         )
 
     # Load the trained *stateful* model via the unified model loader.

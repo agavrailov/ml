@@ -68,7 +68,7 @@ class PathsConfig:
         return os.path.join(self.processed_data_dir, f"scaler_params_{symbol.lower()}_{frequency}.json")
 
     def predictions_csv(self, symbol: str, frequency: str) -> str:
-        return os.path.join(BASE_DIR, "backtests", f"{symbol.lower()}_{frequency}_predictions.csv")
+        return os.path.join(BASE_DIR, "backtests", f"{symbol.lower()}_{frequency}_model_predictions_checkpoint.csv")
 
     def trades_csv(self, symbol: str, frequency: str) -> str:
         return os.path.join(BASE_DIR, "backtests", f"{symbol.lower()}_{frequency}_trades.csv")
