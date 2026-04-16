@@ -23,11 +23,10 @@ scripts/.ipynb_checkpoints
 experiments/experiments_log.jsonl
 data/processed/missing_trading_days.json
 *.json
+!configs/**/*.json
 *.jsonl
 runs
 skills
 CLAUDE.local.md
 *.exe
 logs
-.claude/worktrees
-.worktrees/
