@@ -18,6 +18,7 @@ import os
 import threading
 import time
 import traceback
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
@@ -26,6 +27,7 @@ from src.broker import OrderRequest, OrderType, Side
 from src.config import IB as IbConfig, get_hourly_data_csv_path
 from src.execution import ExecutionContext, submit_trade_plan_bracket
 from src.live.alerts import AlertManager, AlertSeverity
+from src.live.notifier import TelegramNotifier
 from src.live.persistence import PersistentBarTracker, compute_bar_hash
 from src.live.reconnect import ConnectionManager
 from src.live.state import StateMachine, SystemState
@@ -231,6 +233,7 @@ def _run_single_cycle(
     suppress_trading: bool = False,
     portfolio_state_path: Path | None = None,
     portfolio_config_path: str | None = None,
+    telegram: "TelegramNotifier | None" = None,
 ) -> tuple[float, bool, dict]:
     """Execute one connect-fetch-process-disconnect cycle.
 
@@ -412,6 +415,10 @@ def _run_single_cycle(
                     alert_type="missing_brackets",
                     message=f"Position {cfg.symbol} qty={w.get('quantity')} missing brackets",
                 )
+                if telegram:
+                    telegram.send_alert(
+                        f"WARNING: {cfg.symbol} position qty={w.get('quantity')} missing TP/SL brackets"
+                    )
         except Exception:
             pass
 
@@ -459,15 +466,18 @@ def _run_single_cycle(
                         f"[poll] BRACKET AUTO-REPAIR: {cfg.symbol} naked position "
                         f"(unprotected since {prev_unprotected}), closed {closed_qty} shares at market."
                     )
+                    _repair_msg = (
+                        f"AUTO-REPAIR: {cfg.symbol} position closed at market "
+                        f"(unprotected since {prev_unprotected}, qty={closed_qty})"
+                    )
                     alert_manager.add_alert(
                         key=f"autorepair_{cfg.symbol}",
                         severity=AlertSeverity.CRITICAL,
                         alert_type="bracket_autorepair",
-                        message=(
-                            f"{cfg.symbol} position closed at market by auto-repair "
-                            f"(unprotected since {prev_unprotected})"
-                        ),
+                        message=_repair_msg,
                     )
+                    if telegram:
+                        telegram.send_alert(_repair_msg)
                     bar_tracker.clear_unprotected(cfg.symbol)
                     # Keep has_open_position = True for this cycle so the strategy
                     # does NOT enter a new trade while the close order is still
@@ -648,6 +658,8 @@ def _run_single_cycle(
                     "traceback": traceback.format_exc(),
                 })
                 ts_print(f"[poll] Bracket order failed: {exc}")
+                if telegram:
+                    telegram.send_alert(f"ORDER REJECTED: {cfg.symbol} — {exc}")
 
         # --- Update status ---
         try:
@@ -742,6 +754,8 @@ def run_poll_loop(cfg) -> None:
     status_manager = StatusManager(live_dir_path / "status.json")
     alert_manager = AlertManager(live_dir_path / "alerts.jsonl")
     bar_tracker = PersistentBarTracker(live_dir_path / "last_bar.json")
+    telegram = TelegramNotifier()
+    _hc_url = os.getenv("HEALTHCHECK_URL")
 
     state_machine = StateMachine(
         initial_state=SystemState.INITIALIZING,
@@ -844,8 +858,15 @@ def run_poll_loop(cfg) -> None:
                         suppress_trading=stale,
                         portfolio_state_path=_portfolio_state_path,
                         portfolio_config_path=_portfolio_cfg_path if _portfolio_state_path else None,
+                        telegram=telegram,
                     )
                     success = True
+                    # Healthchecks.io dead-man's switch — ping on every successful cycle
+                    if _hc_url:
+                        try:
+                            urllib.request.urlopen(_hc_url, timeout=5)
+                        except Exception:
+                            pass
                     break
                 except Exception as exc:
                     _log({

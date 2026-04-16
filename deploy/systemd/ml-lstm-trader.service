@@ -1,0 +1,17 @@
+[Unit]
+Description=ML LSTM Portfolio Trading Daemon
+After=ib-gateway.service
+Requires=ib-gateway.service
+
+[Service]
+User=trader
+WorkingDirectory=/home/trader/ml_lstm
+EnvironmentFile=/home/trader/ml_lstm/.env.trading
+ExecStart=/home/trader/ml_lstm/.venv/bin/python -m scripts.launch_portfolio
+Restart=always
+RestartSec=30
+StandardOutput=append:/home/trader/ml_lstm/logs/trader.log
+StandardError=append:/home/trader/ml_lstm/logs/trader_err.log
+
+[Install]
+WantedBy=multi-user.target

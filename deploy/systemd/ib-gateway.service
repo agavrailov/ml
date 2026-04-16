@@ -1,0 +1,16 @@
+[Unit]
+Description=IB Gateway via IBC (headless)
+After=xvfb.service
+Requires=xvfb.service
+
+[Service]
+User=trader
+Environment=DISPLAY=:1
+# IBC startup takes ~90s on ARM (x86 JVM emulation); give it 150s
+TimeoutStartSec=150
+ExecStart=/opt/ibc/gatewaystart.sh -ibcini /opt/ibc/config.ini -ibcpath /opt/ibc -gatewaypath /opt/ibgateway
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

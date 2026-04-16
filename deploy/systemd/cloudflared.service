@@ -1,0 +1,12 @@
+[Unit]
+Description=Cloudflare Tunnel (exposes Streamlit UI)
+After=ml-lstm-ui.service
+
+[Service]
+User=trader
+ExecStart=/usr/local/bin/cloudflared tunnel run ml-lstm-ui
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

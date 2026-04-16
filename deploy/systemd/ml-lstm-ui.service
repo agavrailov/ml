@@ -1,0 +1,16 @@
+[Unit]
+Description=ML LSTM Streamlit UI
+After=network.target
+
+[Service]
+User=trader
+WorkingDirectory=/home/trader/ml_lstm
+EnvironmentFile=/home/trader/ml_lstm/.env.trading
+ExecStart=/home/trader/ml_lstm/.venv/bin/streamlit run src/ui/app.py --server.port 8501 --server.headless true
+Restart=always
+RestartSec=10
+StandardOutput=append:/home/trader/ml_lstm/logs/ui.log
+StandardError=append:/home/trader/ml_lstm/logs/ui_err.log
+
+[Install]
+WantedBy=multi-user.target

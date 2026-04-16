@@ -1,0 +1,12 @@
+[Unit]
+Description=Xvfb virtual display (required by IB Gateway)
+After=network.target
+
+[Service]
+User=trader
+ExecStart=/usr/bin/Xvfb :1 -screen 0 1024x768x24 -nolisten tcp
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

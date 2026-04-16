@@ -1,13 +1,17 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List
+import json
 import pandas as pd
 import numpy as np
 import os
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
 from src.predict import predict_future_prices
-from src.config import TSTEPS, N_FEATURES, get_active_model_path # Import get_active_model_path
+from src.config import TSTEPS, N_FEATURES, get_active_model_path, BASE_DIR
 
 app = FastAPI(
     title="ML LSTM Price Prediction API",
@@ -78,6 +82,67 @@ async def health_check():
     Checks the health of the API.
     """
     return {"status": "ok"}
+
+
+_FREQUENCY_MINUTES = {
+    "1min": 1, "5min": 5, "15min": 15, "30min": 30, "60min": 60, "1h": 60,
+    "120min": 120, "2h": 120, "240min": 240, "4h": 240,
+}
+
+_STATUS_JSON_PATH = Path(BASE_DIR) / "ui_state" / "live" / "status.json"
+
+
+@app.get("/health/trading", summary="Live trading health", response_description="Trading daemon health status")
+async def trading_health():
+    """Return daemon health: last bar age, system state, position status, alert count.
+
+    HTTP 200 — healthy.
+    HTTP 503 — daemon is stale (no bar for >2x bar frequency) or in FATAL_ERROR state.
+    HTTP 404 — status file not found (daemon has never started).
+    """
+    if not _STATUS_JSON_PATH.exists():
+        raise HTTPException(status_code=404, detail="Trading daemon has not started (status.json not found)")
+
+    try:
+        raw = json.loads(_STATUS_JSON_PATH.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Could not read status.json: {exc}")
+
+    # Compute last bar age
+    last_bar_time_str: str | None = (raw.get("last_bar_info") or {}).get("time")
+    last_bar_age_minutes: float | None = None
+    if last_bar_time_str:
+        try:
+            last_bar_dt = datetime.fromisoformat(last_bar_time_str)
+            if last_bar_dt.tzinfo is None:
+                last_bar_dt = last_bar_dt.replace(tzinfo=timezone.utc)
+            last_bar_age_minutes = round(
+                (datetime.now(timezone.utc) - last_bar_dt).total_seconds() / 60, 1
+            )
+        except Exception:
+            pass
+
+    state: str = raw.get("state", "UNKNOWN")
+    has_open_position: bool = (raw.get("position_info") or {}).get("status") == "OPEN"
+    alert_count: int = raw.get("alert_count", 0)
+    frequency: str = raw.get("frequency", "60min")
+    bar_freq_minutes = _FREQUENCY_MINUTES.get(frequency, 60)
+
+    payload = {
+        "state": state,
+        "last_bar_age_minutes": last_bar_age_minutes,
+        "has_open_position": has_open_position,
+        "alert_count": alert_count,
+        "bar_frequency_minutes": bar_freq_minutes,
+    }
+
+    stale = last_bar_age_minutes is not None and last_bar_age_minutes > 2 * bar_freq_minutes
+    fatal = state == "FATAL_ERROR"
+    if stale or fatal:
+        return JSONResponse(status_code=503, content=payload)
+
+    return payload
+
 
 # To run this API:
 # uvicorn api.main:app --reload --port 8000
