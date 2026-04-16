@@ -44,7 +44,7 @@ def test_load_hourly_features_delegates_to_prepare_keras_input_data():
     ):
         df, features = data_mod.load_hourly_features("15min", dummy_features)
 
-    mock_path.assert_called_once_with("15min")
+    mock_path.assert_called_once_with("15min", symbol="NVDA")
     mock_validate.assert_called_once()
     mock_prepare.assert_called_once_with("/tmp/nvda_15min.csv", dummy_features)
     assert df is dummy_df
