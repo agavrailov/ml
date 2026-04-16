@@ -55,17 +55,17 @@ class PathsConfig:
         )
     )
 
-    def raw_data_csv(self) -> str:
-        return os.path.join(self.raw_data_dir, "nvda_minute.csv")
+    def raw_data_csv(self, symbol: str = "NVDA") -> str:
+        return os.path.join(self.raw_data_dir, f"{symbol.lower()}_minute.csv")
 
-    def hourly_data_csv(self, frequency: str) -> str:
-        return os.path.join(self.processed_data_dir, f"nvda_{frequency}.csv")
+    def hourly_data_csv(self, frequency: str, symbol: str = "NVDA") -> str:
+        return os.path.join(self.processed_data_dir, f"{symbol.lower()}_{frequency}.csv")
 
     def training_data_csv(self, frequency: str) -> str:
         return os.path.join(self.processed_data_dir, f"training_data_{frequency}.csv")
 
-    def scaler_params_json(self, frequency: str) -> str:
-        return os.path.join(self.processed_data_dir, f"scaler_params_{frequency}.json")
+    def scaler_params_json(self, frequency: str, symbol: str = "NVDA") -> str:
+        return os.path.join(self.processed_data_dir, f"scaler_params_{symbol.lower()}_{frequency}.json")
 
     def predictions_csv(self, symbol: str, frequency: str) -> str:
         return os.path.join(BASE_DIR, "backtests", f"{symbol.lower()}_{frequency}_predictions.csv")
@@ -445,19 +445,20 @@ PROCESSED_DATA_DIR = PATHS.processed_data_dir
 MODEL_SAVE_PATH = PATHS.model_save_path
 MODEL_REGISTRY_DIR = PATHS.model_registry_dir
 ACTIVE_MODEL_PATH_FILE = PATHS.active_model_path_file  # legacy; kept for backwards-compatible fallback only
-RAW_DATA_CSV = PATHS.raw_data_csv()
+RAW_DATA_CSV = PATHS.raw_data_csv("NVDA")
+RAW_DATA_CSV_NVDA = RAW_DATA_CSV  # legacy alias
 
-def get_hourly_data_csv_path(frequency, processed_data_dir=PROCESSED_DATA_DIR):
-    """Generates the path for the resampled data CSV based on the given frequency."""
-    return PATHS.hourly_data_csv(frequency)
+def get_hourly_data_csv_path(frequency, symbol: str = "NVDA", processed_data_dir=PROCESSED_DATA_DIR):
+    """Generates the path for the resampled data CSV based on the given frequency and symbol."""
+    return PATHS.hourly_data_csv(frequency, symbol)
 
 def get_training_data_csv_path(frequency, processed_data_dir=PROCESSED_DATA_DIR):
     """Generates the path for the training data CSV based on the given frequency."""
     return PATHS.training_data_csv(frequency)
 
-def get_scaler_params_json_path(frequency, processed_data_dir=PROCESSED_DATA_DIR):
-    """Generates the path for the scaler parameters JSON based on the given frequency."""
-    return PATHS.scaler_params_json(frequency)
+def get_scaler_params_json_path(frequency, symbol: str = "NVDA", processed_data_dir=PROCESSED_DATA_DIR):
+    """Generates the path for the scaler parameters JSON based on the given frequency and symbol."""
+    return PATHS.scaler_params_json(frequency, symbol)
 
 def get_predictions_csv_path(symbol: str, frequency: str) -> str:
     """Path for predictions CSV in the backtests directory."""
