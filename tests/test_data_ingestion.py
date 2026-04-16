@@ -1,12 +1,12 @@
 import pytest
 import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch, call
 import pandas as pd
 from datetime import datetime, timedelta
 
 from src.data_ingestion import fetch_historical_data
 from src.config import NVDA_CONTRACT_DETAILS, TWS_HOST, TWS_PORT, TWS_CLIENT_ID, RAW_DATA_CSV
-from src.ingestion.tws_historical import _get_latest_timestamp_from_csv
+from src.ingestion.tws_historical import _get_latest_timestamp_from_csv, trigger_historical_ingestion
 
 # Mock BarData class for reqHistoricalDataAsync return value
 class MockBarData:
@@ -128,3 +128,53 @@ def test_get_latest_timestamp_from_csv_happy_path(tmp_path):
     assert ts.day == 1
     assert ts.hour == 9
     assert ts.minute == 31
+
+
+def test_trigger_historical_ingestion_multi_symbol_uses_per_symbol_paths():
+    """trigger_historical_ingestion loops over symbols and uses PATHS.raw_data_csv per symbol."""
+    start = datetime(2024, 1, 1)
+    end = datetime(2024, 1, 2)
+
+    with (
+        patch("src.ingestion.tws_historical.asyncio.run") as mock_run,
+        patch("src.ingestion.tws_historical.get_contract_details") as mock_gcd,
+        patch("src.ingestion.tws_historical.PATHS") as mock_paths,
+    ):
+        mock_gcd.side_effect = lambda sym: {"symbol": sym, "secType": "STK", "exchange": "SMART", "currency": "USD"}
+        mock_paths.raw_data_csv.side_effect = lambda sym: f"/data/raw/{sym.lower()}_minute.csv"
+
+        trigger_historical_ingestion(["NVDA", "MSFT"], start=start, end=end)
+
+    assert mock_run.call_count == 2
+    assert mock_gcd.call_args_list == [call("NVDA"), call("MSFT")]
+    assert mock_paths.raw_data_csv.call_args_list == [call("NVDA"), call("MSFT")]
+
+
+def test_trigger_historical_ingestion_file_path_override_single_symbol():
+    """file_path override is respected when a single symbol is requested."""
+    start = datetime(2024, 1, 1)
+    end = datetime(2024, 1, 2)
+    override_path = "/tmp/custom.csv"
+
+    captured = {}
+
+    def fake_asyncio_run(coro):
+        # Drain the coroutine so it doesn't leak; capture the file_path kwarg
+        # by inspecting the coroutine's cr_frame locals after creation.
+        coro.close()
+
+    with (
+        patch("src.ingestion.tws_historical.asyncio.run", side_effect=fake_asyncio_run),
+        patch("src.ingestion.tws_historical.get_contract_details") as mock_gcd,
+        patch("src.ingestion.tws_historical.fetch_historical_data") as mock_fhd,
+        patch("src.ingestion.tws_historical.PATHS") as mock_paths,
+    ):
+        mock_gcd.return_value = {"symbol": "NVDA", "secType": "STK", "exchange": "SMART", "currency": "USD"}
+        mock_fhd.return_value = MagicMock()  # coroutine placeholder
+        mock_paths.raw_data_csv.return_value = "/data/raw/nvda_minute.csv"
+
+        trigger_historical_ingestion(["NVDA"], start=start, end=end, file_path=override_path)
+
+    mock_fhd.assert_called_once()
+    _, kwargs = mock_fhd.call_args
+    assert kwargs["file_path"] == override_path

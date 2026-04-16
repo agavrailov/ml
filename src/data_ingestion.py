@@ -12,9 +12,6 @@ from src.ingestion.tws_historical import (  # type: ignore
     fetch_historical_data,
     trigger_historical_ingestion,
 )
-from src.config import NVDA_CONTRACT_DETAILS  # type: ignore
-
-
 __all__ = [
     "_get_latest_timestamp_from_csv",
     "fetch_historical_data",
@@ -23,27 +20,16 @@ __all__ = [
 
 
 def _parse_args() -> tuple[list[str], datetime, datetime, str, bool, str | None]:
-    """Parse CLI arguments for historical ingestion.
-
-    This provides a minimal but flexible interface while preserving the previous
-    default behavior when no arguments are supplied.
-    """
+    """Parse CLI arguments for historical ingestion."""
     import argparse
 
     parser = argparse.ArgumentParser(
-        description=(
-            "Trigger TWS historical ingestion into the raw NVDA CSV. "
-            "Defaults match the previous hard-coded behavior if no arguments "
-            "are provided."
-        )
+        description="Fetch TWS historical bars for one or more symbols."
     )
     parser.add_argument(
         "--symbol",
-        default=NVDA_CONTRACT_DETAILS["symbol"],
-        help=(
-            "Symbol to ingest (currently only NVDA is supported; other "
-            "symbols are accepted but ignored by the underlying implementation"
-        ),
+        default="NVDA",
+        help="Symbol to ingest (must be in CONTRACT_REGISTRY). Default: NVDA.",
     )
     parser.add_argument(
         "--start",

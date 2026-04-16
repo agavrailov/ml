@@ -44,6 +44,8 @@ from src.config import (  # type: ignore  # noqa: E402
     NVDA_CONTRACT_DETAILS,
     TWS_MAX_CONCURRENT_REQUESTS,
     DATA_BATCH_SAVE_SIZE,
+    PATHS,
+    get_contract_details,
 )
 
 
@@ -346,34 +348,33 @@ def trigger_historical_ingestion(
     strict_range: bool = False,
     file_path: Optional[str] = None,
 ) -> None:
-    """High-level entrypoint to fetch historical data for one or more symbols.
+    """Fetch historical OHLC bars for one or more symbols via IB TWS/Gateway.
 
-    For now, this is a thin convenience wrapper around :func:`fetch_historical_data`
-    using the existing NVDA contract details from ``src.config``. It is scoped to
-    the current single-symbol use case in this repo but exposes a future-friendly
-    API.
+    Each symbol is fetched sequentially using its contract details from
+    ``CONTRACT_REGISTRY``. The raw minute CSV for each symbol is written to
+    ``data/raw/{symbol.lower()}_minute.csv`` unless ``file_path`` is given
+    (only meaningful for single-symbol calls).
     """
-    # v1 implementation: only NVDA is supported; ignore symbols other than NVDA.
-    # This keeps behavior aligned with the existing pipeline while giving us a
-    # stable interface to hang future multi-symbol support on.
     symbols = list(symbols)
     if not symbols:
         raise ValueError("At least one symbol must be provided")
 
-    if len(symbols) > 1 or symbols[0].upper() != "NVDA":
-        print(
-            "trigger_historical_ingestion currently only supports NVDA. "
-            f"Received symbols={symbols}. Using NVDA contract details."
+    for sym in symbols:
+        contract_details = get_contract_details(sym)
+        # file_path override only applies when a single symbol is requested;
+        # for multi-symbol loops each symbol gets its own raw CSV.
+        if file_path and len(symbols) == 1:
+            target_file = file_path
+        else:
+            target_file = PATHS.raw_data_csv(sym)
+        print(f"[ingestion] Fetching {sym} → {target_file}")
+        asyncio.run(
+            fetch_historical_data(
+                contract_details=contract_details,
+                end_date=end,
+                start_date=start,
+                barSizeSetting=bar_size,
+                file_path=target_file,
+                strict_range=strict_range,
+            )
         )
-
-    target_file = file_path or RAW_DATA_CSV
-    asyncio.run(
-        fetch_historical_data(
-            contract_details=NVDA_CONTRACT_DETAILS,
-            end_date=end,
-            start_date=start,
-            barSizeSetting=bar_size,
-            file_path=target_file,
-            strict_range=strict_range,
-        )
-    )
