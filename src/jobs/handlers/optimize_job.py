@@ -30,9 +30,10 @@ def run(job_id: str, request: OptimizeRequest) -> None:
     param_grid = request.param_grid or {}
 
     # Resolve predictions CSV path
+    symbol = getattr(request, "symbol", "NVDA")
     predictions_csv = request.predictions_csv
     if not predictions_csv:
-        predictions_csv = get_predictions_csv_path("nvda", frequency)
+        predictions_csv = get_predictions_csv_path(symbol.lower(), frequency)
 
     # Build parameter ranges from grid definition
     param_ranges: dict[str, list[float]] = {}
@@ -93,6 +94,7 @@ def run(job_id: str, request: OptimizeRequest) -> None:
         reward_risk_ratio = combo_params.get("reward_risk_ratio")
 
         equity_df, trades_df, metrics = run_backtest_for_ui(
+            symbol=symbol,
             frequency=frequency,
             prediction_mode="csv",
             start_date=start_date,

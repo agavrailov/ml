@@ -17,6 +17,7 @@ def run(job_id: str, request: BacktestRequest) -> BacktestResult:
     """
 
     equity_df, trades_df, metrics = run_backtest_for_ui(
+        symbol=request.symbol,
         frequency=request.frequency,
         prediction_mode=request.prediction_mode,
         start_date=request.start_date,

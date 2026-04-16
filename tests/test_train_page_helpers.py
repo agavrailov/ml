@@ -14,6 +14,7 @@ def test_append_history_trims_to_max_rows():
 
 def test_build_train_job_request_obj_shapes_and_types():
     req = train_page._build_train_job_request_obj(
+        train_symbol="NVDA",
         train_freq="15min",
         train_tsteps=10,
         train_lstm_units=64,

@@ -23,6 +23,7 @@ def _write_json(path: Path, obj: Any) -> None:
 class TrainRequest:
     frequency: str
     tsteps: int
+    symbol: str = "NVDA"
     lstm_units: int | None = None
     learning_rate: float | None = None
     epochs: int | None = None
@@ -55,6 +56,7 @@ class TrainResult:
 @dataclass(frozen=True)
 class BacktestRequest:
     frequency: str
+    symbol: str = "NVDA"
     prediction_mode: Literal["csv", "model", "naive"] = "csv"
     start_date: str | None = None
     end_date: str | None = None
@@ -93,6 +95,7 @@ class BacktestResult:
 @dataclass(frozen=True)
 class OptimizeRequest:
     frequency: str
+    symbol: str = "NVDA"
     start_date: str | None = None
     end_date: str | None = None
     prediction_mode: Literal["csv", "model"] = "csv"
@@ -122,7 +125,7 @@ class OptimizeResult:
 @dataclass(frozen=True)
 class WalkForwardRequest:
     frequency: str
-    symbol: str = "nvda"
+    symbol: str = "NVDA"
     t_start: str | None = None
     t_end: str | None = None
     test_span_months: int = 3

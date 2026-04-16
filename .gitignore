@@ -30,3 +30,4 @@ skills
 CLAUDE.local.md
 *.exe
 logs
+.playwright-mcp

@@ -37,6 +37,7 @@ def run(job_id: str, request: TrainRequest) -> TrainResult:
     """
 
     result = train_model(
+        symbol=request.symbol,
         frequency=request.frequency,
         tsteps=int(request.tsteps),
         lstm_units=request.lstm_units,
