@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from src import config
-from src.config import get_hourly_data_csv_path, get_scaler_params_json_path
+from src.config import get_hourly_data_csv_path, get_scaler_params_json_path, get_contract_details
 
 
 def test_hourly_csv_default_symbol_is_nvda() -> None:
@@ -47,3 +49,15 @@ def test_backtest_path_helpers_use_backtests_dir_and_lowercase() -> None:
     assert base in pred.parents
     assert base in trades.parents
     assert base in equity.parents
+
+
+def test_get_contract_details_nvda() -> None:
+    cd = get_contract_details("NVDA")
+    assert cd["symbol"] == "NVDA"
+    assert cd["exchange"] == "SMART"
+    assert cd["secType"] == "STK"
+
+
+def test_get_contract_details_unknown_raises() -> None:
+    with pytest.raises(KeyError):
+        get_contract_details("ZZZZ")

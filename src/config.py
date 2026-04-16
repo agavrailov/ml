@@ -675,8 +675,35 @@ TWS_CLIENT_ID = IB.client_id
 TWS_MAX_CONCURRENT_REQUESTS = IB.max_concurrent_requests
 DATA_BATCH_SAVE_SIZE = IB.data_batch_save_size
 
-# Contract details for NVDA
-NVDA_CONTRACT_DETAILS = IB.contract_details
+# Contract registry — add new symbols here
+CONTRACT_REGISTRY: dict[str, dict] = {
+    "NVDA": {
+        "symbol": "NVDA",
+        "exchange": "SMART",
+        "currency": "USD",
+        "secType": "STK",
+    },
+    "MSFT": {
+        "symbol": "MSFT",
+        "exchange": "SMART",
+        "currency": "USD",
+        "secType": "STK",
+    },
+    "AAPL": {
+        "symbol": "AAPL",
+        "exchange": "SMART",
+        "currency": "USD",
+        "secType": "STK",
+    },
+}
+
+# Legacy alias — keeps existing code that uses NVDA_CONTRACT_DETAILS working
+NVDA_CONTRACT_DETAILS = CONTRACT_REGISTRY["NVDA"]
+
+
+def get_contract_details(symbol: str) -> dict:
+    """Return contract details for a symbol. Raises KeyError if unknown."""
+    return CONTRACT_REGISTRY[symbol.upper()]
 
 # Market hours for gap analysis (New York time)
 MARKET_TIMEZONE = MARKET.timezone
