@@ -371,12 +371,16 @@ def _run_single_cycle(
         except Exception:
             positions, open_orders, all_orders = [], [], []
 
-        # Reconcile position state from broker — only count positions for the managed symbol
-        has_open_position = any(
-            getattr(p, "symbol", "") == cfg.symbol
-            and abs(float(getattr(p, "quantity", 0.0))) >= 0.01
+        # Reconcile position state from broker — NET all lots for the managed symbol.
+        # IBKR may report multiple position entries per symbol (cost-basis lots,
+        # sub-accounts, etc.).  We must net them: if net qty is ~0 the system is
+        # flat even if individual lots are non-zero.
+        net_managed_qty = sum(
+            float(getattr(p, "quantity", 0.0))
             for p in positions
+            if getattr(p, "symbol", "") == cfg.symbol
         )
+        has_open_position = abs(net_managed_qty) >= 0.01
 
         # Order lifecycle events
         try:
@@ -398,15 +402,27 @@ def _run_single_cycle(
             "bar_time": bar_time_iso,
             "where": "poll_cycle",
             "kill_switch_enabled": bool(is_kill_switch_enabled(live_dir)),
+            "net_managed_qty": net_managed_qty,
             "positions": [repr(p) for p in positions],
             "open_orders": [repr(o) for o in open_orders],
         })
 
-        # --- Bracket check — only for the managed symbol ---
+        # --- Bracket check — only for the managed symbol's NET position ---
         bracket_warnings: list[dict] = []
         try:
             ib_trades = list(ib.trades()) if hasattr(ib, "trades") else []
-            managed_positions = [p for p in positions if getattr(p, "symbol", "") == cfg.symbol]
+            # Build a single synthetic position from the net quantity so that
+            # bracket checking and auto-repair reason about actual exposure, not
+            # per-lot artefacts from IBKR cost-basis tracking.
+            if abs(net_managed_qty) >= 0.01:
+                class _NetPos:
+                    __slots__ = ("symbol", "quantity")
+                    def __init__(self, symbol: str, quantity: float):
+                        self.symbol = symbol
+                        self.quantity = quantity
+                managed_positions = [_NetPos(cfg.symbol, net_managed_qty)]
+            else:
+                managed_positions = []
             bracket_warnings = check_positions_have_brackets(
                 managed_positions, open_orders,
                 run_id=run_id, symbol=cfg.symbol, ib_trades=ib_trades,
@@ -435,21 +451,20 @@ def _run_single_cycle(
             if bracket_warnings and bar_time_iso is not None:
                 prev_unprotected = bar_tracker.get_unprotected_since(cfg.symbol)
                 if prev_unprotected is not None:
-                    # Second consecutive bar unprotected → emergency market close
+                    # Second consecutive bar unprotected → emergency market close.
+                    # Use the net quantity (single order) to avoid churn when
+                    # IBKR reports multiple lots that net to a small exposure.
                     closed_qty = 0.0
-                    for p in managed_positions:
-                        qty = float(getattr(p, "quantity", 0.0))
-                        if abs(qty) < 0.01:
-                            continue
-                        close_side = Side.SELL if qty > 0 else Side.BUY
+                    if abs(net_managed_qty) >= 0.01:
+                        close_side = Side.SELL if net_managed_qty > 0 else Side.BUY
                         try:
                             broker.place_order(OrderRequest(
                                 symbol=cfg.symbol,
                                 side=close_side,
-                                quantity=abs(qty),
+                                quantity=abs(net_managed_qty),
                                 order_type=OrderType.MARKET,
                             ))
-                            closed_qty += abs(qty)
+                            closed_qty = abs(net_managed_qty)
                         except Exception as close_exc:
                             log_fn({
                                 "type": "bracket_autorepair_order_error",
@@ -804,7 +819,9 @@ def run_poll_loop(cfg) -> None:
 
     # Predictor (load model once, reuse across cycles)
     predictor = LivePredictor.from_config(
-        LivePredictorConfig(frequency=cfg.frequency, tsteps=cfg.tsteps),
+        LivePredictorConfig(
+            frequency=cfg.frequency, tsteps=cfg.tsteps, symbol=cfg.symbol,
+        ),
     )
     historical_csv = get_hourly_data_csv_path(cfg.frequency, symbol=getattr(cfg, "symbol", "NVDA"))
     if os.path.exists(historical_csv):
