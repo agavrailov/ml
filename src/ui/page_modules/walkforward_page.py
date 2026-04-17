@@ -214,11 +214,12 @@ def render_walkforward_tab(
                 hide_index=True,
             )
 
-    wf_symbol = st.text_input(
-        "Symbol label for predictions CSV & summary filename",
-        value="nvda",
-        key="wf_symbol",
-    ).strip()
+    # Read symbol from the global header selector; fall back to NVDA.
+    wf_symbol = st.session_state.get("global_symbol", "NVDA")
+    st.caption(
+        f"Symbol: **{wf_symbol}** (change via the header selector). "
+        f"Predictions CSV and summary filename derive from this."
+    )
 
     st.caption(
         "Robustness mode reuses fixed model predictions (CSV) and varies only the strategy parameters per fold."
@@ -314,6 +315,7 @@ def render_walkforward_tab(
                                 robust_hist.append(
                                     {
                                         "timestamp": pd.Timestamp.utcnow().isoformat(),
+                                        "symbol": wf_symbol.upper(),
                                         "frequency": wf_freq,
                                         "n_param_sets": summary.get("n_param_sets", 0),
                                         "best_label": summary.get("best_label", ""),

@@ -17,6 +17,7 @@ def render_data_tab(
     st.subheader("1. Data ingestion & preparation")
 
     from src.config import RAW_DATA_CSV, PROCESSED_DATA_DIR, FREQUENCY as CFG_FREQ
+    from src.config import get_raw_data_csv_path
     from src.data_quality import (
         analyze_raw_minute_data,
         compute_quality_kpi,
@@ -24,13 +25,16 @@ def render_data_tab(
         get_missing_trading_days,
     )
 
+    _symbol = st.session_state.get("global_symbol", "NVDA")
+    _raw_csv = get_raw_data_csv_path(_symbol)
+
     st.markdown("### Raw minute data")
-    st.write(f"Raw data CSV: `{RAW_DATA_CSV}`")
+    st.write(f"Symbol: **{_symbol}** | Raw data CSV: `{_raw_csv}`")
 
     st.markdown("#### Data quality checks")
-    if st.button("Run data quality checks on raw minute data"):
+    if st.button(f"Run data quality checks on raw {_symbol} data"):
         try:
-            checks = analyze_raw_minute_data(RAW_DATA_CSV)
+            checks = analyze_raw_minute_data(_raw_csv)
             if not checks:
                 st.info("No checks were run (file may be missing or empty).")
             else:
@@ -125,7 +129,7 @@ def render_data_tab(
                 if result.returncode == 0:
                     # Clean the raw minute data to sort and de-duplicate after backfill.
                     try:
-                        clean_raw_minute_data(RAW_DATA_CSV)
+                        clean_raw_minute_data(_raw_csv)
                         st.success(
                             "Backfill completed and raw minute data re-cleaned. "
                             "Re-run data quality checks to verify the gaps are closed.",
@@ -152,14 +156,14 @@ def render_data_tab(
 
     col_ingest1, col_ingest2 = st.columns(2)
     with col_ingest1:
-        if st.button("Fetch/update raw NVDA data from TWS"):
+        if st.button(f"Fetch/update raw {_symbol} data from TWS"):
             try:
                 # Run the ingestion CLI in a subprocess to avoid importing ib_insync
                 # (and its event-loop setup) into the Streamlit runtime.
                 import subprocess
                 import sys as _sys
 
-                cmd = [_sys.executable, "-m", "src.data_ingestion"]
+                cmd = [_sys.executable, "-m", "src.data_ingestion", "--symbol", _symbol]
 
                 status = st.empty()
                 progress = st.progress(0.0)
@@ -193,9 +197,9 @@ def render_data_tab(
                 st.error(f"Failed to trigger ingestion: {exc}")
 
     with col_ingest2:
-        if st.button("Clean raw minute data (sort, dedupe)"):
+        if st.button(f"Clean raw {_symbol} minute data (sort, dedupe)"):
             try:
-                clean_raw_minute_data(RAW_DATA_CSV)
+                clean_raw_minute_data(_raw_csv)
                 st.success("Raw minute data cleaned.")
             except Exception as exc:  # pragma: no cover - UI side-effect only
                 st.error(f"Failed to clean raw minute data: {exc}")
@@ -214,11 +218,11 @@ def render_data_tab(
 
     col_resample, col_features = st.columns(2)
     with col_resample:
-        if st.button("Resample minute → hourly CSV"):
+        if st.button(f"Resample {_symbol} minute → hourly CSV"):
             try:
                 os.makedirs(PROCESSED_DATA_DIR, exist_ok=True)
-                convert_minute_to_timeframe(RAW_DATA_CSV, data_freq, PROCESSED_DATA_DIR)
-                st.success(f"Resampled data saved for {data_freq}.")
+                convert_minute_to_timeframe(_raw_csv, data_freq, PROCESSED_DATA_DIR, symbol=_symbol)
+                st.success(f"Resampled {_symbol} data saved for {data_freq}.")
             except Exception as exc:  # pragma: no cover - UI side-effect only
                 st.error(f"Failed to resample data: {exc}")
 
@@ -229,7 +233,7 @@ def render_data_tab(
                 from src.config import get_hourly_data_csv_path
 
                 default_features = _FEAT_OPTS[0]
-                hourly_path = get_hourly_data_csv_path(data_freq)
+                hourly_path = get_hourly_data_csv_path(data_freq, symbol=_symbol)
                 df_feat, feat_cols = prepare_keras_input_data(hourly_path, default_features)
                 st.session_state["data_feature_preview"] = (df_feat.head(200), feat_cols)
                 st.success(f"Prepared features for {data_freq}: {feat_cols}")

@@ -7,6 +7,113 @@ Event schemas are defined in src.live.contracts.
 from __future__ import annotations
 
 
+def _render_portfolio_readiness(st) -> None:
+    """Show per-symbol pipeline readiness: data, model, predictions, params, live.
+
+    Wrapped in a defensive try/except — never lets a bug here prevent the rest
+    of the Live tab from rendering.
+    """
+    try:
+        import json
+        import os
+        from pathlib import Path
+
+        from src.config import (
+            FREQUENCY,
+            TSTEPS,
+            get_hourly_data_csv_path,
+            get_predictions_csv_path,
+        )
+        from src.core.config_resolver import (
+            get_configured_symbols,
+            get_strategy_defaults,
+        )
+        from src.model_registry import get_best_model_path
+
+        symbols = get_configured_symbols()
+        freq = st.session_state.get("global_frequency", FREQUENCY)
+
+        # Detect running daemons (cap recursion depth and tolerate missing dir)
+        live_dir = Path(__file__).resolve().parents[3] / "ui_state" / "live"
+        running_symbols: set[str] = set()
+        if live_dir.exists():
+            for status_file in list(live_dir.glob("*/status.json"))[:50]:
+                try:
+                    payload = json.loads(status_file.read_text(encoding="utf-8"))
+                    sym = str(payload.get("symbol", "")).upper()
+                    state = str(payload.get("state", "")).upper()
+                    if sym and state in {
+                        "RUNNING", "TRADING", "SLEEPING", "PROCESSING", "SUBSCRIBED",
+                    }:
+                        running_symbols.add(sym)
+                except Exception:
+                    continue
+
+        rows = []
+        n_blocked = 0
+        n_ready = 0
+        for sym in symbols:
+            ohlc = os.path.exists(get_hourly_data_csv_path(freq, symbol=sym))
+            model = bool(get_best_model_path(sym, freq, TSTEPS))
+            preds = os.path.exists(get_predictions_csv_path(sym.lower(), freq))
+            try:
+                defaults = get_strategy_defaults(sym)
+                params = bool(defaults) and "k_sigma_long" in defaults
+            except Exception:
+                params = False
+            live = sym.upper() in running_symbols
+
+            if ohlc and model and preds and params:
+                n_ready += 1
+            else:
+                n_blocked += 1
+
+            if not ohlc:
+                next_step = "Ingest data → Data tab"
+            elif not model:
+                next_step = "Train model → Train tab"
+            elif not preds:
+                next_step = "Generate predictions → Backtest tab"
+            elif not params:
+                next_step = "Tune & deploy params → Backtest tab"
+            elif not live:
+                next_step = "Start live daemon (CLI)"
+            else:
+                next_step = "—"
+
+            rows.append({
+                "sym": sym,
+                "ohlc": ohlc, "model": model, "preds": preds,
+                "params": params, "live": live, "next": next_step,
+            })
+
+        summary = f"Portfolio readiness ({freq}): "
+        if n_blocked == 0:
+            summary += f"✓ All {n_ready} symbols ready to trade"
+        else:
+            summary += f"{n_ready} ready · {n_blocked} blocked"
+
+        with st.expander(summary, expanded=(n_blocked > 0)):
+            # Use a markdown table — guaranteed to render in any theme.
+            def _ico(ok: bool) -> str:
+                return "✅" if ok else "❌"
+
+            md_lines = [
+                "| Symbol | Data | Model | Predictions | Params | Live | Next step |",
+                "|---|:-:|:-:|:-:|:-:|:-:|---|",
+            ]
+            for r in rows:
+                live_cell = "🟢 running" if r["live"] else "⚪ offline"
+                md_lines.append(
+                    f"| **{r['sym']}** | {_ico(r['ohlc'])} | {_ico(r['model'])} | "
+                    f"{_ico(r['preds'])} | {_ico(r['params'])} | {live_cell} | {r['next']} |"
+                )
+            st.markdown("\n".join(md_lines))
+    except Exception as _exc:
+        # Don't let readiness panel failures break the rest of the Live tab.
+        st.caption(f"⚠ Readiness panel unavailable: {_exc}")
+
+
 def render_live_tab(
     *,
     st,
@@ -16,6 +123,10 @@ def render_live_tab(
     st.subheader("0. Live Ops Dashboard")
 
     from datetime import datetime, timezone
+
+    # ── P7: Portfolio readiness panel ──────────────────────────────
+    # At-a-glance per-symbol status: data → model → predictions → params → live
+    _render_portfolio_readiness(st)
 
     try:  # optional dependency
         from streamlit_autorefresh import st_autorefresh
@@ -77,6 +188,37 @@ def render_live_tab(
         else:
             st.info(f"ℹ️ **Status**: {state} | Connection: {connection_status}")
         
+        # P4: Unified data freshness — authoritative source is last_bar.json
+        # written by PersistentBarTracker.  The status_manager's age_minutes can
+        # show 0 when SLEEPING because it just refreshed metadata, while the
+        # actual last bar may be hours old.
+        from datetime import datetime as _dt, timezone as _tz
+
+        _now = _dt.now(_tz.utc)
+        _bar_age_min = None
+        _last_bar_file = live_dir / "last_bar.json"
+        if _last_bar_file.exists():
+            try:
+                _lb = json.loads(_last_bar_file.read_text(encoding="utf-8"))
+                _ts = _lb.get("bar_time") or _lb.get("ts_utc")
+                if isinstance(_ts, str):
+                    _t = _dt.fromisoformat(_ts)
+                    if _t.tzinfo is None:
+                        _t = _t.replace(tzinfo=_tz.utc)
+                    _bar_age_min = (_now - _t).total_seconds() / 60.0
+            except Exception:
+                pass
+        if _bar_age_min is None:
+            _bar_age_min = system_status.get("data_feed", {}).get("age_minutes")
+
+        # Threshold: 2× the bar period, min 5 min
+        _freq_str = str(system_status.get("frequency", "60min"))
+        try:
+            _freq_min_top = int(_freq_str.replace("min", "").strip())
+        except Exception:
+            _freq_min_top = 60
+        _stale_thresh_top = max(5.0, 2.0 * _freq_min_top)
+
         # Show additional status details in compact format
         status_col1, status_col2, status_col3 = st.columns(3)
         with status_col1:
@@ -84,9 +226,25 @@ def render_live_tab(
             if uptime is not None:
                 st.caption(f"⏱️ Uptime: {uptime:.1f} min")
         with status_col2:
-            last_bar_age = system_status.get("data_feed", {}).get("age_minutes")
-            if last_bar_age is not None:
-                st.caption(f"📊 Last bar: {last_bar_age:.1f} min ago")
+            if _bar_age_min is not None:
+                if _bar_age_min > _stale_thresh_top:
+                    _color = "#dc2626"  # red
+                    _icon = "🔴"
+                elif _bar_age_min > _freq_min_top:
+                    _color = "#d97706"  # amber
+                    _icon = "🟡"
+                else:
+                    _color = "#16a34a"  # green
+                    _icon = "🟢"
+                st.markdown(
+                    f"<span style='color:{_color}' title='Age of the most recent bar event in the live JSONL log'>"
+                    f"{_icon} Last bar event: "
+                    f"<strong>{_bar_age_min:.1f} min ago</strong> "
+                    f"(threshold {_stale_thresh_top:.0f} min)</span>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.caption("📊 Last bar event: N/A")
         with status_col3:
             position = system_status.get("position", {})
             pos_status = position.get("status", "UNKNOWN")
@@ -320,9 +478,10 @@ def render_live_tab(
         st.metric("Engine", status)
     with k2:
         st.metric(
-            "Data feed",
+            "Broker snapshot",
             data_feed_status,
             delta=data_freshness_label if data_freshness_label != "N/A" else None,
+            help="Age of the latest broker positions/orders snapshot. Separate from 'Last bar event' above, which tracks the most recent market data bar.",
         )
     with k3:
         broker_status = "UNKNOWN"

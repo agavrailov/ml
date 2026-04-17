@@ -144,3 +144,29 @@ def compute_rolling_residual_sigma(
             sigmas[i] = float(np.std(resid_win))
 
     return sigmas
+
+
+def shift_sigma_to_observable(sigma: np.ndarray, lag: int) -> np.ndarray:
+    """Right-shift a rolling residual-sigma series so every value is observable.
+
+    ``compute_rolling_residual_sigma`` returns ``sigma[i]`` computed over the
+    residuals ``[start..i]``. When residuals are built from prediction/actual
+    pairs where ``residuals[j]`` requires a *future* price (e.g. ``Open[j + lag]``),
+    then ``sigma[i]`` implicitly depends on data that is only observable after
+    bar ``i + lag`` closes. To use ``sigma`` at decision time without
+    look-ahead, it must be right-shifted by ``lag`` bars so that ``sigma[i]``
+    only reflects residuals whose actuals were already realized by bar ``i``.
+    The first ``lag`` entries have no observable sigma and are set to zero.
+    """
+    if sigma.ndim != 1:
+        raise ValueError("sigma must be a 1D array")
+    if lag < 0:
+        raise ValueError("lag must be non-negative")
+
+    shifted = np.zeros_like(sigma)
+    if lag == 0:
+        shifted[:] = sigma
+        return shifted
+    if len(sigma) > lag:
+        shifted[lag:] = sigma[:-lag]
+    return shifted

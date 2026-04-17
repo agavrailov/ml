@@ -205,29 +205,69 @@ def render_backtest_tab(
     rr_val = float(_param_values.get("reward_risk_ratio", _defaults["reward_risk_ratio"]))
     
     with col_save:
-        if st.button("↑ Deploy to Production Config", type="primary", width='stretch'):
-            # Validation
-            if rr_val <= 0.0:
-                st.error("✕ reward_risk_ratio must be > 0")
-            elif risk_pct_val <= 0.0:
-                st.error("✕ risk_per_trade_pct must be > 0")
-            else:
-                # Save to production config with trading mode
-                save_strategy_defaults_to_config(
-                    risk_per_trade_pct=risk_pct_val,
-                    reward_risk_ratio=rr_val,
-                    k_sigma_long=k_sigma_long_val,
-                    k_sigma_short=k_sigma_short_val,
-                    k_atr_long=k_atr_long_val,
-                    k_atr_short=k_atr_short_val,
-                    enable_longs=enable_longs_flag,
-                    allow_shorts=allow_shorts_flag,
-                    symbol=selected_symbol,
-                    frequency=freq,
-                    source="ui_manual_deploy",
+        # P3: Two-step confirmation for the irreversible deploy action.
+        _confirm_key = f"deploy_pending_{selected_symbol}_{freq}"
+        if st.session_state.get(_confirm_key):
+            _proposed = {
+                "k_sigma_long": k_sigma_long_val,
+                "k_sigma_short": k_sigma_short_val,
+                "k_atr_long": k_atr_long_val,
+                "k_atr_short": k_atr_short_val,
+                "risk_per_trade_pct": risk_pct_val,
+                "reward_risk_ratio": rr_val,
+            }
+            _current = _defaults if isinstance(_defaults, dict) else {}
+            _diffs = []
+            for _k, _new in _proposed.items():
+                _old = _current.get(_k)
+                if _old is None or abs(float(_old) - float(_new)) > 1e-9:
+                    _old_s = "—" if _old is None else f"{float(_old):.4f}"
+                    _diffs.append(f"`{_k}`: {_old_s} → **{_new:.4f}**")
+
+            with st.container(border=True):
+                st.warning(
+                    f"⚠️ About to overwrite production config for **{selected_symbol}** ({freq})."
+                    " This affects live trading immediately."
                 )
-                save_params_grid(params_df)
-                st.success(f"✓ Deployed parameters to production config ({trade_side})")
+                if _diffs:
+                    st.markdown("**Changes:**\n" + "\n".join(f"- {d}" for d in _diffs))
+                else:
+                    st.caption("No parameter changes detected.")
+
+                _c1, _c2 = st.columns(2)
+                with _c1:
+                    if st.button("✓ Confirm deploy", type="primary", width="stretch", key=f"deploy_confirm_{selected_symbol}_{freq}"):
+                        if rr_val <= 0.0:
+                            st.error("✕ reward_risk_ratio must be > 0")
+                        elif risk_pct_val <= 0.0:
+                            st.error("✕ risk_per_trade_pct must be > 0")
+                        else:
+                            save_strategy_defaults_to_config(
+                                risk_per_trade_pct=risk_pct_val,
+                                reward_risk_ratio=rr_val,
+                                k_sigma_long=k_sigma_long_val,
+                                k_sigma_short=k_sigma_short_val,
+                                k_atr_long=k_atr_long_val,
+                                k_atr_short=k_atr_short_val,
+                                enable_longs=enable_longs_flag,
+                                allow_shorts=allow_shorts_flag,
+                                symbol=selected_symbol,
+                                frequency=freq,
+                                source="ui_manual_deploy",
+                            )
+                            save_params_grid(params_df)
+                            st.session_state[_confirm_key] = False
+                            st.success(
+                                f"✓ Deployed parameters for {selected_symbol} ({trade_side})",
+                            )
+                with _c2:
+                    if st.button("✗ Cancel", width="stretch", key=f"deploy_cancel_{selected_symbol}_{freq}"):
+                        st.session_state[_confirm_key] = False
+                        st.rerun()
+        else:
+            if st.button("↑ Deploy to Production Config", type="primary", width="stretch"):
+                st.session_state[_confirm_key] = True
+                st.rerun()
     
     st.divider()
 
@@ -237,7 +277,7 @@ def render_backtest_tab(
     from src.core import config_library as _cfg_lib
 
     st.markdown("### 📦 Config Library (Candidates)")
-    symbol = "NVDA"  # TODO: make this selectable when multi-symbol trading is enabled.
+    symbol = selected_symbol  # Driven by the symbol selector at the top of this tab.
 
     # Display current active config metadata (best-effort).
     active_cfg = _cfg_lib.read_active_config() or {}
@@ -389,81 +429,102 @@ def render_backtest_tab(
     # ─────────────────────────────────────────────────────────────────────────
     with tab_backtest:
         st.markdown("#### Run Backtest")
-        
-        if st.button("▸ Run Backtest", type="primary", use_container_width=True, key="run_bt_btn"):
-            # Validation
-            if rr_val <= 0.0:
-                st.error("✕ reward_risk_ratio must be > 0")
-            elif risk_pct_val <= 0.0:
-                st.error("✕ risk_per_trade_pct must be > 0")
-            else:
-                try:
-                    with st.spinner("Running backtest..."):
-                        equity_df, trades_df, metrics = run_backtest(
-                            frequency=freq,
-                            start_date=start_date or None,
-                            end_date=end_date or None,
-                            risk_per_trade_pct=risk_pct_val,
-                            reward_risk_ratio=rr_val,
-                            k_sigma_long=k_sigma_long_val,
-                            k_sigma_short=k_sigma_short_val,
-                            k_atr_long=k_atr_long_val,
-                            k_atr_short=k_atr_short_val,
-                            enable_longs=enable_longs_flag,
-                            allow_shorts=allow_shorts_flag,
-                        )
 
-                    # Store last run
-                    bt_state["last_run"] = {
-                        "inputs": {
-                            "frequency": freq,
-                            "start_date": start_date or None,
-                            "end_date": end_date or None,
-                            "trade_side": trade_side,
-                            "enable_longs": enable_longs_flag,
-                            "allow_shorts": allow_shorts_flag,
-                            "risk_per_trade_pct": risk_pct_val,
-                            "reward_risk_ratio": rr_val,
-                            "k_sigma_long": k_sigma_long_val,
-                            "k_sigma_short": k_sigma_short_val,
-                            "k_atr_long": k_atr_long_val,
-                            "k_atr_short": k_atr_short_val,
-                        },
-                        "metrics": metrics,
-                        "equity_df": equity_df,
-                    }
+        # P5: Upfront prerequisite validation — disable Run if predictions CSV
+        # is missing, and tell the user exactly what to do.
+        _pred_csv_path = get_predictions_csv_path(selected_symbol.lower(), freq)
+        _pred_exists = os.path.exists(_pred_csv_path)
+        _bt_disabled_reason = None
+        if not _pred_exists:
+            _bt_disabled_reason = (
+                f"Predictions CSV missing for {selected_symbol} ({freq}). "
+                f"Click '⚡ Generate Predictions CSV' above first."
+            )
+        elif rr_val <= 0.0:
+            _bt_disabled_reason = "reward_risk_ratio must be > 0"
+        elif risk_pct_val <= 0.0:
+            _bt_disabled_reason = "risk_per_trade_pct must be > 0"
 
-                    # Add to history
-                    history: list[dict] = bt_state.get("history", [])
-                    summary_row = {
-                        "timestamp": pd.Timestamp.utcnow().isoformat(),
+        if _bt_disabled_reason:
+            st.warning(f"⚠️ {_bt_disabled_reason}")
+
+        if st.button(
+            "▸ Run Backtest",
+            type="primary",
+            use_container_width=True,
+            key="run_bt_btn",
+            disabled=bool(_bt_disabled_reason),
+            help=_bt_disabled_reason or "Run a backtest with the current parameters",
+        ):
+            try:
+                with st.spinner("Running backtest..."):
+                    equity_df, trades_df, metrics = run_backtest(
+                        frequency=freq,
+                        start_date=start_date or None,
+                        end_date=end_date or None,
+                        risk_per_trade_pct=risk_pct_val,
+                        reward_risk_ratio=rr_val,
+                        k_sigma_long=k_sigma_long_val,
+                        k_sigma_short=k_sigma_short_val,
+                        k_atr_long=k_atr_long_val,
+                        k_atr_short=k_atr_short_val,
+                        enable_longs=enable_longs_flag,
+                        allow_shorts=allow_shorts_flag,
+                    )
+
+                # Store last run
+                bt_state["last_run"] = {
+                    "inputs": {
+                        "symbol": selected_symbol,
                         "frequency": freq,
+                        "start_date": start_date or None,
+                        "end_date": end_date or None,
                         "trade_side": trade_side,
+                        "enable_longs": enable_longs_flag,
+                        "allow_shorts": allow_shorts_flag,
+                        "risk_per_trade_pct": risk_pct_val,
+                        "reward_risk_ratio": rr_val,
                         "k_sigma_long": k_sigma_long_val,
                         "k_sigma_short": k_sigma_short_val,
                         "k_atr_long": k_atr_long_val,
                         "k_atr_short": k_atr_short_val,
-                        "risk_per_trade_pct": risk_pct_val,
-                        "reward_risk_ratio": rr_val,
-                        "sharpe_ratio": float(metrics.get("sharpe_ratio", 0.0)),
-                        "cagr": float(metrics.get("cagr", 0.0)),
-                        "max_drawdown": float(metrics.get("max_drawdown", 0.0)),
-                        "n_trades": int(metrics.get("n_trades", 0)),
-                        "final_equity": float(metrics.get("final_equity", 0.0)),
-                        "total_return": float(metrics.get("total_return", 0.0)),
-                        "win_rate": float(metrics.get("win_rate", 0.0)),
-                        "profit_factor": float(metrics.get("profit_factor", 0.0)),
-                    }
-                    history.append(summary_row)
-                    if len(history) > MAX_HISTORY_ROWS:
-                        history = history[-MAX_HISTORY_ROWS:]
-                    bt_state["history"] = history
-                    save_json_history("backtests_history.json", history)
-                    
-                    st.success("✓ Backtest complete!")
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"✕ Backtest failed: {exc}")
+                    },
+                    "metrics": metrics,
+                    "equity_df": equity_df,
+                }
+
+                # Add to history
+                history: list[dict] = bt_state.get("history", [])
+                summary_row = {
+                    "timestamp": pd.Timestamp.utcnow().isoformat(),
+                    "symbol": selected_symbol,
+                    "frequency": freq,
+                    "trade_side": trade_side,
+                    "k_sigma_long": k_sigma_long_val,
+                    "k_sigma_short": k_sigma_short_val,
+                    "k_atr_long": k_atr_long_val,
+                    "k_atr_short": k_atr_short_val,
+                    "risk_per_trade_pct": risk_pct_val,
+                    "reward_risk_ratio": rr_val,
+                    "sharpe_ratio": float(metrics.get("sharpe_ratio", 0.0)),
+                    "cagr": float(metrics.get("cagr", 0.0)),
+                    "max_drawdown": float(metrics.get("max_drawdown", 0.0)),
+                    "n_trades": int(metrics.get("n_trades", 0)),
+                    "final_equity": float(metrics.get("final_equity", 0.0)),
+                    "total_return": float(metrics.get("total_return", 0.0)),
+                    "win_rate": float(metrics.get("win_rate", 0.0)),
+                    "profit_factor": float(metrics.get("profit_factor", 0.0)),
+                }
+                history.append(summary_row)
+                if len(history) > MAX_HISTORY_ROWS:
+                    history = history[-MAX_HISTORY_ROWS:]
+                bt_state["history"] = history
+                save_json_history("backtests_history.json", history)
+
+                st.success("✓ Backtest complete!")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"✕ Backtest failed: {exc}")
         
         st.divider()
         
@@ -479,7 +540,11 @@ def render_backtest_tab(
             
             with col_chart:
                 # Use component for equity chart
-                components.render_equity_chart(st, plt, pd, equity_df, title="Equity vs NVDA Price")
+                components.render_equity_chart(
+                    st, plt, pd, equity_df,
+                    title=f"Equity vs {selected_symbol} Price",
+                    symbol=selected_symbol,
+                )
             
             with col_metrics:
                 # Use component for metrics display
@@ -489,10 +554,20 @@ def render_backtest_tab(
 
         st.divider()
         
-        # Backtest history table
+        # Backtest history table — filtered by current symbol (P6)
         st.markdown("#### Results History")
         history_all = bt_state.get("history", [])
-        history_for_view = filter_backtest_history(history_all, frequency=freq)
+        _show_all_symbols = st.checkbox(
+            "Show all symbols",
+            value=False,
+            key=f"bt_show_all_{selected_symbol}",
+            help="Uncheck to filter history to the current symbol only",
+        )
+        history_for_view = filter_backtest_history(
+            history_all,
+            frequency=freq,
+            symbol=None if _show_all_symbols else selected_symbol,
+        )
 
         def on_backtest_retest(rows: list[dict]) -> None:
             """Load parameters from first selected row and prepare for retest."""

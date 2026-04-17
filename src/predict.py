@@ -192,16 +192,43 @@ def build_prediction_context(
     frequency: str,
     tsteps: int,
     symbol: str = "NVDA",
+    model_path_override: Optional[str] = None,
+    bias_path_override: Optional[str] = None,
 ) -> PredictionContext:
-    """Build and return a PredictionContext for a given (frequency, tsteps, symbol)."""
+    """Build and return a PredictionContext for a given (frequency, tsteps, symbol).
+
+    Parameters
+    ----------
+    model_path_override, bias_path_override:
+        When provided, bypass the symbol registry and load the model directly
+        from these paths.  Used by ``robust_param_selection.py`` fold retrains
+        to avoid a race condition when multiple symbols run in parallel.
+    """
 
     script_dir = os.path.dirname(__file__)
+
+    # ── Fast path: caller already has a concrete model path ──────────
+    if model_path_override and os.path.exists(model_path_override):
+        registry_entry = get_best_model_entry(symbol, frequency, tsteps)
+        hps = (registry_entry.get("hparams") or {}) if registry_entry else {}
+        return _assemble_prediction_context(
+            frequency=frequency, tsteps=tsteps, symbol=symbol,
+            model_path=model_path_override,
+            bias_correction_path=bias_path_override,
+            features_to_use_trained=hps.get("features_to_use"),
+            lstm_units_trained=hps.get("lstm_units"),
+            n_lstm_layers_trained=hps.get("n_lstm_layers"),
+            optimizer_name_trained=hps.get("optimizer_name"),
+            loss_function_trained=hps.get("loss_function"),
+        )
 
     model_path = None
     bias_correction_path = None
     features_to_use_trained = None
     lstm_units_trained = None
     n_lstm_layers_trained = None
+    optimizer_name_trained = None
+    loss_function_trained = None
 
     # ── Primary: symbol-aware model registry ─────────────────────────
     registry_entry = get_best_model_entry(symbol, frequency, tsteps)
@@ -214,6 +241,8 @@ def build_prediction_context(
             features_to_use_trained = hps.get("features_to_use")
             lstm_units_trained = hps.get("lstm_units")
             n_lstm_layers_trained = hps.get("n_lstm_layers")
+            optimizer_name_trained = hps.get("optimizer_name")
+            loss_function_trained = hps.get("loss_function")
 
     # ── Legacy fallback (best_hyperparameters.json — not symbol-aware) ──
     # Only attempt for NVDA backwards compatibility; the legacy files have
@@ -299,12 +328,14 @@ def build_prediction_context(
             best_hps = {}
 
     # Optimizer/loss don't affect predict(), but we keep them for backwards compatibility.
-    optimizer_name = best_hps.get("optimizer_name", "rmsprop")
-    loss_function = best_hps.get("loss_function", "mae")
+    # Prefer registry values; coalesce explicit None from the legacy file so a
+    # null-filled best_hyperparameters.json cannot poison the build.
+    optimizer_name = best_hps.get("optimizer_name") or optimizer_name_trained or "rmsprop"
+    loss_function = best_hps.get("loss_function") or loss_function_trained or "mae"
 
     # Determine architecture.
-    lstm_units = best_hps.get("lstm_units", lstm_units_trained or LSTM_UNITS)
-    n_lstm_layers = best_hps.get("n_lstm_layers", n_lstm_layers_trained or N_LSTM_LAYERS)
+    lstm_units = best_hps.get("lstm_units") or lstm_units_trained or LSTM_UNITS
+    n_lstm_layers = best_hps.get("n_lstm_layers") or n_lstm_layers_trained or N_LSTM_LAYERS
     n_features = len(FEATURES_TO_USE_OPTIONS[0])
 
     if inferred is not None:
@@ -341,15 +372,10 @@ def build_prediction_context(
 
     scaler_params_path = get_scaler_params_json_path(frequency, symbol)
     if not os.path.exists(scaler_params_path):
-        # Fallback to legacy path (no symbol prefix) for backwards compatibility
-        from src.config import PROCESSED_DATA_DIR as _PDD
-        legacy_path = os.path.join(_PDD, f"scaler_params_{frequency}.json")
-        if os.path.exists(legacy_path):
-            scaler_params_path = legacy_path
-        else:
-            raise FileNotFoundError(
-                f"Scaler parameters not found at {scaler_params_path} or legacy path {legacy_path}."
-            )
+        raise FileNotFoundError(
+            f"Symbol-specific scaler not found at {scaler_params_path}. "
+            "No legacy fallback — train the symbol first or check symbol spelling."
+        )
 
     with open(scaler_params_path, "r") as f:
         scaler_params = json.load(f)

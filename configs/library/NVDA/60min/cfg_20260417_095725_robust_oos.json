@@ -1,0 +1,30 @@
+{
+  "meta": {
+    "symbol": "NVDA",
+    "frequency": "60min",
+    "created_at_utc": "2026-04-17T09:57:25+00:00",
+    "source": "scripts/robust_param_selection.py",
+    "long_only": false
+  },
+  "strategy": {
+    "risk_per_trade_pct": 0.0133,
+    "reward_risk_ratio": 2.1,
+    "k_sigma_long": 0.76,
+    "k_sigma_short": 0.471,
+    "k_atr_long": 0.774,
+    "k_atr_short": 0.794,
+    "enable_longs": true,
+    "allow_shorts": true
+  },
+  "oos_metrics": {
+    "mean_sharpe": 1.0389566714993947,
+    "std_sharpe": 3.893011996580347,
+    "min_sharpe": -2.709115589755399,
+    "median_sharpe": -0.3777136228596244,
+    "pct_pos_folds": 0.4444444444444444,
+    "mean_pf": 1.2472134829721866,
+    "mean_dd": -0.22761504287794843,
+    "n_folds": 9,
+    "oos_score": -3.8050315512081103
+  }
+}

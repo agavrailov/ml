@@ -99,20 +99,28 @@ def promote_training_row(
     tsteps_key = str(int(tsteps))
     best_hps_overall.setdefault(freq_key, {})
 
-    # Minimal required fields + useful metadata for later resolution.
-    best_hps_overall[freq_key][tsteps_key] = {
-        "validation_loss": float(row.get("validation_loss")),
-        "model_filename": row.get("model_filename"),
-        "bias_correction_filename": row.get("bias_correction_filename"),
-        "lstm_units": row.get("lstm_units"),
-        "learning_rate": row.get("learning_rate"),
-        "epochs": row.get("epochs"),
-        "batch_size": row.get("batch_size"),
-        "n_lstm_layers": row.get("n_lstm_layers"),
-        "stateful": row.get("stateful"),
-        "optimizer_name": row.get("optimizer_name"),
-        "loss_function": row.get("loss_function"),
-        "features_to_use": row.get("features_to_use"),
-    }
+    # Minimal required fields + useful metadata for later resolution. Drop keys
+    # whose source value is None: partial rows (e.g. UI promote clicks that only
+    # know model_filename/validation_loss) must not poison predict_context by
+    # writing explicit nulls that later override the registry's real hparams.
+    entry: dict = {"validation_loss": float(row.get("validation_loss"))}
+    optional_keys = (
+        "model_filename",
+        "bias_correction_filename",
+        "lstm_units",
+        "learning_rate",
+        "epochs",
+        "batch_size",
+        "n_lstm_layers",
+        "stateful",
+        "optimizer_name",
+        "loss_function",
+        "features_to_use",
+    )
+    for key in optional_keys:
+        value = row.get(key)
+        if value is not None:
+            entry[key] = value
+    best_hps_overall[freq_key][tsteps_key] = entry
 
     best_hps_path.write_text(json.dumps(best_hps_overall, indent=4), encoding="utf-8")

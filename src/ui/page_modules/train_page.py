@@ -7,6 +7,7 @@ from src.config import BEST_HPS_PATH as _BEST_HPS_PATH
 
 def _build_train_job_request_obj(
     *,
+    train_symbol: str,
     train_freq: str,
     train_tsteps: int,
     train_lstm_units: int,
@@ -18,6 +19,7 @@ def _build_train_job_request_obj(
     train_features_to_use: list[str],
 ) -> dict:
     return {
+        "symbol": train_symbol,
         "frequency": train_freq,
         "tsteps": int(train_tsteps),
         "lstm_units": int(train_lstm_units),
@@ -216,7 +218,16 @@ def render_train_tab(
 
     if active_job_id:
         job_status = _job_store.read_status(active_job_id)
-        
+
+        # Auto-refresh while job is running (mirrors walkforward_page pattern).
+        if job_status and job_status.state == "RUNNING":
+            try:
+                from streamlit_autorefresh import st_autorefresh
+                st_autorefresh(interval=2000, key="train_autorefresh")
+                st.caption("🔄 Auto-refreshing every 2 seconds...")
+            except ImportError:
+                pass
+
         # Prepare result if job succeeded
         result = None
         if job_status and job_status.state == "SUCCEEDED":
@@ -226,7 +237,7 @@ def render_train_tab(
                     result = _job_store.read_json(res_path)
                 except Exception:
                     pass
-        
+
         # Professional job status panel with timeline and results
         components.render_job_status(
             st,
@@ -248,6 +259,7 @@ def render_train_tab(
                 
                 row = {
                     "timestamp": pd.Timestamp.utcnow().isoformat(),
+                    "symbol": str(req_obj.get("symbol", "NVDA")).upper(),
                     "frequency": req_obj.get("frequency", train_freq),
                     "tsteps": int(req_obj.get("tsteps", train_tsteps)),
                     "validation_loss": float(result.get("validation_loss", 0)),
@@ -276,7 +288,9 @@ def render_train_tab(
         try:
             job_id = _uuid.uuid4().hex
 
+            _train_symbol = st.session_state.get("global_symbol", "NVDA")
             request_obj = _build_train_job_request_obj(
+                train_symbol=_train_symbol,
                 train_freq=train_freq,
                 train_tsteps=int(train_tsteps),
                 train_lstm_units=int(train_lstm_units),
@@ -411,10 +425,22 @@ def render_train_tab(
 
     # Optional: show UI-recorded training runs for debugging/traceability.
     with st.expander("UI training history (optional)", expanded=False):
+        _train_sym = st.session_state.get("global_symbol", "NVDA")
+        _show_all = st.checkbox(
+            "Show history for all symbols",
+            value=False,
+            key=f"train_hist_show_all_{_train_sym}",
+            help="Uncheck to filter history to the current symbol only",
+        )
         filtered_ui = [
             r
             for r in (history_all or [])
-            if isinstance(r, dict) and r.get("frequency") == train_freq
+            if isinstance(r, dict)
+            and r.get("frequency") == train_freq
+            and (
+                _show_all
+                or str(r.get("symbol", "NVDA")).upper() == _train_sym.upper()
+            )
         ]
         if not filtered_ui:
             st.write("(none)")
@@ -422,7 +448,10 @@ def render_train_tab(
             df_ui = pd.DataFrame(filtered_ui)
             if "timestamp" in df_ui.columns:
                 df_ui["timestamp"] = df_ui["timestamp"].apply(format_timestamp)
-            show_cols = [c for c in ["timestamp", "validation_loss", "tsteps", "model_filename"] if c in df_ui.columns]
+            show_cols = [
+                c for c in ["timestamp", "symbol", "validation_loss", "tsteps", "model_filename"]
+                if c in df_ui.columns
+            ]
             st.dataframe(df_ui[show_cols], width="stretch")
 
     # Clear prefill once the user has visited this tab.

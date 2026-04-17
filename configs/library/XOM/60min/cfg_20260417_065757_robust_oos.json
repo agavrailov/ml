@@ -1,0 +1,29 @@
+{
+  "meta": {
+    "symbol": "XOM",
+    "frequency": "60min",
+    "created_at_utc": "2026-04-17T06:57:57+00:00",
+    "source": "scripts/robust_param_selection.py"
+  },
+  "strategy": {
+    "risk_per_trade_pct": 0.0168,
+    "reward_risk_ratio": 1.59,
+    "k_sigma_long": 0.293,
+    "k_sigma_short": 0.122,
+    "k_atr_long": 0.78,
+    "k_atr_short": 0.732,
+    "enable_longs": true,
+    "allow_shorts": true
+  },
+  "oos_metrics": {
+    "mean_sharpe": -0.4653256000502178,
+    "std_sharpe": 1.0603200951668204,
+    "min_sharpe": -2.3724289000527956,
+    "median_sharpe": -0.5083576868962175,
+    "pct_pos_folds": 0.2222222222222222,
+    "mean_pf": 0.932966502709851,
+    "mean_dd": -0.19305767176452285,
+    "n_folds": 9,
+    "oos_score": -3.3633968427405616
+  }
+}

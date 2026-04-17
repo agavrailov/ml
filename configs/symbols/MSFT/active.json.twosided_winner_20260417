@@ -1,0 +1,22 @@
+{
+  "meta": {
+    "id": "cfg_msft_placeholder",
+    "symbol": "MSFT",
+    "frequency": "60min",
+    "created_at_utc": "2026-04-16T00:00:00+00:00",
+    "label": "MSFT initial — tune after first backtest",
+    "source": "robust_param_selection@2026-04-17T10:18:52+00:00",
+    "updated_at_utc": "2026-04-17T10:18:52+00:00"
+  },
+  "strategy": {
+    "risk_per_trade_pct": 0.0168,
+    "reward_risk_ratio": 1.59,
+    "k_sigma_long": 0.293,
+    "k_sigma_short": 0.122,
+    "k_atr_long": 0.78,
+    "k_atr_short": 0.732,
+    "enable_longs": true,
+    "allow_shorts": true
+  },
+  "metrics": null
+}

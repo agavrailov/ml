@@ -1,0 +1,29 @@
+{
+  "meta": {
+    "symbol": "MSFT",
+    "frequency": "60min",
+    "created_at_utc": "2026-04-17T06:54:05+00:00",
+    "source": "scripts/robust_param_selection.py"
+  },
+  "strategy": {
+    "risk_per_trade_pct": 0.0164,
+    "reward_risk_ratio": 2.18,
+    "k_sigma_long": 0.314,
+    "k_sigma_short": 0.147,
+    "k_atr_long": 0.635,
+    "k_atr_short": 0.746,
+    "enable_longs": true,
+    "allow_shorts": true
+  },
+  "oos_metrics": {
+    "mean_sharpe": -1.514042975610379,
+    "std_sharpe": 2.2855950884036327,
+    "min_sharpe": -4.474011991157315,
+    "median_sharpe": -2.2546964623575723,
+    "pct_pos_folds": 0.2222222222222222,
+    "mean_pf": 0.87126946816704,
+    "mean_dd": -0.3569087523472223,
+    "n_folds": 9,
+    "oos_score": -7.210029270185402
+  }
+}

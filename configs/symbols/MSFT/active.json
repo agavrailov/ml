@@ -1,22 +1,22 @@
 {
   "meta": {
-    "id": "cfg_msft_placeholder",
+    "id": "cfg_msft_disabled",
     "symbol": "MSFT",
     "frequency": "60min",
-    "created_at_utc": "2026-04-16T00:00:00+00:00",
-    "label": "MSFT initial — tune after first backtest",
-    "source": "walkforward_param_sweep_msft.py (OOS winner: mean_sharpe=0.945)",
-    "updated_at_utc": "2026-04-16T13:03:34+00:00"
+    "label": "MSFT disabled — dropped 2026-04-17 per user decision",
+    "source": "manual_drop@2026-04-17",
+    "updated_at_utc": "2026-04-17T13:45:00+00:00",
+    "drop_reason": "Hardened pipeline auto-promoted a two-sided winner with +7.6% compound WF return and -44% worst-fold DD. Edge too thin vs tail risk; concentrate capital on JPM + NVDA-long-only instead. Long-only re-run was strictly losing. See docs/msft_xom_hardened_pipeline_20260417.md. Previous two-sided winner archived at active.json.twosided_winner_20260417."
   },
   "strategy": {
-    "risk_per_trade_pct": 0.015,
-    "reward_risk_ratio": 2.5,
-    "k_sigma_long": 0.2,
-    "k_sigma_short": 0.7,
-    "k_atr_long": 0.35,
-    "k_atr_short": 0.8,
-    "enable_longs": true,
-    "allow_shorts": true
+    "risk_per_trade_pct": 0.0168,
+    "reward_risk_ratio": 1.59,
+    "k_sigma_long": 0.293,
+    "k_sigma_short": 0.122,
+    "k_atr_long": 0.78,
+    "k_atr_short": 0.732,
+    "enable_longs": false,
+    "allow_shorts": false
   },
   "metrics": null
 }

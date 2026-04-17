@@ -1,0 +1,29 @@
+{
+  "meta": {
+    "symbol": "JPM",
+    "frequency": "60min",
+    "created_at_utc": "2026-04-17T06:56:00+00:00",
+    "source": "scripts/robust_param_selection.py"
+  },
+  "strategy": {
+    "risk_per_trade_pct": 0.0167,
+    "reward_risk_ratio": 2.65,
+    "k_sigma_long": 0.527,
+    "k_sigma_short": 0.367,
+    "k_atr_long": 0.675,
+    "k_atr_short": 0.833,
+    "enable_longs": true,
+    "allow_shorts": true
+  },
+  "oos_metrics": {
+    "mean_sharpe": 1.0876544357974023,
+    "std_sharpe": 1.7143471564693316,
+    "min_sharpe": -1.3235357874460778,
+    "median_sharpe": 1.0235474818612373,
+    "pct_pos_folds": 0.7777777777777778,
+    "mean_pf": 0.9347131690260516,
+    "mean_dd": -0.09621618755433312,
+    "n_folds": 9,
+    "oos_score": -0.8739552531704968
+  }
+}

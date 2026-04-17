@@ -1,5 +1,6 @@
 import os
 import sys
+import logging
 
 import pandas as pd
 import json
@@ -12,6 +13,8 @@ from src.config import (
     FEATURES_TO_USE_OPTIONS
 )
 
+logger = logging.getLogger(__name__)
+
 GAP_ANALYSIS_OUTPUT_JSON = os.path.join(PROCESSED_DATA_DIR, "missing_trading_days.json")
 
 def convert_minute_to_timeframe(
@@ -19,6 +22,7 @@ def convert_minute_to_timeframe(
     frequency: str,
     processed_data_dir: str = PROCESSED_DATA_DIR,
     symbol: str = "nvda",
+    drop_boundary_bars: bool = True,
 ) -> str:
     """Resample minute-level OHLC data to a coarser timeframe and save as CSV.
 
@@ -30,6 +34,11 @@ def convert_minute_to_timeframe(
         processed_data_dir: Target directory where the resampled CSV will be
             written.
         symbol: Ticker symbol used to name the output file (lowercased).
+        drop_boundary_bars: If True (default), drop resampled bars whose
+            underlying minute-data span exceeds 1.5x the target frequency —
+            these are session-boundary artifacts (e.g. a "60min" bar that
+            actually spans 16:00 -> next day 09:30). Set to False to preserve
+            the legacy behavior.
 
     Returns:
         Path to the written output CSV.
@@ -38,7 +47,7 @@ def convert_minute_to_timeframe(
     output_csv_path = os.path.join(processed_data_dir, f"{symbol.lower()}_{frequency}.csv")
     print(f"Converting minute data from {input_csv_path} to {frequency} frequency.")
     print(f"Output will be saved to {output_csv_path}")
-    
+
     # Load input timeseries file
     # Assuming the CSV has columns like "DateTime", "Open", "High", "Low", "Close"
     # and "DateTime" is in "%Y-%m-%dT%H:%M" format.
@@ -61,6 +70,34 @@ def convert_minute_to_timeframe(
     if df_resampled.empty:
         print(f"Warning: Resampled DataFrame for {frequency} is empty after dropping NaNs. No file will be saved.")
         return
+
+    # Drop malformed bars that span a session boundary (e.g., 16:00 -> 09:30 next
+    # day producing a ~17-hour "60min" bar). Detect by measuring the span between
+    # the first and last underlying minute timestamps that fell into each bin: if
+    # that span exceeds 1.5x the target frequency delta, the bar is a
+    # session-boundary artifact and its OHLC is nonsense.
+    if drop_boundary_bars:
+        freq_delta = pd.Timedelta(frequency)
+        # Compute per-bin min and max underlying minute timestamp. `df.index` is
+        # the minute-level DatetimeIndex; resample it the same way to get bin
+        # first/last timestamps.
+        ts_series = df.index.to_series()
+        bin_min = ts_series.resample(frequency).min()
+        bin_max = ts_series.resample(frequency).max()
+        bin_span = bin_max - bin_min
+        # Align to df_resampled's index (which already dropped empty bins).
+        aligned_span = bin_span.reindex(df_resampled.index)
+        malformed_mask = aligned_span > (1.5 * freq_delta)
+        n_malformed = int(malformed_mask.sum())
+        if n_malformed > 0:
+            df_resampled = df_resampled.loc[~malformed_mask].copy()
+            msg = (
+                f"Dropped {n_malformed} session-boundary bar(s) from {frequency} "
+                f"resample (span > 1.5x {frequency}). Remaining rows: "
+                f"{len(df_resampled)}."
+            )
+            logger.info(msg)
+            print(msg)
 
 
     # Reset index to make 'DateTime' a column again and rename it to 'Time'

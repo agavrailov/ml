@@ -260,18 +260,21 @@ def _run_backtest(
     k_atr_short: float | None,
     enable_longs: bool | None,
     allow_shorts: bool | None,
+    symbol: str | None = None,
 ):
     """Run backtest using CSV predictions mode."""
     from src.backtest import run_backtest_for_ui
-    
-    predictions_csv = get_predictions_csv_path("nvda", frequency)
+
+    sym = (symbol or st.session_state.get("global_symbol", "NVDA")).upper()
+    predictions_csv = get_predictions_csv_path(sym.lower(), frequency)
     if predictions_csv and not os.path.exists(predictions_csv):
         raise FileNotFoundError(
             f"Predictions CSV not found: '{predictions_csv}'. "
-            "Use the 'Generate predictions CSV for NVDA' button first."
+            f"Use the 'Generate predictions CSV' button for {sym} first."
         )
 
     return run_backtest_for_ui(
+        symbol=sym,
         frequency=frequency,
         prediction_mode="csv",
         start_date=start_date,
@@ -299,16 +302,106 @@ def _stop_optimization() -> None:
 
 
 # Main UI
-st.title("LSTM Backtesting & Training UI")
+_title_col, _sym_col = st.columns([5, 1])
+with _title_col:
+    st.title("LSTM Backtesting & Training UI")
+with _sym_col:
+    from src.core.config_resolver import get_configured_symbols
+    _configured_symbols = get_configured_symbols()
+    _global_symbol = st.selectbox(
+        "Symbol",
+        _configured_symbols,
+        index=0,
+        key="global_symbol",
+    )
 
-tab_live, tab_data, tab_experiments, tab_train, tab_backtest, tab_walkforward = st.tabs(
+# ── Persistent context strip (P1) ───────────────────────────────────
+# A single line showing the active symbol/freq + readiness signals so the
+# user always knows what they're operating on, regardless of which tab.
+def _render_context_strip() -> None:
+    from src.core.config_resolver import get_strategy_defaults
+    from src.config import get_hourly_data_csv_path
+    from src.model_registry import get_best_model_path
+
+    sym = st.session_state.get("global_symbol", "NVDA")
+    freq = st.session_state.get("global_frequency", FREQUENCY)
+    tsteps = TSTEPS
+
+    # Readiness checks
+    ohlc_path = get_hourly_data_csv_path(freq, symbol=sym)
+    has_data = os.path.exists(ohlc_path)
+
+    has_model = bool(get_best_model_path(sym, freq, tsteps))
+
+    pred_path = get_predictions_csv_path(sym.lower(), freq)
+    has_preds = os.path.exists(pred_path)
+
+    try:
+        defaults = get_strategy_defaults(sym)
+        has_params = bool(defaults) and "k_sigma_long" in defaults
+    except Exception:
+        has_params = False
+
+    # Live daemon status — peek at last status.json for this symbol
+    live_dir = Path(__file__).resolve().parents[2] / "ui_state" / "live"
+    is_live_running = False
+    if live_dir.exists():
+        for status_file in live_dir.glob("**/status.json"):
+            try:
+                status = json.loads(status_file.read_text(encoding="utf-8"))
+                if str(status.get("symbol", "")).upper() == sym.upper():
+                    state = str(status.get("state", "")).upper()
+                    if state in ("RUNNING", "TRADING", "SLEEPING", "PROCESSING"):
+                        is_live_running = True
+                        break
+            except Exception:
+                continue
+
+    # Theme-aware: green for OK, red for missing — colors are visible on both
+    # light and dark backgrounds.  Container uses Streamlit's CSS vars so it
+    # adapts to the active theme automatically.
+    def _badge(ok: bool, label: str) -> str:
+        if ok:
+            return f"<span style='color:#22c55e;font-weight:700'>✓</span> {label}"
+        return f"<span style='color:#ef4444;font-weight:700'>✗</span> {label}"
+
+    live_badge = (
+        "<span style='color:#22c55e;font-weight:700'>● live</span>"
+        if is_live_running
+        else "<span style='color:#9ca3af;font-weight:700'>○ offline</span>"
+    )
+
+    parts = [
+        f"<strong>{sym}</strong>",
+        f"@ <strong>{freq}</strong>",
+        _badge(has_data, "data"),
+        _badge(has_model, "model"),
+        _badge(has_preds, "predictions"),
+        _badge(has_params, "params"),
+        live_badge,
+    ]
+    st.markdown(
+        "<div style='padding:8px 14px;"
+        "background:var(--secondary-background-color, rgba(128,128,128,0.12));"
+        "color:var(--text-color, inherit);"
+        "border-radius:6px;font-size:0.92em;margin-bottom:10px'>"
+        + "  ·  ".join(parts)
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+
+_render_context_strip()
+
+# ── Tab order (P2): daily-use first ─────────────────────────────────
+tab_live, tab_backtest, tab_portfolio, tab_walkforward, tab_train, tab_data, tab_experiments = st.tabs(
     [
         "Live",
+        "Backtest / Strategy",
+        "Portfolio",
+        "Walk-Forward Analysis",
+        "Train & Promote",
         "Data",
         "Hyperparameter Experiments",
-        "Train & Promote",
-        "Backtest / Strategy",
-        "Walk-Forward Analysis",
     ]
 )
 
@@ -433,3 +526,8 @@ with tab_walkforward:
         load_strategy_defaults=_load_strategy_defaults,
         save_json_history=save_history,
     )
+
+with tab_portfolio:
+    from src.ui.page_modules import portfolio_page
+
+    portfolio_page.render_portfolio_tab(st=st, pd=pd, plt=plt)

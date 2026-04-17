@@ -5,16 +5,16 @@
     "frequency": "60min",
     "created_at_utc": "2026-04-16T00:00:00+00:00",
     "label": "JPM initial conservative — tune after first backtest",
-    "source": "robust_param_selection@2026-04-17T10:46:52+00:00",
-    "updated_at_utc": "2026-04-17T10:46:52+00:00"
+    "source": "robust_param_selection@2026-04-17T06:56:00+00:00",
+    "updated_at_utc": "2026-04-17T06:56:00+00:00"
   },
   "strategy": {
-    "risk_per_trade_pct": 0.0094,
-    "reward_risk_ratio": 3.17,
-    "k_sigma_long": 0.482,
-    "k_sigma_short": 0.52,
-    "k_atr_long": 0.775,
-    "k_atr_short": 0.717,
+    "risk_per_trade_pct": 0.0167,
+    "reward_risk_ratio": 2.65,
+    "k_sigma_long": 0.527,
+    "k_sigma_short": 0.367,
+    "k_atr_long": 0.675,
+    "k_atr_short": 0.833,
     "enable_longs": true,
     "allow_shorts": true
   },

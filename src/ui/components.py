@@ -689,15 +689,17 @@ def render_equity_chart(
     pd,
     equity_df: pd.DataFrame,
     title: str = "Equity Curve",
+    symbol: str = "NVDA",
 ) -> None:
     """Render an equity curve chart with price comparison.
-    
+
     Args:
         st: Streamlit module
         plt: Matplotlib.pyplot module
         pd: Pandas module
         equity_df: DataFrame with equity, Time, and optionally price columns
         title: Chart title
+        symbol: Symbol name for chart labels
     """
     if equity_df.empty:
         st.warning("No equity data to display")
@@ -743,9 +745,9 @@ def render_equity_chart(
             color="#48bb78",
             alpha=0.6,
             linewidth=1.2,
-            label="NVDA Price",
+            label=f"{symbol} Price",
         )
-        ax_price.set_ylabel("NVDA Price ($)", color="#48bb78", fontsize=12, fontweight="bold")
+        ax_price.set_ylabel(f"{symbol} Price ($)", color="#48bb78", fontsize=12, fontweight="bold")
         ax_price.tick_params(axis="y", labelcolor="#48bb78")
     
     ax_equity.set_xlabel("Time" if time_col == "Time" else "Bar Index", fontsize=12, fontweight="bold")

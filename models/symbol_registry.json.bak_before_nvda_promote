@@ -1,0 +1,95 @@
+{
+  "MSFT": {
+    "60min": {
+      "5": {
+        "validation_loss": 2.180013689212501e-05,
+        "model_path": "C:\\Users\\Anton\\SRC\\my\\ml_lstm\\models\\registry\\my_lstm_model_60min_tsteps5_20260416_122449.keras",
+        "bias_path": "C:\\Users\\Anton\\SRC\\my\\ml_lstm\\models\\registry\\bias_correction_60min_tsteps5_20260416_122449.json",
+        "hparams": {
+          "frequency": "60min",
+          "tsteps": 5,
+          "lstm_units": 64,
+          "batch_size": 64,
+          "learning_rate": 0.003,
+          "epochs": 20,
+          "n_lstm_layers": 1,
+          "stateful": true,
+          "optimizer_name": "rmsprop",
+          "loss_function": "mse",
+          "features_to_use": [
+            "Open",
+            "High",
+            "Low",
+            "Close",
+            "SMA_7",
+            "SMA_21",
+            "RSI"
+          ]
+        },
+        "promoted_at_utc": "2026-04-16T09:24:50.074132+00:00"
+      }
+    }
+  },
+  "JPM": {
+    "60min": {
+      "5": {
+        "validation_loss": 2.1e-05,
+        "model_path": "C:\\Users\\Anton\\SRC\\my\\ml_lstm\\models\\registry\\my_lstm_model_60min_tsteps5_20260416_185611.keras",
+        "bias_path": "C:\\Users\\Anton\\SRC\\my\\ml_lstm\\models\\registry\\bias_correction_60min_tsteps5_20260416_185611.json",
+        "hparams": {
+          "frequency": "60min",
+          "tsteps": 5,
+          "lstm_units": 128,
+          "batch_size": 64,
+          "learning_rate": 0.01,
+          "epochs": 20,
+          "n_lstm_layers": 1,
+          "stateful": true,
+          "optimizer_name": "rmsprop",
+          "loss_function": "mae",
+          "features_to_use": [
+            "Open",
+            "High",
+            "Low",
+            "Close",
+            "SMA_7",
+            "SMA_21",
+            "RSI"
+          ]
+        },
+        "promoted_at_utc": "2026-04-16T15:59:45.512484+00:00"
+      }
+    }
+  },
+  "XOM": {
+    "60min": {
+      "5": {
+        "validation_loss": 3.488952279440127e-05,
+        "model_path": "C:\\Users\\Anton\\SRC\\my\\ml_lstm\\models\\registry\\my_lstm_model_60min_tsteps5_20260416_225759.keras",
+        "bias_path": "C:\\Users\\Anton\\SRC\\my\\ml_lstm\\models\\registry\\bias_correction_60min_tsteps5_20260416_225759.json",
+        "hparams": {
+          "frequency": "60min",
+          "tsteps": 5,
+          "lstm_units": 32,
+          "batch_size": 64,
+          "learning_rate": 0.01,
+          "epochs": 20,
+          "n_lstm_layers": 1,
+          "stateful": true,
+          "optimizer_name": "rmsprop",
+          "loss_function": "mse",
+          "features_to_use": [
+            "Open",
+            "High",
+            "Low",
+            "Close",
+            "SMA_7",
+            "SMA_21",
+            "RSI"
+          ]
+        },
+        "promoted_at_utc": "2026-04-16T23:02:10.000000+00:00"
+      }
+    }
+  }
+}

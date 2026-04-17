@@ -49,6 +49,7 @@ from src.data_utils import apply_standard_scaler
 from src.bias_correction import (
     apply_rolling_bias_and_amplitude_correction,
     compute_rolling_residual_sigma,
+    shift_sigma_to_observable,
 )
 
 PREDICTIONS_DIR = "backtests"
@@ -417,6 +418,16 @@ def _make_model_prediction_provider(data: pd.DataFrame, frequency: str, symbol: 
     # If we never computed any residuals, fall back to zeros.
     if not np.isfinite(residual_sigma_series).any():
         residual_sigma_series[:] = 0.0
+
+    # Right-shift the sigma series by ROWS_AHEAD so that sigma[i] only depends
+    # on residuals whose actuals (Open[j+ROWS_AHEAD]) were already observable by
+    # bar i. Without this, sigma[i] would include residuals[i] = Open[i+ROWS_AHEAD]
+    # - pred[i], which requires a future price not available at decision time —
+    # a 1-bar look-ahead leak of volatility into strategy thresholds and sizing.
+    # The leading ROWS_AHEAD bars get zeros (no sigma observable yet in live).
+    residual_sigma_series = shift_sigma_to_observable(
+        residual_sigma_series, ROWS_AHEAD
+    ).astype(np.float32)
 
     # Write a single checkpoint CSV with per-bar predictions and residual
     # sigma aligned to raw data so that future runs (and CSV-mode replays) can

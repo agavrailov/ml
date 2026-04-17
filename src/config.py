@@ -1,4 +1,15 @@
 # src/config.py
+"""Central configuration for paths, training, strategy, and broker settings.
+
+Timezone assumption:
+    All raw OHLC timestamps are treated as EXCHANGE-LOCAL time (US/Eastern for
+    NYSE symbols NVDA, MSFT, JPM, XOM, UNH, AMZN — received from IBKR via
+    ib_insync with no tz conversion). The pipeline does NOT convert timestamps
+    to UTC. Downstream code (resampling, feature engineering, target
+    construction, backtest alignment, live-bar matching) assumes this invariant.
+    If a new symbol on a non-US exchange is added later, timezone handling
+    must be revisited before mixing data across exchanges.
+"""
 
 import os
 import json
