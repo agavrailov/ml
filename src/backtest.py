@@ -207,7 +207,13 @@ def _estimate_atr_like(data: pd.DataFrame, window: int = 14) -> float:
     return float(cleaned.mean()) if not cleaned.empty else 1.0
 
 
-def _make_model_prediction_provider(data: pd.DataFrame, frequency: str, symbol: str = "NVDA") -> tuple[PredictionProvider, np.ndarray]:
+def _make_model_prediction_provider(
+    data: pd.DataFrame,
+    frequency: str,
+    symbol: str = "NVDA",
+    model_path_override: str | None = None,
+    bias_path_override: str | None = None,
+) -> tuple[PredictionProvider, np.ndarray]:
     """Return a prediction provider using the LSTM model.
 
     This implementation builds a reusable prediction context (model + scaler +
@@ -294,7 +300,11 @@ def _make_model_prediction_provider(data: pd.DataFrame, frequency: str, symbol: 
     print("Building prediction context and running batched model predictions...", flush=True)
     # Lazy import: only load TensorFlow when actually running model predictions
     from src.predict import build_prediction_context, predict_sequence_batch
-    ctx = build_prediction_context(frequency=frequency, tsteps=TSTEPS, symbol=symbol)
+    ctx = build_prediction_context(
+        frequency=frequency, tsteps=TSTEPS, symbol=symbol,
+        model_path_override=model_path_override,
+        bias_path_override=bias_path_override,
+    )
 
     df = data.copy()
     if "Time" in df.columns:
@@ -432,13 +442,33 @@ def _make_model_prediction_provider(data: pd.DataFrame, frequency: str, symbol: 
     # Write a single checkpoint CSV with per-bar predictions and residual
     # sigma aligned to raw data so that future runs (and CSV-mode replays) can
     # reuse both without recomputation.
+    #
+    # Guard: never overwrite a longer checkpoint with a shorter one.  A
+    # date-filtered backtest (running on e.g. the last 6 months) would
+    # otherwise silently clobber a full-history checkpoint and make all future
+    # CSV-mode backtests miss years of data.
     checkpoint_df = pd.DataFrame({
         "Time": times_full,
         "predicted_price": denorm_full,
         "model_error_sigma": residual_sigma_series,
     })
-    checkpoint_df.to_csv(checkpoint_path, index=False)
-    print(f"Wrote model prediction checkpoint to {checkpoint_path}", flush=True)
+    _write_checkpoint = True
+    if os.path.exists(checkpoint_path):
+        try:
+            _existing_len = sum(1 for _ in open(checkpoint_path)) - 1  # fast line-count (minus header)
+            if _existing_len > len(checkpoint_df):
+                _write_checkpoint = False
+                print(
+                    f"Skipped overwriting checkpoint at {checkpoint_path} "
+                    f"({_existing_len} rows) with shorter run ({len(checkpoint_df)} rows). "
+                    "Run Generate Predictions CSV to rebuild the full checkpoint.",
+                    flush=True,
+                )
+        except Exception:
+            pass
+    if _write_checkpoint:
+        checkpoint_df.to_csv(checkpoint_path, index=False)
+        print(f"Wrote model prediction checkpoint ({len(checkpoint_df)} rows) to {checkpoint_path}", flush=True)
 
     def provider(i: int, row: pd.Series) -> float:  # noqa: ARG001
         if i < 0 or i >= len(denorm_full):
@@ -474,6 +504,9 @@ def run_backtest_on_dataframe(
     k_atr_short: float | None = None,
     enable_longs: bool | None = None,
     allow_shorts: bool | None = None,
+    # Direct model path — bypasses registry (used in fold-retrain loops)
+    model_path_override: str | None = None,
+    bias_path_override: str | None = None,
 ) -> BacktestResult:
     """Run a backtest on an in-memory DataFrame using default settings.
 
@@ -651,7 +684,11 @@ def run_backtest_on_dataframe(
 
             model_error_sigma_series = atr_series.copy()
     elif prediction_mode == "model":
-        provider, model_error_sigma_series = _make_model_prediction_provider(data, frequency=freq, symbol=symbol)
+        provider, model_error_sigma_series = _make_model_prediction_provider(
+            data, frequency=freq, symbol=symbol,
+            model_path_override=model_path_override,
+            bias_path_override=bias_path_override,
+        )
     elif prediction_mode == "naive":
         # Legacy/simple baseline: use Close as the predicted price.
         def provider(i: int, row: pd.Series) -> float:  # type: ignore[override]
@@ -898,6 +935,9 @@ def run_backtest_for_ui(
     k_atr_short: float | None = None,
     enable_longs: bool | None = None,
     allow_shorts: bool | None = None,
+    # Direct model path — bypasses registry (used in fold-retrain loops)
+    model_path_override: str | None = None,
+    bias_path_override: str | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     """Convenience wrapper for interactive UIs.
 
@@ -953,6 +993,8 @@ def run_backtest_for_ui(
         k_atr_short=k_atr_short,
         enable_longs=enable_longs,
         allow_shorts=allow_shorts,
+        model_path_override=model_path_override,
+        bias_path_override=bias_path_override,
     )
 
     metrics = _compute_backtest_metrics(

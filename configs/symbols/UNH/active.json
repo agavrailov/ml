@@ -1,21 +1,34 @@
 {
   "meta": {
-    "id": "cfg_unh_initial",
+    "id": "cfg_unh_twosided",
     "symbol": "UNH",
     "frequency": "60min",
-    "created_at_utc": "2026-04-16T00:00:00+00:00",
-    "label": "UNH initial conservative — tune after first backtest",
-    "source": "copied from MSFT template, conservative defaults"
+    "created_at_utc": "2026-04-17T11:37:54+00:00",
+    "label": "UNH two-sided winner: mean_sh 0.906, 67pct pos folds, +159pct compound WF, min_dd -17.6pct",
+    "source": "robust_param_selection@2026-04-17T11:37:54+00:00",
+    "pipeline": "hardened_v2_two_stage_wf",
+    "compound_wf_return_2yr": "159%"
   },
   "strategy": {
-    "risk_per_trade_pct": 0.015,
-    "reward_risk_ratio": 2.5,
-    "k_sigma_long": 0.35,
-    "k_sigma_short": 0.7,
-    "k_atr_long": 0.45,
-    "k_atr_short": 0.8,
+    "risk_per_trade_pct": 0.0093,
+    "reward_risk_ratio": 3.44,
+    "k_sigma_long": 0.222,
+    "k_sigma_short": 0.171,
+    "k_atr_long": 0.398,
+    "k_atr_short": 0.21,
     "enable_longs": true,
     "allow_shorts": true
   },
-  "metrics": null
+  "metrics": {
+    "mean_sharpe": 0.9064114848918672,
+    "std_sharpe": 1.3123334087742542,
+    "pct_pos_folds": 0.6666666666666666,
+    "mean_pf": 1.2348262990650187,
+    "mean_dd": -0.1197621555100289,
+    "min_dd": -0.1761682466929675,
+    "n_folds": 9,
+    "oos_score": -0.6719686332791888,
+    "pipeline_date": "2026-04-17",
+    "compound_wf_return": 1.5952785649099304
+  }
 }

@@ -156,9 +156,16 @@ def _train_one_fold(symbol: str, train_start: str, train_end: str,
 
 def _generate_test_predictions_csv(symbol: str, test_start: str, test_end: str,
                                    fold_predictions_csv: str,
-                                   long_only: bool = False) -> None:
+                                   long_only: bool = False,
+                                   model_path: str | None = None,
+                                   bias_path: str | None = None) -> None:
     """Run model-mode backtest over the test window; it writes the checkpoint CSV
-    as a side effect. Copy that file to `fold_predictions_csv`."""
+    as a side effect. Copy that file to ``fold_predictions_csv``.
+
+    When ``model_path`` is provided the model is loaded directly from that path
+    instead of being looked up in ``symbol_registry.json``.  This avoids the
+    registry write ↔ read race condition when multiple symbols run in parallel.
+    """
     from src.backtest import run_backtest_for_ui
     from src.config import get_predictions_csv_path
     if long_only:
@@ -174,6 +181,8 @@ def _generate_test_predictions_csv(symbol: str, test_start: str, test_end: str,
         k_sigma_long=0.3, k_sigma_short=0.3, k_atr_long=0.4, k_atr_short=0.4,
         risk_per_trade_pct=0.01, reward_risk_ratio=2.5,
         enable_longs=enable_longs, allow_shorts=allow_shorts,
+        model_path_override=model_path,
+        bias_path_override=bias_path,
     )
     default_checkpoint = get_predictions_csv_path(symbol.lower(), FREQUENCY)
     Path(fold_predictions_csv).parent.mkdir(parents=True, exist_ok=True)
@@ -252,19 +261,16 @@ def generate_fold_predictions(
                 print(f"[{symbol}] fold {fold_idx} train failed: {exc}")
                 continue
 
-            # Promote this fold's model in the registry so prediction context picks it up.
-            update_best_model(
-                symbol=symbol, frequency=FREQUENCY, tsteps=TSTEPS,
-                val_loss=float(val_loss),
-                model_path=str(model_path),
-                bias_path=str(bias_path) if bias_path else None,
-                hparams=saved_hp, force=True,
-            )
-
+            # Pass fold model path directly — no registry write needed.
+            # This is safe for parallel multi-symbol runs because each process
+            # passes its own model path without touching symbol_registry.json.
             try:
                 _generate_test_predictions_csv(
                     symbol, test_start, test_end, fold_preds_csv,
-                    long_only=long_only)
+                    long_only=long_only,
+                    model_path=str(model_path),
+                    bias_path=str(bias_path) if bias_path else None,
+                )
             except Exception as exc:
                 print(f"[{symbol}] fold {fold_idx} prediction generation failed: {exc}")
                 continue
@@ -360,7 +366,7 @@ def stage_b_full_wf(symbol: str, fold_meta: list[dict],
     """
     n_cand = len(top_candidates)
     n_folds = len(fold_meta)
-    print(f"  Stage B: full walk-forward, {n_cand} candidates × {n_folds} folds "
+    print(f"  Stage B: full walk-forward, {n_cand} candidates x {n_folds} folds "
           f"= {n_cand * n_folds} backtests")
 
     # Re-number candidate_id to align with Stage-B subset identity (stable for Phase 5 subset).
@@ -448,7 +454,7 @@ def filter_viable_oos(ranked: pd.DataFrame, min_count: int = 50) -> pd.DataFrame
         if len(out) >= min_count or tier_idx == len(tiers) - 1:
             print(f"  filter tier {tier_idx+1}/{len(tiers)}: "
                   f"mean_sh>{ms} mean_pf>{pf} mean_dd>{dd} mean_trades>={tr} "
-                  f"min_sh>{mns} pct_pos>={pct} min_dd>{mndd} → {len(out)} viable",
+                  f"min_sh>{mns} pct_pos>={pct} min_dd>{mndd} -> {len(out)} viable",
                   flush=True)
             if len(out) > 0:
                 return out
@@ -464,7 +470,7 @@ def filter_viable_oos(ranked: pd.DataFrame, min_count: int = 50) -> pd.DataFrame
     top = ranked.sort_values("oos_score", ascending=False).head(5)
     print("  no tier yielded viable candidates. Top 5 by oos_score (for inspection only,",
           flush=True)
-    print("  not promoted — fix filters or investigate pipeline before rerunning):",
+    print("  not promoted - fix filters or investigate pipeline before rerunning):",
           flush=True)
     for _, r in top.iterrows():
         print(f"    cand#{int(r.candidate_id):3d} mean_sh={r.mean_sharpe:+.2f} "
@@ -738,6 +744,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         "Keeps the 6D LHS intact — short params are ignored by the strategy.")
     p.add_argument("--auto-promote", action="store_true",
                    help="Write top-1 to configs/symbols/{SYM}/active.json")
+    p.add_argument("--output-dir", type=str, default=None,
+                   help="Override output directory. Default: backtests/robust_selection_{sym}/")
     return p
 
 
@@ -746,7 +754,10 @@ def main() -> None:
 
     symbol = args.symbol.upper()
     repo_root = Path(__file__).resolve().parents[1]
-    out_dir = repo_root / "backtests" / f"robust_selection_{symbol.lower()}"
+    if args.output_dir:
+        out_dir = Path(args.output_dir)
+    else:
+        out_dir = repo_root / "backtests" / f"robust_selection_{symbol.lower()}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"===== {symbol} : robust param selection =====")
@@ -870,7 +881,7 @@ def _run_phase5_onwards(args, symbol: str, out_dir: Path,
     print(f"\n[Phase 5] Subsetting Stage-B OOS results to {len(diverse)} diverse winners")
     oos_long_subset = subset_oos_long_to_diverse(oos_long_b, diverse)
     if oos_long_subset.empty:
-        print("ERROR: no Stage-B rows match the diverse set — candidate_id mismatch?")
+        print("ERROR: no Stage-B rows match the diverse set - candidate_id mismatch?")
         sys.exit(3)
     oos_long_subset.to_csv(out_dir / "05_oos_long_diverse.csv", index=False)
 

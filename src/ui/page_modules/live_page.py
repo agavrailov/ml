@@ -284,7 +284,7 @@ def render_live_tab(
         optimization_running = bool(st.session_state.get("optimization_running", False))
         auto_refresh = st.checkbox(
             "Auto-refresh",
-            value=(not optimization_running),
+            value=False,
             disabled=optimization_running,
         )
         if optimization_running:

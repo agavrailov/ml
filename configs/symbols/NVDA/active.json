@@ -20,17 +20,15 @@
     "allow_shorts": false
   },
   "metrics": {
-    "total_return": 0.792,
-    "cagr": 0.624,
-    "max_drawdown": -0.06,
-    "sharpe_ratio": 2.88,
-    "win_rate": 0.458,
-    "profit_factor": 1.96,
-    "equity_price_corr": null,
-    "period": "20250101 -> 20260402",
-    "n_trades": 107,
-    "n_trades_long": 58,
-    "n_trades_short": 49,
-    "final_equity": 17920.0
+    "mean_sharpe": 0.7661809315450899,
+    "std_sharpe": 3.204413476361313,
+    "pct_pos_folds": 0.6666666666666666,
+    "mean_pf": 1.0690454962949645,
+    "mean_dd": -0.0930138363614953,
+    "min_dd": -0.2237791733533532,
+    "n_folds": 9,
+    "oos_score": -3.777537552626288,
+    "compound_wf_return": 0.38194769453323496,
+    "pipeline_date": "2026-04-17"
   }
 }

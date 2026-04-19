@@ -37,7 +37,7 @@ def test_run_backtest_model_mode_no_nans(monkeypatch: Any) -> None:
     # Mock the model-based prediction provider factory so that it returns a
     # simple deterministic provider, bypassing heavy ML and focusing on the
     # integration with the backtest engine.
-    def _fake_model_provider(data_arg: pd.DataFrame, frequency: str, symbol: str = "NVDA"):  # noqa: ARG001
+    def _fake_model_provider(data_arg: pd.DataFrame, frequency: str, symbol: str = "NVDA", **_kw):  # noqa: ARG001
         series = data_arg["Close"].to_numpy(dtype=float) * 1.01  # +1% edge
 
         def provider(i: int, row: pd.Series) -> float:  # noqa: ARG001

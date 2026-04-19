@@ -1,0 +1,66 @@
+2026-04-17 20:01:40.572110: I tensorflow/core/util/port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+2026-04-17 20:01:45.429971: I tensorflow/core/util/port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+2026-04-17 20:01:48.428676: I tensorflow/core/platform/cpu_feature_guard.cc:210] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: SSE3 SSE4.1 SSE4.2 AVX AVX2 AVX512F FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+[retrain] BAC hparams: {
+  "frequency": "60min",
+  "tsteps": 5,
+  "lstm_units": 64,
+  "batch_size": 64,
+  "learning_rate": 0.003,
+  "epochs": 20,
+  "n_lstm_layers": 1,
+  "stateful": true,
+  "optimizer_name": "rmsprop",
+  "loss_function": "mse",
+  "features_to_use": [
+    "Open",
+    "High",
+    "Low",
+    "Close",
+    "SMA_7",
+    "SMA_21",
+    "RSI"
+  ]
+}
+[retrain] using optimizer_name=rmsprop loss_function=mse
+Scaler parameters calculated on training data and saved to C:\Users\Anton\SRC\my\ml_lstm\data\processed\scaler_params_bac_60min.json
+Starting model training for 60min with TSTEPS=5...
+Epoch 1/20
+55/55 - 2s - 37ms/step - loss: 0.0457 - mae: 0.1060 - val_loss: 0.0361 - val_mae: 0.1514
+Epoch 2/20
+55/55 - 0s - 6ms/step - loss: 0.0169 - mae: 0.0752 - val_loss: 0.0053 - val_mae: 0.0544
+Epoch 3/20
+55/55 - 0s - 5ms/step - loss: 0.0082 - mae: 0.0574 - val_loss: 0.0015 - val_mae: 0.0287
+Epoch 4/20
+55/55 - 0s - 5ms/step - loss: 0.0051 - mae: 0.0433 - val_loss: 0.0013 - val_mae: 0.0273
+Epoch 5/20
+55/55 - 0s - 6ms/step - loss: 0.0029 - mae: 0.0325 - val_loss: 5.2376e-04 - val_mae: 0.0172
+Epoch 6/20
+55/55 - 0s - 6ms/step - loss: 0.0018 - mae: 0.0255 - val_loss: 1.1935e-04 - val_mae: 0.0089
+Epoch 7/20
+55/55 - 0s - 5ms/step - loss: 0.0011 - mae: 0.0198 - val_loss: 1.7961e-04 - val_mae: 0.0115
+Epoch 8/20
+55/55 - 0s - 5ms/step - loss: 6.5666e-04 - mae: 0.0153 - val_loss: 2.1201e-04 - val_mae: 0.0130
+Epoch 9/20
+55/55 - 0s - 5ms/step - loss: 4.2892e-04 - mae: 0.0124 - val_loss: 2.7282e-05 - val_mae: 0.0036
+Epoch 10/20
+55/55 - 0s - 6ms/step - loss: 2.8149e-04 - mae: 0.0108 - val_loss: 3.1997e-05 - val_mae: 0.0042
+Epoch 11/20
+55/55 - 0s - 5ms/step - loss: 1.6292e-04 - mae: 0.0084 - val_loss: 6.5369e-05 - val_mae: 0.0068
+Epoch 12/20
+55/55 - 0s - 6ms/step - loss: 1.0519e-04 - mae: 0.0067 - val_loss: 4.2813e-05 - val_mae: 0.0052
+Epoch 13/20
+55/55 - 0s - 5ms/step - loss: 6.6402e-05 - mae: 0.0056 - val_loss: 3.1261e-05 - val_mae: 0.0041
+Epoch 14/20
+55/55 - 0s - 5ms/step - loss: 5.4012e-05 - mae: 0.0050 - val_loss: 3.0050e-05 - val_mae: 0.0040
+Model training finished for 60min with TSTEPS=5.
+Calculating bias correction from validation set...
+
+[1m 1/23[0m [37m====================[0m [1m3s[0m 167ms/step
+[1m22/23[0m [32m===================[0m[37m=[0m [1m0s[0m 2ms/step  
+[1m23/23[0m [32m====================[0m[37m[0m [1m0s[0m 3ms/step
+Mean residual on validation set (log returns): -0.005852
+Bias correction (mean residual) saved to C:\Users\Anton\SRC\my\ml_lstm\models\registry\bias_correction_60min_tsteps5_20260417_200154.json
+[retrain] val_loss=2.728203e-05  model=my_lstm_model_60min_tsteps5_20260417_200154.keras
+[retrain] registry updated: True

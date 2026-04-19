@@ -735,6 +735,24 @@ CONTRACT_REGISTRY: dict[str, dict] = {
         "currency": "USD",
         "secType": "STK",
     },
+    "BAC": {
+        "symbol": "BAC",
+        "exchange": "SMART",
+        "currency": "USD",
+        "secType": "STK",
+    },
+    "GS": {
+        "symbol": "GS",
+        "exchange": "SMART",
+        "currency": "USD",
+        "secType": "STK",
+    },
+    "JNJ": {
+        "symbol": "JNJ",
+        "exchange": "SMART",
+        "currency": "USD",
+        "secType": "STK",
+    },
 }
 
 # Legacy alias — keeps existing code that uses NVDA_CONTRACT_DETAILS working

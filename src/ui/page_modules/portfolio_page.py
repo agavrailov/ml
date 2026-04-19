@@ -78,6 +78,7 @@ def render_portfolio_tab(*, st, pd, plt) -> None:
 
     # ── Run button ──────────────────────────────────────────────────
     if st.button("Run Portfolio Backtest", disabled=not can_run, type="primary"):
+        st.session_state.pop("pf_last_result", None)
         with st.spinner("Running portfolio backtest..."):
             try:
                 # Load and align symbol data
@@ -168,63 +169,82 @@ def render_portfolio_tab(*, st, pd, plt) -> None:
 
                 result = run_portfolio_backtest(symbol_data, config)
                 summary = result.summary()
-
-                # ── Display results ─────────────────────────────────
-                st.markdown("---")
-                st.markdown("### Results")
-
-                # Metric cards
-                m1, m2, m3, m4 = st.columns(4)
-                with m1:
-                    st.metric("Portfolio Sharpe", f"{summary['portfolio_sharpe']:.2f}")
-                with m2:
-                    st.metric("Max Drawdown", f"{summary['max_drawdown']*100:.1f}%")
-                with m3:
-                    st.metric("Total Return", f"{summary['total_return']*100:.1f}%")
-                with m4:
-                    total_trades = sum(summary["per_symbol_trades"].values())
-                    st.metric("Total Trades", str(total_trades))
-
-                # Per-symbol breakdown
-                st.markdown("#### Per-Symbol Performance")
-                sym_rows = []
-                for sym in selected_symbols:
-                    sym_rows.append({
-                        "Symbol": sym,
-                        "Trades": summary["per_symbol_trades"].get(sym, 0),
-                        "Sharpe": f"{summary['per_symbol_sharpe'].get(sym, 0):.2f}",
-                    })
-                st.dataframe(pd.DataFrame(sym_rows), use_container_width=True)
-
-                # Portfolio equity curve
-                st.markdown("#### Equity Curve")
-                fig, ax = plt.subplots(figsize=(12, 5))
-                ax.plot(result.portfolio_equity_curve, linewidth=2, label="Portfolio")
-                for sym in selected_symbols:
-                    eq = result.per_symbol_equity.get(sym, [])
-                    if eq:
-                        ax.plot(eq, alpha=0.5, linewidth=1, label=sym)
-                ax.set_xlabel("Bar")
-                ax.set_ylabel("Equity ($)")
-                ax.set_title("Portfolio Equity Curve")
-                ax.legend(loc="upper left")
-                ax.grid(True, alpha=0.3)
-                st.pyplot(fig)
-                plt.close(fig)
-
-                # Correlation matrix
                 corr = result.pairwise_pnl_correlation()
-                if not corr.empty:
-                    st.markdown("#### Pairwise PnL Correlation")
-                    st.dataframe(
-                        corr.style.format("{:.3f}").background_gradient(cmap="RdYlGn_r", vmin=-1, vmax=1),
-                        use_container_width=True,
-                    )
-                    avg_corr = corr.values[~(corr.values == 1.0)].mean() if len(corr) > 1 else 0
-                    st.write(f"Average pairwise correlation: **{avg_corr:.3f}**")
+
+                st.session_state["pf_last_result"] = {
+                    "summary": summary,
+                    "equity_curve": result.portfolio_equity_curve,
+                    "per_symbol_equity": {k: list(v) for k, v in result.per_symbol_equity.items()},
+                    "correlation": corr.to_dict() if not corr.empty else None,
+                    "selected_symbols": selected_symbols,
+                }
 
             except Exception as exc:
                 st.error(f"Portfolio backtest failed: {exc}")
                 import traceback
                 with st.expander("Error details"):
                     st.code(traceback.format_exc())
+
+    # ── Results (persisted across reruns via session_state) ─────────
+    stored = st.session_state.get("pf_last_result")
+    if stored is None:
+        return
+
+    summary = stored["summary"]
+    equity_curve = stored["equity_curve"]
+    per_symbol_equity = stored["per_symbol_equity"]
+    corr_dict = stored["correlation"]
+    result_symbols = stored["selected_symbols"]
+
+    st.markdown("---")
+    st.markdown("### Results")
+
+    # Metric cards
+    m1, m2, m3, m4 = st.columns(4)
+    with m1:
+        st.metric("Portfolio Sharpe", f"{summary['portfolio_sharpe']:.2f}")
+    with m2:
+        st.metric("Max Drawdown", f"{summary['max_drawdown']*100:.1f}%")
+    with m3:
+        st.metric("Total Return", f"{summary['total_return']*100:.1f}%")
+    with m4:
+        total_trades = sum(summary["per_symbol_trades"].values())
+        st.metric("Total Trades", str(total_trades))
+
+    # Per-symbol breakdown
+    st.markdown("#### Per-Symbol Performance")
+    sym_rows = []
+    for sym in result_symbols:
+        sym_rows.append({
+            "Symbol": sym,
+            "Trades": summary["per_symbol_trades"].get(sym, 0),
+            "Sharpe": f"{summary['per_symbol_sharpe'].get(sym, 0):.2f}",
+        })
+    st.dataframe(pd.DataFrame(sym_rows), use_container_width=True)
+
+    # Portfolio equity curve
+    st.markdown("#### Equity Curve")
+    fig, ax = plt.subplots(figsize=(12, 5))
+    ax.plot(equity_curve, linewidth=2, label="Portfolio")
+    for sym in result_symbols:
+        eq = per_symbol_equity.get(sym, [])
+        if eq:
+            ax.plot(eq, alpha=0.5, linewidth=1, label=sym)
+    ax.set_xlabel("Bar")
+    ax.set_ylabel("Equity ($)")
+    ax.set_title("Portfolio Equity Curve")
+    ax.legend(loc="upper left")
+    ax.grid(True, alpha=0.3)
+    st.pyplot(fig)
+    plt.close(fig)
+
+    # Correlation matrix
+    if corr_dict is not None:
+        corr = pd.DataFrame(corr_dict)
+        st.markdown("#### Pairwise PnL Correlation")
+        st.dataframe(
+            corr.style.format("{:.3f}").background_gradient(cmap="RdYlGn_r", vmin=-1, vmax=1),
+            use_container_width=True,
+        )
+        avg_corr = corr.values[~(corr.values == 1.0)].mean() if len(corr) > 1 else 0
+        st.write(f"Average pairwise correlation: **{avg_corr:.3f}**")

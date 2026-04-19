@@ -1,11 +1,11 @@
 {
-  "_comment": "Edit this file to add/remove symbols. Client IDs: NVDA=10, MSFT=11, JPM=12, XOM=13, UNH=14, AMZN=15.",
-  "symbols": ["NVDA", "MSFT", "JPM", "XOM"],
+  "_comment": "Active portfolio. Client IDs: NVDA=10, JPM=11, GS=12, BAC=13, UNH=14, JNJ=15. MSFT/XOM dropped (no alpha).",
+  "symbols": ["NVDA", "JPM", "GS", "BAC", "UNH", "JNJ"],
   "frequency": "60min",
   "tsteps": 5,
   "base_client_id": 10,
   "allocation": {
     "max_gross_exposure_pct": 0.80,
-    "max_per_symbol_pct": 0.25
+    "max_per_symbol_pct": 0.20
   }
 }

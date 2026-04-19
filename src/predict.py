@@ -200,27 +200,15 @@ def build_prediction_context(
     Parameters
     ----------
     model_path_override, bias_path_override:
-        When provided, bypass the symbol registry and load the model directly
-        from these paths.  Used by ``robust_param_selection.py`` fold retrains
-        to avoid a race condition when multiple symbols run in parallel.
+        When provided, bypass the symbol registry lookup for the model path and
+        load the model directly from these paths.  Used by fold-retrain loops
+        (e.g. ``robust_param_selection.py``) to avoid a race condition when
+        multiple symbols run in parallel — each symbol passes its own freshly-
+        trained fold model path rather than writing it to the shared registry.
+        Architecture hparams are still read from the registry (read-only, safe).
     """
 
     script_dir = os.path.dirname(__file__)
-
-    # ── Fast path: caller already has a concrete model path ──────────
-    if model_path_override and os.path.exists(model_path_override):
-        registry_entry = get_best_model_entry(symbol, frequency, tsteps)
-        hps = (registry_entry.get("hparams") or {}) if registry_entry else {}
-        return _assemble_prediction_context(
-            frequency=frequency, tsteps=tsteps, symbol=symbol,
-            model_path=model_path_override,
-            bias_correction_path=bias_path_override,
-            features_to_use_trained=hps.get("features_to_use"),
-            lstm_units_trained=hps.get("lstm_units"),
-            n_lstm_layers_trained=hps.get("n_lstm_layers"),
-            optimizer_name_trained=hps.get("optimizer_name"),
-            loss_function_trained=hps.get("loss_function"),
-        )
 
     model_path = None
     bias_correction_path = None
@@ -230,19 +218,33 @@ def build_prediction_context(
     optimizer_name_trained = None
     loss_function_trained = None
 
-    # ── Primary: symbol-aware model registry ─────────────────────────
-    registry_entry = get_best_model_entry(symbol, frequency, tsteps)
-    if registry_entry:
-        candidate = registry_entry.get("model_path")
-        if candidate and os.path.exists(candidate):
-            model_path = candidate
-            bias_correction_path = registry_entry.get("bias_path")
+    if model_path_override and os.path.exists(model_path_override):
+        # Fast path: use the provided model/bias paths; read hparams from
+        # registry for architecture info (read-only — no race condition).
+        model_path = model_path_override
+        bias_correction_path = bias_path_override
+        registry_entry = get_best_model_entry(symbol, frequency, tsteps)
+        if registry_entry:
             hps = registry_entry.get("hparams") or {}
             features_to_use_trained = hps.get("features_to_use")
             lstm_units_trained = hps.get("lstm_units")
             n_lstm_layers_trained = hps.get("n_lstm_layers")
             optimizer_name_trained = hps.get("optimizer_name")
             loss_function_trained = hps.get("loss_function")
+    else:
+        # ── Primary: symbol-aware model registry ─────────────────────────
+        registry_entry = get_best_model_entry(symbol, frequency, tsteps)
+        if registry_entry:
+            candidate = registry_entry.get("model_path")
+            if candidate and os.path.exists(candidate):
+                model_path = candidate
+                bias_correction_path = registry_entry.get("bias_path")
+                hps = registry_entry.get("hparams") or {}
+                features_to_use_trained = hps.get("features_to_use")
+                lstm_units_trained = hps.get("lstm_units")
+                n_lstm_layers_trained = hps.get("n_lstm_layers")
+                optimizer_name_trained = hps.get("optimizer_name")
+                loss_function_trained = hps.get("loss_function")
 
     # ── Legacy fallback (best_hyperparameters.json — not symbol-aware) ──
     # Only attempt for NVDA backwards compatibility; the legacy files have
@@ -524,7 +526,7 @@ if __name__ == "__main__":
 
     # Ensure an active model and scaler params exist
     active_model_path = get_latest_best_model_path(target_frequency=FREQUENCY, tsteps=TSTEPS)
-    scaler_params_path = get_scaler_params_json_path()
+    scaler_params_path = get_scaler_params_json_path(FREQUENCY, "NVDA")
 
     if not active_model_path or not os.path.exists(scaler_params_path):
         print(f"Error: Active model for {FREQUENCY} (TSTEPS={TSTEPS}) or scaler parameters not found. Please train a model first.")

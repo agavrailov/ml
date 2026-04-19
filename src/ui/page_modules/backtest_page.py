@@ -388,6 +388,10 @@ def render_backtest_tab(
                 else:
                     payload = _cfg_lib.load_candidate(cid) or {}
                     strat = payload.get("strategy") if isinstance(payload.get("strategy"), dict) else {}
+                    if not strat:
+                        # Parameters stored flat at the top level (no "strategy" wrapper)
+                        _param_keys = {"risk_per_trade_pct", "reward_risk_ratio", "k_sigma_long", "k_sigma_short", "k_atr_long", "k_atr_short"}
+                        strat = {k: v for k, v in payload.items() if k in _param_keys}
 
                     # Update the parameter grid and persist it for the editor.
                     for k, v in strat.items():
@@ -448,6 +452,27 @@ def render_backtest_tab(
         if _bt_disabled_reason:
             st.warning(f"⚠️ {_bt_disabled_reason}")
 
+        # Detect usable prediction range from the CSV so the backtest isn't run
+        # on years of OHLC data where predictions are all NaN.
+        _pred_start_auto = None
+        if _pred_exists:
+            try:
+                _pdf = pd.read_csv(_pred_csv_path)
+                if "Time" in _pdf.columns and "predicted_price" in _pdf.columns:
+                    _pdf["Time"] = pd.to_datetime(_pdf["Time"])
+                    _valid_preds = _pdf.dropna(subset=["Time", "predicted_price"])
+                    if not _valid_preds.empty:
+                        _pred_start_auto = _valid_preds["Time"].iloc[0].strftime("%Y-%m-%d")
+            except Exception:
+                pass
+            if _pred_start_auto and not start_date:
+                st.info(
+                    f"Predictions CSV covers from **{_pred_start_auto}**. "
+                    f"Backtest will be scoped to that date (set Start above to override)."
+                )
+
+        _effective_start = start_date or _pred_start_auto
+
         if st.button(
             "▸ Run Backtest",
             type="primary",
@@ -459,8 +484,9 @@ def render_backtest_tab(
             try:
                 with st.spinner("Running backtest..."):
                     equity_df, trades_df, metrics = run_backtest(
+                        symbol=selected_symbol,
                         frequency=freq,
-                        start_date=start_date or None,
+                        start_date=_effective_start,
                         end_date=end_date or None,
                         risk_per_trade_pct=risk_pct_val,
                         reward_risk_ratio=rr_val,
@@ -477,7 +503,7 @@ def render_backtest_tab(
                     "inputs": {
                         "symbol": selected_symbol,
                         "frequency": freq,
-                        "start_date": start_date or None,
+                        "start_date": _effective_start,
                         "end_date": end_date or None,
                         "trade_side": trade_side,
                         "enable_longs": enable_longs_flag,

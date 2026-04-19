@@ -324,20 +324,12 @@ async def fetch_historical_data(
     except Exception as e:  # pragma: no cover - defensive
         print(f"An error occurred: {e}")
     finally:
-        if ib and hasattr(ib, "disconnect") and callable(ib.disconnect):
-            try:
-                await ib.disconnect()
-                print("Disconnected from IB TWS/Gateway.")
-            except TypeError:
-                print(
-                    "Warning: TypeError encountered during IB TWS/Gateway "
-                    "disconnection. Connection might already be closed."
-                )
-        else:  # pragma: no cover - defensive
-            print(
-                "Could not disconnect from IB TWS/Gateway (ib object or "
-                "disconnect method not available)."
-            )
+        # ib.disconnect() is synchronous — never await it.
+        # Awaiting a sync method returns None → TypeError → swallowed silently,
+        # leaving the TWS client-ID slot permanently occupied.
+        if ib and ib.isConnected():
+            ib.disconnect()
+            print("Disconnected from IB TWS/Gateway.")
 
 
 def trigger_historical_ingestion(

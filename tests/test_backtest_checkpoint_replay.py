@@ -10,7 +10,7 @@ from src import backtest as backtest_mod
 from src.data import load_hourly_ohlc
 
 
-def test_model_checkpoint_csv_replay_matches_model_mode(tmp_path: Path) -> None:
+def test_model_checkpoint_csv_replay_matches_model_mode(tmp_path: Path, monkeypatch) -> None:
     """Replaying the model prediction checkpoint via CSV-mode should match
     model-mode when using the same OHLC slice.
 
@@ -21,17 +21,23 @@ def test_model_checkpoint_csv_replay_matches_model_mode(tmp_path: Path) -> None:
 
     freq = "60min"
 
+    # Redirect checkpoint writes to an isolated tmp directory so this test has
+    # no dependency on any pre-existing files in backtests/.
+    monkeypatch.setattr(backtest_mod, "PREDICTIONS_DIR", str(tmp_path))
+
     # Load full hourly OHLC data and restrict to a manageable tail slice to
     # keep the test runtime reasonable while still exercising realistic data.
     data_full = load_hourly_ohlc(freq)
     assert not data_full.empty
     data = data_full.tail(2000).reset_index(drop=True)
 
-    # Ensure we do not accidentally reuse an old checkpoint from a different
-    # slice. The backtest code will recreate it on the first model-mode run.
-    checkpoint_path = Path("backtests") / f"nvda_{freq}_model_predictions_checkpoint.csv"
-    if checkpoint_path.exists():
-        checkpoint_path.unlink()
+    # Drop duplicate Time rows: model-mode uses positional indexing while
+    # CSV-mode uses a Time-based merge, so duplicate timestamps produce
+    # irreconcilable divergence between the two replay paths.
+    if "Time" in data.columns:
+        data = data.drop_duplicates(subset=["Time"]).reset_index(drop=True)
+
+    checkpoint_path = tmp_path / f"nvda_{freq}_model_predictions_checkpoint.csv"
 
     # 1) Run model-mode backtest, which will also write the checkpoint with
     # per-bar predictions and model_error_sigma to disk.

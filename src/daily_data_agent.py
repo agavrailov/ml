@@ -152,13 +152,13 @@ async def _backfill_gaps_from_tws(gaps: list[dict], symbol: str) -> None:
         )
 
 
-def smart_fill_gaps(symbol: str) -> None:
+def smart_fill_gaps(symbol: str, skip_tws: bool = False) -> None:
     """Apply TWS-based backfill + forward-fill gap handling for *symbol*'s raw CSV.
 
     Strategy:
         1. Run `analyze_gaps.py` to detect long weekday gaps.
         2. For each gap, attempt to backfill from TWS using historical
-           ingestion with `strict_range=True`.
+           ingestion with `strict_range=True` (skipped when skip_tws=True).
         3. Re-run gap analysis; any remaining gaps are assumed to be genuine
            upstream holes and are filled via `fill_gaps` (forward-fill).
     """
@@ -178,12 +178,15 @@ def smart_fill_gaps(symbol: str) -> None:
         print(f"[agent] Raw CSV not found at {raw_csv} after gap analysis; skipping.")
         return
 
-    # 2) Attempt TWS backfill for identified gaps.
-    try:
-        asyncio.run(_backfill_gaps_from_tws(gaps, symbol))
-    except RuntimeError as e:
-        # In case we're already inside an event loop (unlikely here), just log.
-        print(f"[agent] Warning: could not run TWS backfill coroutine: {e}")
+    # 2) Attempt TWS backfill for identified gaps (skip when offline / skip_tws).
+    if skip_tws:
+        print(f"[agent] Skipping TWS gap backfill for {symbol} (skip_tws=True).")
+    else:
+        try:
+            asyncio.run(_backfill_gaps_from_tws(gaps, symbol))
+        except RuntimeError as e:
+            # In case we're already inside an event loop (unlikely here), just log.
+            print(f"[agent] Warning: could not run TWS backfill coroutine: {e}")
 
     # 3) Re-run gap analysis to see what remains after TWS backfill.
     remaining_gaps = run_gap_analysis(raw_csv)
@@ -275,7 +278,7 @@ def run_daily_pipeline(
 
         # 3) Analyze and fill gaps
         print(f"[agent] Analyzing and filling gaps for {sym}...")
-        smart_fill_gaps(sym)
+        smart_fill_gaps(sym, skip_tws=skip_ingestion)
 
         # 3b) Raw data quality snapshot
         if os.path.exists(raw_csv):

@@ -1,0 +1,232 @@
+Error 326, reqId -1: Unable to connect as the client id is already in use. Retry with a unique client id.
+Peer closed connection. clientId 25 already in use?
+API connection failed: TimeoutError()
+Error 326, reqId -1: Unable to connect as the client id is already in use. Retry with a unique client id.
+Peer closed connection. clientId 25 already in use?
+API connection failed: TimeoutError()
+Error 326, reqId -1: Unable to connect as the client id is already in use. Retry with a unique client id.
+Peer closed connection. clientId 25 already in use?
+API connection failed: TimeoutError()
+Error 326, reqId -1: Unable to connect as the client id is already in use. Retry with a unique client id.
+Peer closed connection. clientId 25 already in use?
+API connection failed: TimeoutError()
+Error 326, reqId -1: Unable to connect as the client id is already in use. Retry with a unique client id.
+Peer closed connection. clientId 25 already in use?
+API connection failed: TimeoutError()
+Error 326, reqId -1: Unable to connect as the client id is already in use. Retry with a unique client id.
+Peer closed connection. clientId 25 already in use?
+API connection failed: TimeoutError()
+Error 326, reqId -1: Unable to connect as the client id is already in use. Retry with a unique client id.
+Peer closed connection. clientId 25 already in use?
+API connection failed: TimeoutError()
+Error 326, reqId -1: Unable to connect as the client id is already in use. Retry with a unique client id.
+Peer closed connection. clientId 25 already in use?
+API connection failed: TimeoutError()
+Error 326, reqId -1: Unable to connect as the client id is already in use. Retry with a unique client id.
+Peer closed connection. clientId 25 already in use?
+API connection failed: TimeoutError()
+Error 326, reqId -1: Unable to connect as the client id is already in use. Retry with a unique client id.
+Peer closed connection. clientId 25 already in use?
+API connection failed: TimeoutError()
+Error 326, reqId -1: Unable to connect as the client id is already in use. Retry with a unique client id.
+Peer closed connection. clientId 25 already in use?
+API connection failed: TimeoutError()
+Error 326, reqId -1: Unable to connect as the client id is already in use. Retry with a unique client id.
+Peer closed connection. clientId 25 already in use?
+API connection failed: TimeoutError()
+Error 326, reqId -1: Unable to connect as the client id is already in use. Retry with a unique client id.
+Peer closed connection. clientId 25 already in use?
+API connection failed: TimeoutError()
+Error 326, reqId -1: Unable to connect as the client id is already in use. Retry with a unique client id.
+Peer closed connection. clientId 25 already in use?
+API connection failed: TimeoutError()
+Error 326, reqId -1: Unable to connect as the client id is already in use. Retry with a unique client id.
+Peer closed connection. clientId 25 already in use?
+API connection failed: TimeoutError()
+Error 326, reqId -1: Unable to connect as the client id is already in use. Retry with a unique client id.
+Peer closed connection. clientId 25 already in use?
+API connection failed: TimeoutError()
+Error 326, reqId -1: Unable to connect as the client id is already in use. Retry with a unique client id.
+Peer closed connection. clientId 25 already in use?
+API connection failed: TimeoutError()
+Error 326, reqId -1: Unable to connect as the client id is already in use. Retry with a unique client id.
+Peer closed connection. clientId 25 already in use?
+API connection failed: TimeoutError()
+Error 326, reqId -1: Unable to connect as the client id is already in use. Retry with a unique client id.
+Peer closed connection. clientId 25 already in use?
+API connection failed: TimeoutError()
+Error 326, reqId -1: Unable to connect as the client id is already in use. Retry with a unique client id.
+Peer closed connection. clientId 25 already in use?
+API connection failed: TimeoutError()
+Error 326, reqId -1: Unable to connect as the client id is already in use. Retry with a unique client id.
+Peer closed connection. clientId 25 already in use?
+API connection failed: TimeoutError()
+Error 326, reqId -1: Unable to connect as the client id is already in use. Retry with a unique client id.
+Peer closed connection. clientId 25 already in use?
+API connection failed: TimeoutError()
+Error 326, reqId -1: Unable to connect as the client id is already in use. Retry with a unique client id.
+Peer closed connection. clientId 25 already in use?
+API connection failed: TimeoutError()
+Error 326, reqId -1: Unable to connect as the client id is already in use. Retry with a unique client id.
+Peer closed connection. clientId 25 already in use?
+API connection failed: TimeoutError()
+Error 326, reqId -1: Unable to connect as the client id is already in use. Retry with a unique client id.
+Peer closed connection. clientId 25 already in use?
+API connection failed: TimeoutError()
+Error 326, reqId -1: Unable to connect as the client id is already in use. Retry with a unique client id.
+Peer closed connection. clientId 25 already in use?
+API connection failed: TimeoutError()
+Error 326, reqId -1: Unable to connect as the client id is already in use. Retry with a unique client id.
+Peer closed connection. clientId 25 already in use?
+API connection failed: TimeoutError()
+[agent] --- Daily Data Pipeline Agent start | symbols=['UNH'] ---
+[agent] Starting ingestion for UNH from 2024-01-01 00:00:00 to 2026-04-17 20:20:00.751762 into C:\Users\Anton\SRC\my\ml_lstm\data\raw\unh_minute.csv
+An error occurred: 
+Warning: TypeError encountered during IB TWS/Gateway disconnection. Connection might already be closed.
+[agent] Cleaning raw minute data for UNH...
+Cleaning raw minute data at C:\Users\Anton\SRC\my\ml_lstm\data\raw\unh_minute.csv...
+Removed 6228 duplicate rows.
+Raw minute data cleaned and saved to C:\Users\Anton\SRC\my\ml_lstm\data\raw\unh_minute.csv
+[agent] Analyzing and filling gaps for UNH...
+[agent] Running gap analysis: C:\Users\Anton\AppData\Local\Programs\Python\Python311\python.exe C:\Users\Anton\SRC\my\ml_lstm\src\analyze_gaps.py C:\Users\Anton\SRC\my\ml_lstm\data\raw\unh_minute.csv C:\Users\Anton\SRC\my\ml_lstm\data\processed\missing_trading_days.json
+[agent] analyze_gaps.py stdout:
+Analyzing potentially missing trading days in C:\Users\Anton\SRC\my\ml_lstm\data\raw\unh_minute.csv (excluding weekends and typical overnight closures)...
+Found 26 potentially missing trading days (gaps > 9 hours during weekdays). Details saved to C:\Users\Anton\SRC\my\ml_lstm\data\processed\missing_trading_days.json
+
+Note: This analysis excludes weekends and filters for gaps longer than 9 hours during weekdays.
+It does NOT explicitly exclude official holidays, which might appear as 'missing trading days'.
+A dynamic holiday calendar would be required for precise holiday exclusion.
+
+[agent] Loaded 26 gaps from C:\Users\Anton\SRC\my\ml_lstm\data\processed\missing_trading_days.json
+[agent] Attempting TWS backfill for 26 gaps (UNH)...
+[agent] TWS backfill for gap from 2026-02-24 19:55:00 to 2026-02-25 11:00:00 (duration 0 days 15:05:00).
+An error occurred: 
+Warning: TypeError encountered during IB TWS/Gateway disconnection. Connection might already be closed.
+[agent] TWS backfill for gap from 2026-02-25 19:55:00 to 2026-02-26 11:06:00 (duration 0 days 15:11:00).
+An error occurred: 
+Warning: TypeError encountered during IB TWS/Gateway disconnection. Connection might already be closed.
+[agent] TWS backfill for gap from 2026-02-26 19:55:00 to 2026-02-27 11:05:00 (duration 0 days 15:10:00).
+An error occurred: 
+Warning: TypeError encountered during IB TWS/Gateway disconnection. Connection might already be closed.
+[agent] TWS backfill for gap from 2026-03-04 19:55:00 to 2026-03-05 11:00:00 (duration 0 days 15:05:00).
+An error occurred: 
+Warning: TypeError encountered during IB TWS/Gateway disconnection. Connection might already be closed.
+[agent] TWS backfill for gap from 2026-03-05 19:55:00 to 2026-03-06 11:17:00 (duration 0 days 15:22:00).
+An error occurred: 
+Warning: TypeError encountered during IB TWS/Gateway disconnection. Connection might already be closed.
+[agent] TWS backfill for gap from 2026-03-10 19:55:00 to 2026-03-11 10:00:00 (duration 0 days 14:05:00).
+An error occurred: 
+Warning: TypeError encountered during IB TWS/Gateway disconnection. Connection might already be closed.
+[agent] TWS backfill for gap from 2026-03-11 19:55:00 to 2026-03-12 10:22:00 (duration 0 days 14:27:00).
+An error occurred: 
+Warning: TypeError encountered during IB TWS/Gateway disconnection. Connection might already be closed.
+[agent] TWS backfill for gap from 2026-03-16 19:55:00 to 2026-03-17 10:36:00 (duration 0 days 14:41:00).
+An error occurred: 
+Warning: TypeError encountered during IB TWS/Gateway disconnection. Connection might already be closed.
+[agent] TWS backfill for gap from 2026-03-17 19:55:00 to 2026-03-18 10:00:00 (duration 0 days 14:05:00).
+An error occurred: 
+Warning: TypeError encountered during IB TWS/Gateway disconnection. Connection might already be closed.
+[agent] TWS backfill for gap from 2026-03-18 19:55:00 to 2026-03-19 10:19:00 (duration 0 days 14:24:00).
+An error occurred: 
+Warning: TypeError encountered during IB TWS/Gateway disconnection. Connection might already be closed.
+[agent] TWS backfill for gap from 2026-03-19 19:55:00 to 2026-03-20 10:00:00 (duration 0 days 14:05:00).
+An error occurred: 
+Warning: TypeError encountered during IB TWS/Gateway disconnection. Connection might already be closed.
+[agent] TWS backfill for gap from 2026-03-23 19:55:00 to 2026-03-24 10:00:00 (duration 0 days 14:05:00).
+An error occurred: 
+Warning: TypeError encountered during IB TWS/Gateway disconnection. Connection might already be closed.
+[agent] TWS backfill for gap from 2026-03-24 19:55:00 to 2026-03-25 10:00:00 (duration 0 days 14:05:00).
+An error occurred: 
+Warning: TypeError encountered during IB TWS/Gateway disconnection. Connection might already be closed.
+[agent] TWS backfill for gap from 2026-03-25 19:55:00 to 2026-03-26 10:02:00 (duration 0 days 14:07:00).
+An error occurred: 
+Warning: TypeError encountered during IB TWS/Gateway disconnection. Connection might already be closed.
+[agent] TWS backfill for gap from 2026-03-26 19:55:00 to 2026-03-27 10:03:00 (duration 0 days 14:08:00).
+An error occurred: 
+Warning: TypeError encountered during IB TWS/Gateway disconnection. Connection might already be closed.
+[agent] TWS backfill for gap from 2026-03-30 19:55:00 to 2026-03-31 11:00:00 (duration 0 days 15:05:00).
+An error occurred: 
+Warning: TypeError encountered during IB TWS/Gateway disconnection. Connection might already be closed.
+[agent] TWS backfill for gap from 2026-03-31 19:55:00 to 2026-04-01 11:00:00 (duration 0 days 15:05:00).
+An error occurred: 
+Warning: TypeError encountered during IB TWS/Gateway disconnection. Connection might already be closed.
+[agent] TWS backfill for gap from 2026-04-01 19:55:00 to 2026-04-02 11:01:00 (duration 0 days 15:06:00).
+An error occurred: 
+Warning: TypeError encountered during IB TWS/Gateway disconnection. Connection might already be closed.
+[agent] TWS backfill for gap from 2026-04-06 19:55:00 to 2026-04-07 11:00:00 (duration 0 days 15:05:00).
+An error occurred: 
+Warning: TypeError encountered during IB TWS/Gateway disconnection. Connection might already be closed.
+[agent] TWS backfill for gap from 2026-04-07 19:55:00 to 2026-04-08 11:00:00 (duration 0 days 15:05:00).
+An error occurred: 
+Warning: TypeError encountered during IB TWS/Gateway disconnection. Connection might already be closed.
+[agent] TWS backfill for gap from 2026-04-08 19:55:00 to 2026-04-09 11:00:00 (duration 0 days 15:05:00).
+An error occurred: 
+Warning: TypeError encountered during IB TWS/Gateway disconnection. Connection might already be closed.
+[agent] TWS backfill for gap from 2026-04-09 19:55:00 to 2026-04-10 11:00:00 (duration 0 days 15:05:00).
+An error occurred: 
+Warning: TypeError encountered during IB TWS/Gateway disconnection. Connection might already be closed.
+[agent] TWS backfill for gap from 2026-04-13 20:17:00 to 2026-04-14 11:00:00 (duration 0 days 14:43:00).
+An error occurred: 
+Warning: TypeError encountered during IB TWS/Gateway disconnection. Connection might already be closed.
+[agent] TWS backfill for gap from 2026-04-14 20:17:00 to 2026-04-15 11:00:00 (duration 0 days 14:43:00).
+An error occurred: 
+Warning: TypeError encountered during IB TWS/Gateway disconnection. Connection might already be closed.
+[agent] TWS backfill for gap from 2026-04-15 20:17:00 to 2026-04-16 11:00:00 (duration 0 days 14:43:00).
+An error occurred: 
+Warning: TypeError encountered during IB TWS/Gateway disconnection. Connection might already be closed.
+[agent] TWS backfill for gap from 2026-04-16 20:17:00 to 2026-04-17 11:00:00 (duration 0 days 14:43:00).
+An error occurred: 
+Warning: TypeError encountered during IB TWS/Gateway disconnection. Connection might already be closed.
+[agent] Running gap analysis: C:\Users\Anton\AppData\Local\Programs\Python\Python311\python.exe C:\Users\Anton\SRC\my\ml_lstm\src\analyze_gaps.py C:\Users\Anton\SRC\my\ml_lstm\data\raw\unh_minute.csv C:\Users\Anton\SRC\my\ml_lstm\data\processed\missing_trading_days.json
+[agent] analyze_gaps.py stdout:
+Analyzing potentially missing trading days in C:\Users\Anton\SRC\my\ml_lstm\data\raw\unh_minute.csv (excluding weekends and typical overnight closures)...
+Found 26 potentially missing trading days (gaps > 9 hours during weekdays). Details saved to C:\Users\Anton\SRC\my\ml_lstm\data\processed\missing_trading_days.json
+
+Note: This analysis excludes weekends and filters for gaps longer than 9 hours during weekdays.
+It does NOT explicitly exclude official holidays, which might appear as 'missing trading days'.
+A dynamic holiday calendar would be required for precise holiday exclusion.
+
+[agent] Loaded 26 gaps from C:\Users\Anton\SRC\my\ml_lstm\data\processed\missing_trading_days.json
+[agent] Gap summary: total_detected=26, fixed_by_tws=0, forward_filled=26
+Filling gap from 2026-02-24 19:55:00 to 2026-02-25 11:00:00 (duration 0 days 15:05:00) via 1-minute forward fill.
+Filling gap from 2026-02-25 19:55:00 to 2026-02-26 11:06:00 (duration 0 days 15:11:00) via 1-minute forward fill.
+Filling gap from 2026-02-26 19:55:00 to 2026-02-27 11:05:00 (duration 0 days 15:10:00) via 1-minute forward fill.
+Filling gap from 2026-03-04 19:55:00 to 2026-03-05 11:00:00 (duration 0 days 15:05:00) via 1-minute forward fill.
+Filling gap from 2026-03-05 19:55:00 to 2026-03-06 11:17:00 (duration 0 days 15:22:00) via 1-minute forward fill.
+Filling gap from 2026-03-10 19:55:00 to 2026-03-11 10:00:00 (duration 0 days 14:05:00) via 1-minute forward fill.
+Filling gap from 2026-03-11 19:55:00 to 2026-03-12 10:22:00 (duration 0 days 14:27:00) via 1-minute forward fill.
+Filling gap from 2026-03-16 19:55:00 to 2026-03-17 10:36:00 (duration 0 days 14:41:00) via 1-minute forward fill.
+Filling gap from 2026-03-17 19:55:00 to 2026-03-18 10:00:00 (duration 0 days 14:05:00) via 1-minute forward fill.
+Filling gap from 2026-03-18 19:55:00 to 2026-03-19 10:19:00 (duration 0 days 14:24:00) via 1-minute forward fill.
+Filling gap from 2026-03-19 19:55:00 to 2026-03-20 10:00:00 (duration 0 days 14:05:00) via 1-minute forward fill.
+Filling gap from 2026-03-23 19:55:00 to 2026-03-24 10:00:00 (duration 0 days 14:05:00) via 1-minute forward fill.
+Filling gap from 2026-03-24 19:55:00 to 2026-03-25 10:00:00 (duration 0 days 14:05:00) via 1-minute forward fill.
+Filling gap from 2026-03-25 19:55:00 to 2026-03-26 10:02:00 (duration 0 days 14:07:00) via 1-minute forward fill.
+Filling gap from 2026-03-26 19:55:00 to 2026-03-27 10:03:00 (duration 0 days 14:08:00) via 1-minute forward fill.
+Filling gap from 2026-03-30 19:55:00 to 2026-03-31 11:00:00 (duration 0 days 15:05:00) via 1-minute forward fill.
+Filling gap from 2026-03-31 19:55:00 to 2026-04-01 11:00:00 (duration 0 days 15:05:00) via 1-minute forward fill.
+Filling gap from 2026-04-01 19:55:00 to 2026-04-02 11:01:00 (duration 0 days 15:06:00) via 1-minute forward fill.
+Filling gap from 2026-04-06 19:55:00 to 2026-04-07 11:00:00 (duration 0 days 15:05:00) via 1-minute forward fill.
+Filling gap from 2026-04-07 19:55:00 to 2026-04-08 11:00:00 (duration 0 days 15:05:00) via 1-minute forward fill.
+Filling gap from 2026-04-08 19:55:00 to 2026-04-09 11:00:00 (duration 0 days 15:05:00) via 1-minute forward fill.
+Filling gap from 2026-04-09 19:55:00 to 2026-04-10 11:00:00 (duration 0 days 15:05:00) via 1-minute forward fill.
+Filling gap from 2026-04-13 20:17:00 to 2026-04-14 11:00:00 (duration 0 days 14:43:00) via 1-minute forward fill.
+Filling gap from 2026-04-14 20:17:00 to 2026-04-15 11:00:00 (duration 0 days 14:43:00) via 1-minute forward fill.
+Filling gap from 2026-04-15 20:17:00 to 2026-04-16 11:00:00 (duration 0 days 14:43:00) via 1-minute forward fill.
+Filling gap from 2026-04-16 20:17:00 to 2026-04-17 11:00:00 (duration 0 days 14:43:00) via 1-minute forward fill.
+[agent] Saved gap-filled raw data back to C:\Users\Anton\SRC\my\ml_lstm\data\raw\unh_minute.csv.
+[agent] Running raw minute data quality checks for UNH...
+[agent] Data quality snapshot | symbol=UNH | score=90.8 / 100 | pass=10 warn=3 fail=0
+[agent] Processing curated-minute snapshot for UNH...
+Cleaning raw minute data at C:\Users\Anton\SRC\my\ml_lstm\data\raw\unh_minute.csv...
+Raw minute data cleaned and saved to C:\Users\Anton\SRC\my\ml_lstm\data\raw\unh_minute.csv
+Curated minute data written to C:\Users\Anton\SRC\my\ml_lstm\data\processed\unh_minute_curated.csv
+[agent] Converting curated minute data to 60min and saving to processed dir.
+Converting minute data from C:\Users\Anton\SRC\my\ml_lstm\data\processed\unh_minute_curated.csv to 60min frequency.
+Output will be saved to C:\Users\Anton\SRC\my\ml_lstm\data\processed\unh_60min.csv
+Initial DataFrame shape after reading CSV: (46810, 4)
+DataFrame shape after resampling to 60min: (1282, 4)
+DataFrame shape after dropping NaNs: (781, 4)
+Successfully converted minute data to 60min and saved to C:\Users\Anton\SRC\my\ml_lstm\data\processed\unh_60min.csv
+[agent] Prepared Keras input data with features: ['Open', 'High', 'Low', 'Close', 'SMA_7', 'SMA_21', 'RSI']
+[agent] --- Daily Data Pipeline Agent completed ---

@@ -33,12 +33,13 @@ import numpy as np
 import pandas as pd
 
 from src import config as config_mod
-from src.backtest import _make_model_prediction_provider
+from src.backtest import _make_model_prediction_provider, PREDICTIONS_DIR
 
 
 def generate_predictions_for_csv(
     frequency: str,
     output_path: str,
+    symbol: str = "NVDA",
     max_rows: Optional[int] = None,
 ) -> None:
     """Generate per-bar predictions for the given frequency and write to CSV.
@@ -48,7 +49,7 @@ def generate_predictions_for_csv(
     on-disk checkpoint to avoid slow per-row pandas access on large datasets.
     """
 
-    source_path = config_mod.get_hourly_data_csv_path(frequency)
+    source_path = config_mod.get_hourly_data_csv_path(frequency, symbol=symbol)
     if not os.path.exists(source_path):
         raise FileNotFoundError(
             f"Source OHLC CSV not found at {source_path}. "
@@ -66,7 +67,7 @@ def generate_predictions_for_csv(
     else:
         df = df.reset_index(drop=True)
 
-    print(f"Generating predictions for {len(df)} bars from {source_path}...")
+    print(f"[{symbol}] Generating predictions for {len(df)} bars from {source_path}...")
 
     # Ensure Time is typed as datetime for alignment.
     df["Time"] = pd.to_datetime(df["Time"])
@@ -74,11 +75,11 @@ def generate_predictions_for_csv(
     # Ensure the model checkpoint exists and is aligned to this exact dataset.
     # `_make_model_prediction_provider` will either load and reuse an aligned
     # checkpoint, or compute predictions and write a new checkpoint.
-    _make_model_prediction_provider(df.copy(), frequency=frequency)
+    _make_model_prediction_provider(df.copy(), frequency=frequency, symbol=symbol)
 
     checkpoint_path = os.path.join(
-        "backtests",
-        f"nvda_{frequency}_model_predictions_checkpoint.csv",
+        PREDICTIONS_DIR,
+        f"{symbol.lower()}_{frequency}_model_predictions_checkpoint.csv",
     )
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(
@@ -90,6 +91,17 @@ def generate_predictions_for_csv(
     if "Time" not in ckpt.columns or "predicted_price" not in ckpt.columns:
         raise ValueError(
             f"Checkpoint {checkpoint_path} missing required columns. Found columns: {list(ckpt.columns)}"
+        )
+
+    # Guard: ensure the checkpoint covers the full requested OHLC period.
+    # A partial checkpoint (e.g. from a date-filtered backtest run) would
+    # silently produce NaN predictions for the uncovered bars.
+    if len(ckpt) < len(df):
+        raise RuntimeError(
+            f"Checkpoint at {checkpoint_path} has only {len(ckpt)} rows but OHLC data "
+            f"has {len(df)} rows.  The checkpoint was likely written by a date-filtered "
+            "backtest run and does not cover the full history.  Delete the checkpoint "
+            "file and re-run this script to regenerate it from scratch."
         )
 
     ckpt["Time"] = pd.to_datetime(ckpt["Time"], errors="coerce")
@@ -119,7 +131,13 @@ def generate_predictions_for_csv(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate per-bar predictions CSV for NVDA.")
+    parser = argparse.ArgumentParser(description="Generate per-bar predictions CSV for a symbol.")
+    parser.add_argument(
+        "--symbol",
+        type=str,
+        default="NVDA",
+        help="Symbol to generate predictions for (e.g. NVDA, JPM, GS).",
+    )
     parser.add_argument(
         "--frequency",
         type=str,
@@ -143,6 +161,7 @@ def main() -> None:
     generate_predictions_for_csv(
         frequency=args.frequency,
         output_path=args.output,
+        symbol=args.symbol,
         max_rows=args.max_rows,
     )
 

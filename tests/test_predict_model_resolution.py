@@ -48,6 +48,7 @@ def test_build_prediction_context_falls_back_to_registry_latest(monkeypatch, tmp
     _write_scaler_params(str(scaler_path), features=predict.FEATURES_TO_USE_OPTIONS[0])
 
     monkeypatch.setattr(predict, "MODEL_REGISTRY_DIR", str(reg))
+    monkeypatch.setattr(predict, "get_best_model_entry", lambda *_a, **_kw: None)
     monkeypatch.setattr(predict, "get_latest_best_model_path", lambda **_: (None, None, None, None, None))
     monkeypatch.setattr(predict, "get_active_model_path", lambda **_: None)
     monkeypatch.setattr(predict, "get_scaler_params_json_path", lambda _frequency, _symbol=None: str(scaler_path))
@@ -143,6 +144,7 @@ def test_build_prediction_context_raises_when_no_model_found(monkeypatch, tmp_pa
     _write_scaler_params(str(scaler_path), features=predict.FEATURES_TO_USE_OPTIONS[0])
 
     monkeypatch.setattr(predict, "MODEL_REGISTRY_DIR", str(reg))
+    monkeypatch.setattr(predict, "get_best_model_entry", lambda *_a, **_kw: None)
     monkeypatch.setattr(predict, "get_latest_best_model_path", lambda **_: (None, None, None, None, None))
     monkeypatch.setattr(predict, "get_active_model_path", lambda **_: None)
     monkeypatch.setattr(predict, "get_scaler_params_json_path", lambda _frequency, _symbol=None: str(scaler_path))
