@@ -69,9 +69,13 @@ def apply_rolling_bias_and_amplitude_correction(
         preds_win = preds[start : i + 1]
         acts_win = acts[start : i + 1]
 
-        # Rolling mean residual on the recent window.
+        # Rolling mean residual on the recent window. Use ``nanmean`` so that
+        # sparse NaNs in the input (e.g. warmup bars where a prediction is not
+        # yet defined) do not poison the entire rolling window via ordinary
+        # ``mean``'s NaN propagation.
         residuals_win = acts_win - preds_win
-        local_mean_resid = float(np.mean(residuals_win)) if residuals_win.size > 0 else 0.0
+        finite_resid = residuals_win[np.isfinite(residuals_win)]
+        local_mean_resid = float(np.mean(finite_resid)) if finite_resid.size > 0 else 0.0
 
         # During warmup (fewer than ``window`` samples), blend the global
         # mean residual with the local estimate so that the layer is
@@ -86,9 +90,13 @@ def apply_rolling_bias_and_amplitude_correction(
         # preserving the local mean of predictions. When amplitude
         # correction is disabled we fall back to amp = 1.0 so only the bias
         # term is applied.
+        # Use NaN-safe reductions for the window stats for the same reason as
+        # above: NaNs in the warmup region must not corrupt the whole window.
+        finite_preds = preds_win[np.isfinite(preds_win)]
+        finite_acts = acts_win[np.isfinite(acts_win)]
         if enable_amplitude:
-            std_act = float(np.std(acts_win))
-            std_pred = float(np.std(preds_win))
+            std_act = float(np.std(finite_acts)) if finite_acts.size > 0 else 0.0
+            std_pred = float(np.std(finite_preds)) if finite_preds.size > 0 else 0.0
             if std_pred > 0.0:
                 amp = std_act / std_pred
             else:
@@ -98,8 +106,9 @@ def apply_rolling_bias_and_amplitude_correction(
         else:
             amp = 1.0
 
-        pred_centered = preds[i] - float(np.mean(preds_win))
-        pred_amp_corrected = pred_centered * amp + float(np.mean(preds_win))
+        mean_pred_win = float(np.mean(finite_preds)) if finite_preds.size > 0 else float(preds[i])
+        pred_centered = preds[i] - mean_pred_win
+        pred_amp_corrected = pred_centered * amp + mean_pred_win
 
         corrected[i] = pred_amp_corrected + mean_resid
 

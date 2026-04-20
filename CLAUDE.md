@@ -104,3 +104,38 @@ IBKR (TWS/Gateway)
 - The job system (`src/jobs/`) is filesystem-backed with no database — job state lives in `runs/`. This is intentional for simplicity.
 - Stateful LSTM requires batch size consistency between training and inference; see `src/model.py` and `src/predict.py` for how state is reset per sequence.
 - Walk-forward validation (`scripts/run_walkforward_backtest.py`) is the primary validation strategy — not a simple train/test split.
+
+## Failure Learning Protocol — follow whenever you fix a pipeline bug
+
+When you fix **any** bug in the data pipeline (test failure, ratio warning,
+NaN propagation, misalignment, checkpoint drift):
+
+1. **Fix the root cause first** — don't update docs until the fix is verified.
+2. **Update `docs/debugging-heuristics.md`** — add the new failure to the
+   appropriate Pattern section (or create a new one). Include: what triggered
+   it, what it looked like in the output, the fix. Use the existing entry
+   format (code snippet + narrative).
+3. **Write a regression test** — name it `test_<module>_does_not_<bad_thing>`.
+   The test MUST fail on the buggy code and pass on the fix. Add it to the
+   most relevant test file in `tests/`.
+4. **Run the full suite** — `pytest -q` — confirm no regressions and that the
+   new test passes.
+
+Claude Code automatically tracks failures in `.claude/state/pipeline_failures.jsonl`
+and will remind you at session start if there are unresolved recent issues.
+A failure is "resolved" once the related tests are green and the pattern has
+been added to `docs/debugging-heuristics.md`.
+
+## Debugging Heuristics — read before touching the data pipeline
+
+**Before** investigating "the model is bad" or tuning strategy thresholds,
+read [`docs/debugging-heuristics.md`](docs/debugging-heuristics.md). It
+encodes the four known corruption patterns (in-place mutation aliasing,
+positional indexing on reduced frames, NaN propagation, missing checkpoint
+provenance) and six heuristics from the 2026-04 flat-equity bug.
+
+Single most useful rule: **pred/Open ratios outside `[0.99, 1.01]` on a
+next-bar log-return model are almost always a pipeline bug, not a model
+bug.** The `_log_pred_ratio_summary` guardrail in `src/backtest.py` prints
+these on every model-mode run — if you see a WARNING line, stop and fix
+the pipeline before anything else.

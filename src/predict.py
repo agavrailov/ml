@@ -186,6 +186,11 @@ class PredictionContext:
     tsteps: int
     bias_correction_mean_residual: float = 0.0
     model_rmse_logret: float = 0.0
+    # Provenance: on-disk paths of the artifacts loaded into this context,
+    # so downstream code (checkpoint sidecar, UI provenance panel) can record
+    # them without re-deriving the resolution logic.
+    model_path: Optional[str] = None
+    scaler_path: Optional[str] = None
 
 
 def build_prediction_context(
@@ -416,6 +421,8 @@ def build_prediction_context(
         tsteps=tsteps,
         bias_correction_mean_residual=bias_mean_residual,
         model_rmse_logret=model_rmse_logret,
+        model_path=model_path,
+        scaler_path=scaler_params_path,
     )
 
 

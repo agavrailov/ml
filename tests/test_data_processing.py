@@ -117,6 +117,49 @@ def test_add_features():
     # Check Hour calculation
     assert df_featured['Hour'].iloc[0] == 15 # First non-NaN row after SMA_7 is 15:00
 
+
+def test_add_features_does_not_mutate_input():
+    """Regression test: ``add_features`` must NOT mutate the caller's frame.
+
+    The previous implementation used ``dropna(inplace=True)`` and returned
+    the same object, so any caller who did ``df_feat = add_features(df, ...)``
+    also silently truncated ``df``.  In `_make_model_prediction_provider`
+    this caused the 2024+ flat-equity bug: the subsequent
+    ``df[["Time"]]`` merge used a truncated Time column, so checkpoint rows
+    aligned to the wrong raw-frame positions.
+
+    See docs/debugging-heuristics.md.
+    """
+    data = {
+        'Time': pd.to_datetime([
+            f'2023-01-01 {h:02d}:00:00' for h in range(22)
+        ]).tolist(),
+        'Open': list(range(100, 122)),
+        'High': list(range(101, 123)),
+        'Low': list(range(99, 121)),
+        'Close': [x + 0.5 for x in range(100, 122)],
+    }
+    df = pd.DataFrame(data)
+    original_len = len(df)
+    original_cols = list(df.columns)
+
+    df_feat = add_features(df, ['SMA_7', 'SMA_21', 'RSI', 'Hour'])
+
+    # Caller frame must be intact — same length, same columns, no new
+    # feature columns were added to the caller's object.
+    assert len(df) == original_len, (
+        f"add_features mutated caller: len went from {original_len} to {len(df)}"
+    )
+    assert list(df.columns) == original_cols, (
+        f"add_features mutated caller columns: {list(df.columns)} vs "
+        f"{original_cols}"
+    )
+    # The returned frame should be a new object with the feature columns.
+    assert df_feat is not df
+    assert 'SMA_21' in df_feat.columns
+    # And should carry the warmup-count attribute for downstream realignment.
+    assert df_feat.attrs.get('feature_warmup_rows', None) == original_len - len(df_feat)
+
 def test_prepare_keras_input_data(setup_teardown_data_processing_test):
     mock_raw_data_csv, temp_processed_dir = setup_teardown_data_processing_test
 

@@ -63,8 +63,18 @@ def convert_minute_to_timeframe(
     })
     print(f"DataFrame shape after resampling to {frequency}: {df_resampled.shape}")
 
-    # Drop any rows that might have been created by resampling but have no data
-    df_resampled.dropna(inplace=True)
+    # Drop any rows that might have been created by resampling but have no data.
+    # Log how many were dropped so silent data-loss is visible in CI / logs.
+    pre_dropna_len = len(df_resampled)
+    df_resampled = df_resampled.dropna()
+    dropped_empty_bins = pre_dropna_len - len(df_resampled)
+    if dropped_empty_bins > 0:
+        msg = (
+            f"convert_minute_to_timeframe: dropped {dropped_empty_bins} empty "
+            f"resampled bin(s) ({pre_dropna_len} → {len(df_resampled)} rows)."
+        )
+        logger.info(msg)
+        print(msg)
     print(f"DataFrame shape after dropping NaNs: {df_resampled.shape}")
 
     if df_resampled.empty:
@@ -114,8 +124,11 @@ def convert_minute_to_timeframe(
 def add_features(df: pd.DataFrame, features_to_generate: list[str]) -> pd.DataFrame:
     """Add technical indicators and time-based features to a price DataFrame.
 
-    The function operates in-place on ``df`` and returns the same DataFrame for
-    convenience.
+    This function is **non-mutating**: it copies ``df`` before adding columns
+    or dropping warmup rows, so the caller's frame is untouched.  The result
+    carries a ``attrs["feature_warmup_rows"]`` integer recording how many
+    leading rows were removed by the rolling-window warmup — downstream code
+    can use it to realign predictions back onto the original raw-frame index.
 
     Args:
         df: Input DataFrame with at least ``"Time"`` and OHLC columns.
@@ -123,9 +136,16 @@ def add_features(df: pd.DataFrame, features_to_generate: list[str]) -> pd.DataFr
             ``["SMA_7", "SMA_21", "RSI", "Hour", "DayOfWeek"]``).
 
     Returns:
-        The DataFrame with requested feature columns added and rows with NA
-        values from rolling operations dropped.
+        A new DataFrame with requested feature columns added and rows with
+        NA values from rolling operations dropped.
     """
+    # Defensive copy — NEVER mutate the caller's frame.  The previous
+    # implementation used dropna(inplace=True) and returned the same object,
+    # which caused silent Time-alignment drift in callers that also held a
+    # reference to the pre-dropna frame.  See docs/debugging-heuristics.md.
+    df = df.copy()
+    input_len = len(df)
+
     # Ensure 'Time' is a datetime object
     df['Time'] = pd.to_datetime(df['Time'])
 
@@ -148,9 +168,19 @@ def add_features(df: pd.DataFrame, features_to_generate: list[str]) -> pd.DataFr
     if 'DayOfWeek' in features_to_generate:
         df['DayOfWeek'] = df['Time'].dt.dayofweek # Monday=0, Sunday=6
 
-    # Drop rows with NaN values created by rolling indicators
-    df.dropna(inplace=True)
-    
+    # Drop rows with NaN values created by rolling indicators.  Use a
+    # non-inplace filter to keep the intent obvious.
+    df = df.dropna()
+    warmup_dropped = input_len - len(df)
+    df.attrs["feature_warmup_rows"] = int(warmup_dropped)
+    if warmup_dropped > 0:
+        logger.debug(
+            "add_features: dropped %d warmup rows (input=%d → output=%d)",
+            warmup_dropped,
+            input_len,
+            len(df),
+        )
+
     return df
 
 def prepare_keras_input_data(

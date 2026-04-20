@@ -51,6 +51,12 @@ from src.bias_correction import (
     compute_rolling_residual_sigma,
     shift_sigma_to_observable,
 )
+from src.checkpoint_provenance import (
+    build_meta as _build_ckpt_meta,
+    read_sidecar as _read_ckpt_sidecar,
+    validate_against as _validate_ckpt_sidecar,
+    write_sidecar as _write_ckpt_sidecar,
+)
 
 PREDICTIONS_DIR = "backtests"
 # Default rolling window for bias-correction layer in backtests.
@@ -207,6 +213,68 @@ def _estimate_atr_like(data: pd.DataFrame, window: int = 14) -> float:
     return float(cleaned.mean()) if not cleaned.empty else 1.0
 
 
+# Expected bounds for the median of pred/Open on a healthy next-bar log-return
+# model.  Ratios outside this band are almost always a pipeline bug
+# (mis-alignment, stale scaler, wrong denormalization) rather than model
+# quality — see docs/debugging-heuristics.md.
+PRED_RATIO_WARN_LOW = 0.99
+PRED_RATIO_WARN_HIGH = 1.01
+
+
+def _log_pred_ratio_summary(
+    denorm_full: np.ndarray,
+    data: pd.DataFrame,
+    *,
+    n: int,
+    symbol: str,
+    frequency: str,
+) -> None:
+    """Emit a one-line summary of predicted-price / actual-Open ratios.
+
+    A healthy next-bar log-return model produces ratios clustered very
+    tightly around 1.0 (typically p05-p95 within ``[0.995, 1.005]``).  If
+    the median lands outside ``[PRED_RATIO_WARN_LOW, PRED_RATIO_WARN_HIGH]``
+    that is almost certainly a pipeline bug — we print a loud warning so
+    the regression is visible on first run instead of taking a flat
+    equity curve to surface it.
+    """
+
+    if "Open" not in data.columns:
+        return
+    open_arr = data["Open"].to_numpy(dtype=float)
+    if len(open_arr) != n or len(denorm_full) != n:
+        return
+    mask = np.isfinite(denorm_full) & np.isfinite(open_arr) & (open_arr > 0)
+    if not mask.any():
+        print(
+            f"[{symbol} {frequency}] pred/Open ratio summary: no finite pairs "
+            "to compare (all predictions NaN).",
+            flush=True,
+        )
+        return
+    ratios = denorm_full[mask] / open_arr[mask]
+    p05 = float(np.quantile(ratios, 0.05))
+    p50 = float(np.quantile(ratios, 0.50))
+    p95 = float(np.quantile(ratios, 0.95))
+    mean = float(ratios.mean())
+    std = float(ratios.std())
+    n_valid = int(mask.sum())
+    summary = (
+        f"[{symbol} {frequency}] pred/Open ratio: n={n_valid}/{n} "
+        f"mean={mean:.4f} p05={p05:.4f} p50={p50:.4f} p95={p95:.4f} "
+        f"std={std:.4f}"
+    )
+    print(summary, flush=True)
+    if not (PRED_RATIO_WARN_LOW <= p50 <= PRED_RATIO_WARN_HIGH):
+        warning = (
+            f"  !! WARNING: median pred/Open ratio {p50:.4f} is outside "
+            f"[{PRED_RATIO_WARN_LOW}, {PRED_RATIO_WARN_HIGH}].  This almost "
+            "always indicates a pipeline bug (alignment / scaler / "
+            "denormalization).  See docs/debugging-heuristics.md."
+        )
+        print(warning, flush=True)
+
+
 def _make_model_prediction_provider(
     data: pd.DataFrame,
     frequency: str,
@@ -257,18 +325,62 @@ def _make_model_prediction_provider(
                     sigma_series = np.zeros(n, dtype=np.float32)
 
                 is_aligned = True
-                if "Time" in data.columns and "Time" in checkpoint_df.columns:
+
+                # Sidecar-based provenance check.  If a ``*.meta.json`` is
+                # present we treat it as the source of truth and refuse to
+                # reuse a checkpoint whose fingerprint does not match the
+                # current OHLC frame.  Checkpoints without a sidecar (older
+                # runs) fall back to the endpoint / interior-sample check
+                # below, which is less strict but still catches most drift.
+                _meta = _read_ckpt_sidecar(checkpoint_path)
+                if _meta is not None:
+                    ok, reason = _validate_ckpt_sidecar(
+                        _meta, data=data, symbol=symbol, frequency=frequency,
+                    )
+                    if not ok:
+                        print(
+                            f"Checkpoint sidecar rejected ({reason}); "
+                            "regenerating predictions from scratch.",
+                            flush=True,
+                        )
+                        is_aligned = False
+
+                if is_aligned and "Time" in data.columns and "Time" in checkpoint_df.columns:
                     try:
                         data_times = pd.to_datetime(data["Time"]).reset_index(drop=True)
                         ckpt_times = pd.to_datetime(checkpoint_df["Time"]).iloc[:n].reset_index(drop=True)
-                        # Require both endpoints to match; this is cheap and
-                        # robust enough for our single-symbol use case.
-                        if not (
+                        # Endpoints must match.
+                        endpoints_ok = (
                             len(ckpt_times) == n
                             and data_times.iloc[0] == ckpt_times.iloc[0]
                             and data_times.iloc[-1] == ckpt_times.iloc[-1]
-                        ):
+                        )
+                        if not endpoints_ok:
                             is_aligned = False
+                        else:
+                            # Interior sampled check.  Endpoint-only matching
+                            # is not enough: a checkpoint generated with a
+                            # silent off-by-N-rows bug may have the same
+                            # first/last Time as the raw data but mismatch
+                            # rows in between.  Draw 20 deterministic sample
+                            # indices and verify row-by-row Time equality.
+                            if n > 2:
+                                rng = np.random.default_rng(seed=0xA11A11)
+                                n_samples = min(20, n - 2)
+                                sample_idx = rng.choice(
+                                    np.arange(1, n - 1), size=n_samples, replace=False
+                                )
+                                for idx in sample_idx:
+                                    if data_times.iloc[int(idx)] != ckpt_times.iloc[int(idx)]:
+                                        is_aligned = False
+                                        print(
+                                            "Checkpoint interior-Time mismatch at "
+                                            f"idx={int(idx)}: data={data_times.iloc[int(idx)]} "
+                                            f"vs ckpt={ckpt_times.iloc[int(idx)]}.  "
+                                            "Regenerating predictions from scratch.",
+                                            flush=True,
+                                        )
+                                        break
                     except Exception:
                         # Any parsing/shape issues -> treat as misaligned.
                         is_aligned = False
@@ -310,8 +422,11 @@ def _make_model_prediction_provider(
     if "Time" in df.columns:
         df["Time"] = pd.to_datetime(df["Time"])
 
-    # Feature engineering over the entire dataset.
-    df_featured = add_features(df, ctx.features_to_use)
+    # Feature engineering over the entire dataset. ``add_features`` mutates its
+    # input (``dropna(inplace=True)``) and returns the same frame, so pass a
+    # copy — we need the original ``df`` intact below for Time alignment of the
+    # log-return predictions back onto the raw OHLC row indices.
+    df_featured = add_features(df.copy(), ctx.features_to_use)
 
     # Normalize using the stored scaler.
     feature_cols = [c for c in df_featured.columns if c != "Time"]
@@ -351,34 +466,43 @@ def _make_model_prediction_provider(
             on="Time",
             how="left",
         )
+        # Invariant: the left-join must preserve the raw-data row count
+        # exactly.  If it doesn't, something upstream has silently
+        # duplicated or dropped rows — historically this was masked by
+        # padding with NaN, which turned a pipeline bug into a flat
+        # equity curve.  Fail loudly instead.
+        if len(merged) != n:
+            raise RuntimeError(
+                f"_make_model_prediction_provider: Time-based merge produced "
+                f"{len(merged)} rows, expected {n}.  Upstream data likely has "
+                "duplicate or missing timestamps — refusing to silently pad."
+            )
         denorm_full = merged["predicted_price"].to_numpy(dtype=np.float32)
         times_full = merged["Time"]
     else:
-        # Positional fallback: if lengths match, use directly; otherwise pad or
-        # truncate to match the raw data length.
-        if m >= n:
-            denorm_full = denorm_feat[:n]
-        else:
-            pad = np.full(shape=(n - m,), fill_value=np.nan, dtype=np.float32)
-            denorm_full = np.concatenate([pad, denorm_feat])
-        times_full = df["Time"] if "Time" in df.columns else pd.Series([pd.NaT] * n)
+        # Time-less path is a red flag — every production call site passes
+        # a Time column.  Refuse rather than guess a positional alignment;
+        # the old positional fallback silently turned alignment bugs into
+        # "mostly works" checkpoints that were impossible to debug.
+        raise RuntimeError(
+            "_make_model_prediction_provider: input data or feature frame is "
+            "missing a 'Time' column; positional fallback is disabled because "
+            "it masks alignment bugs.  Attach a Time column before calling."
+        )
 
-    # As a final safeguard, ensure prediction and time arrays match the raw data length.
-    if len(denorm_full) < n:
-        pad_len = n - len(denorm_full)
-        denorm_full = np.concatenate([
-            denorm_full,
-            np.full(shape=(pad_len,), fill_value=np.nan, dtype=np.float32),
-        ])
-    elif len(denorm_full) > n:
-        denorm_full = denorm_full[:n]
+    # Defence in depth: lengths should already match after the invariant
+    # check above, but keep the assertion so that any future code path that
+    # bypasses the merge still fails loudly.
+    if len(denorm_full) != n or len(times_full) != n:
+        raise RuntimeError(
+            f"_make_model_prediction_provider: post-merge length mismatch "
+            f"(denorm={len(denorm_full)}, times={len(times_full)}, expected={n})."
+        )
 
-    if len(times_full) < n:
-        # Pad missing times with NaT at the end.
-        pad_len = n - len(times_full)
-        times_full = pd.concat([times_full, pd.Series([pd.NaT] * pad_len)], ignore_index=True)
-    elif len(times_full) > n:
-        times_full = times_full.iloc[:n]
+    # One-line ratio summary — the guardrail that would have caught the
+    # original 2024+ flat-equity bug on first run.  For a healthy log-return
+    # model, pred/Open should cluster tightly around 1.0.
+    _log_pred_ratio_summary(denorm_full, data, n=n, symbol=symbol, frequency=frequency)
 
     # Apply a rolling bias-correction layer in price space. For log-return
     # models we avoid mixing units and therefore ignore any global
@@ -469,6 +593,30 @@ def _make_model_prediction_provider(
     if _write_checkpoint:
         checkpoint_df.to_csv(checkpoint_path, index=False)
         print(f"Wrote model prediction checkpoint ({len(checkpoint_df)} rows) to {checkpoint_path}", flush=True)
+
+        # Write the sidecar .meta.json so future runs can refuse stale
+        # checkpoints.  Fingerprint is on the raw OHLC (``data``) — feature
+        # columns are derived and intentionally excluded so an unrelated
+        # feature-engineering change does not invalidate the checkpoint.
+        try:
+            _meta = _build_ckpt_meta(
+                data=data,
+                symbol=symbol,
+                frequency=frequency,
+                model_path=getattr(ctx, "model_path", None),
+                scaler_path=getattr(ctx, "scaler_path", None),
+            )
+            _write_ckpt_sidecar(checkpoint_path, _meta)
+            print(
+                f"Wrote checkpoint sidecar meta to "
+                f"{checkpoint_path.rsplit('.', 1)[0]}.meta.json",
+                flush=True,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            print(
+                f"WARN: failed to write checkpoint sidecar meta: {exc}",
+                flush=True,
+            )
 
     def provider(i: int, row: pd.Series) -> float:  # noqa: ARG001
         if i < 0 or i >= len(denorm_full):

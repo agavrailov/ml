@@ -37,9 +37,29 @@ def apply_standard_scaler(
 
     ``scaler_params`` must contain ``"mean"`` and ``"std"`` mappings from
     feature name to value.
+
+    Rejects inputs containing NaN values in any feature column.  The scaler
+    preserves NaNs ("NaN / std = NaN") and silently propagates them into
+    model inputs, which is a classic silent-corruption vector — we fail
+    fast here with a column-level breakdown instead.
     """
     mean_vals = pd.Series(scaler_params["mean"])
     std_vals = pd.Series(scaler_params["std"])
+
+    # NaN guard: fail fast with column + count detail.  Warmup rows or a
+    # subtle upstream bug can leave NaNs in the feature frame; the scaler
+    # would happily propagate them, and downstream the model produces NaN
+    # predictions that later masquerade as "no trade" in backtests.
+    nan_counts = df[feature_cols].isna().sum()
+    bad_cols = nan_counts[nan_counts > 0]
+    if not bad_cols.empty:
+        detail = ", ".join(f"{c}={int(v)}" for c, v in bad_cols.items())
+        raise ValueError(
+            "apply_standard_scaler: input frame contains NaN in feature "
+            f"columns ({detail}).  NaN values silently propagate through "
+            "scaling and poison downstream model inputs — drop or fill them "
+            "before scaling."
+        )
 
     df_norm = df.copy()
     df_norm[feature_cols] = (df[feature_cols] - mean_vals[feature_cols]) / std_vals[feature_cols]

@@ -21,6 +21,7 @@ Accordingly, prediction returns a price via:
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from collections import deque
@@ -28,6 +29,8 @@ from typing import Deque, Mapping, Optional, Any
 
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 from src.config import FREQUENCY, TSTEPS
 from src.data_processing import add_features
@@ -184,6 +187,18 @@ class LivePredictor:
             raise ValueError(f"Feature columns missing after engineering: {missing}")
 
         df_norm = apply_standard_scaler(df_feat_window, feature_cols, self.ctx.scaler_params)
+
+        # Belt-and-braces: the model expects exactly (1, tsteps, n_features).
+        # If anything upstream silently produced a short window we would
+        # rather skip this bar than feed a malformed tensor to Keras.
+        if len(df_norm) != self.ctx.tsteps:
+            logger.warning(
+                "live_predictor: normalized window has %d rows, expected %d; "
+                "skipping this bar",
+                len(df_norm), self.ctx.tsteps,
+            )
+            return float(df_raw["Close"].iloc[-1])
+
         X = df_norm[feature_cols].to_numpy(dtype=np.float32)[np.newaxis, :, :]  # (1, T, F)
 
         # Model outputs forward log return on Open.

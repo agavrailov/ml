@@ -688,6 +688,7 @@ def render_backtest_tab(
 
                 request_obj = {
                     "frequency": freq,
+                    "symbol": selected_symbol,
                     "start_date": start_date or None,
                     "end_date": end_date or None,
                     "trade_side": trade_side,
@@ -700,6 +701,12 @@ def render_backtest_tab(
 
                 log_path = _job_store.artifacts_dir(job_id) / "run.log"
                 log_path.parent.mkdir(parents=True, exist_ok=True)
+                # On Windows, CREATE_NO_WINDOW detaches the subprocess from the
+                # parent's console group so Quick Edit Mode clicks on the terminal
+                # cannot freeze the optimization process.
+                _popen_flags: dict = {}
+                if _sys.platform == "win32":
+                    _popen_flags["creationflags"] = _subprocess.CREATE_NO_WINDOW
                 with open(log_path, "a", encoding="utf-8") as log_f:
                     _subprocess.Popen(
                         [
@@ -715,6 +722,7 @@ def render_backtest_tab(
                         ],
                         stdout=log_f,
                         stderr=_subprocess.STDOUT,
+                        **_popen_flags,
                     )
 
                 opt_state["active_job_id"] = job_id
@@ -740,12 +748,20 @@ def render_backtest_tab(
                 except ImportError:
                     pass
             
-            st.markdown(f"#### ↻ Active Job: `{active_job_id}`")
-            st.caption(f"Log: `{_job_store.artifacts_dir(active_job_id) / 'run.log'}`")
-            if job_status and job_status.state == "RUNNING":
-                st.caption("🔄 Auto-refreshing every 2 seconds...")
-            elif job_status and job_status.state == "SUCCEEDED":
-                st.caption("✓ Job completed successfully")
+            _job_col, _clear_col = st.columns([4, 1])
+            with _job_col:
+                st.markdown(f"#### ↻ Active Job: `{active_job_id}`")
+                st.caption(f"Log: `{_job_store.artifacts_dir(active_job_id) / 'run.log'}`")
+                if job_status and job_status.state == "RUNNING":
+                    st.caption("🔄 Auto-refreshing every 2 seconds...")
+                elif job_status and job_status.state == "SUCCEEDED":
+                    st.caption("✓ Job completed successfully")
+            with _clear_col:
+                st.markdown("<div style='height:1.6rem'></div>", unsafe_allow_html=True)
+                if st.button("✕ Clear", key="opt_clear_job", help="Remove this job from the active panel (does not kill the process)"):
+                    opt_state.pop("active_job_id", None)
+                    stop_optimization()
+                    st.rerun()
             
             if job_status is None:
                 st.info("⋯ Job starting...")

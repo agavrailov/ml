@@ -1,7 +1,19 @@
+import os
+import sys
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import pandas as pd
 import numpy as np
 
 from src.backtest import _align_predictions_to_data, run_backtest_on_dataframe
+from src.checkpoint_provenance import (
+    build_meta as _build_ckpt_meta,
+    read_sidecar as _read_ckpt_sidecar,
+    sidecar_path_for as _sidecar_path_for,
+    validate_against as _validate_ckpt_sidecar,
+    write_sidecar as _write_ckpt_sidecar,
+)
 
 
 def _toy_ohlc(*, n: int = 6) -> pd.DataFrame:
@@ -71,3 +83,44 @@ def test_backtest_csv_mode_tolerates_nan_predictions_via_close_fallback(tmp_path
     # With all NaN predictions -> close fallback -> zero signal; expect no trades.
     assert len(res.trades) == 0
     assert res.final_equity == res.equity_curve[0]
+
+
+def test_checkpoint_interior_time_alignment_detects_off_by_n_drift(tmp_path) -> None:
+    """Pattern 2 regression: endpoint-only checkpoint validation is not
+    enough — a sidecar written against one OHLC frame must be rejected
+    against a frame whose endpoints match but whose interior rows have
+    drifted (e.g. by add_features-style off-by-N misalignment).
+    """
+    n = 50
+    t0 = pd.Timestamp("2025-01-01T00:00:00")
+    times_a = [t0 + pd.Timedelta(hours=i) for i in range(n)]
+    data_a = pd.DataFrame({
+        "Time": times_a,
+        "Open": np.linspace(100, 149, n),
+        "High": np.linspace(101, 150, n),
+        "Low":  np.linspace(99, 148, n),
+        "Close": np.linspace(100.5, 149.5, n),
+    })
+
+    # data_b has the same endpoints but interior rows shifted by a handful
+    # of seconds — exactly the class of corruption the add_features
+    # mutation bug produced (Times drifted by the warmup-row offset while
+    # first/last stayed recognisable).
+    times_b = list(times_a)
+    for i in range(1, n - 1):
+        times_b[i] = times_a[i] + pd.Timedelta(seconds=30)
+    data_b = data_a.copy()
+    data_b["Time"] = times_b
+
+    ckpt = tmp_path / "nvda_60min_model_predictions_checkpoint.csv"
+    ckpt.write_text("Time,predicted_price\n")
+    meta = _build_ckpt_meta(data=data_a, symbol="NVDA", frequency="60min")
+    _write_ckpt_sidecar(str(ckpt), meta)
+
+    # Endpoints match, but the interior content differs → sidecar must
+    # reject the mismatched frame because the content hash changed.
+    ok, reason = _validate_ckpt_sidecar(
+        meta, data=data_b, symbol="NVDA", frequency="60min",
+    )
+    assert not ok
+    assert "sha256" in reason.lower() or "time" in reason.lower()
