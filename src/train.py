@@ -94,19 +94,29 @@ def train_model(
     # Apply explicit training window when provided; otherwise fall back to the
     # historical cutoff used so far (Time >= 2023-01-01).
     df_featured["Time"] = pd.to_datetime(df_featured["Time"])
+    effective_train_start: pd.Timestamp
+    effective_train_end: pd.Timestamp | None
     if train_start_date is not None or train_end_date is not None:
         mask = pd.Series(True, index=df_featured.index)
         if train_start_date is not None:
             start_ts = pd.to_datetime(train_start_date)
             mask &= df_featured["Time"] >= start_ts
+            effective_train_start = start_ts
+        else:
+            effective_train_start = pd.to_datetime(df_featured["Time"].min())
         if train_end_date is not None:
             end_ts = pd.to_datetime(train_end_date)
             mask &= df_featured["Time"] < end_ts
+            effective_train_end = end_ts
+        else:
+            effective_train_end = None
         df_featured = df_featured.loc[mask].copy()
     else:
         # Default behaviour: keep only rows from 2023-01-01 onwards.
         cutoff_date = pd.Timestamp("2023-01-01")
         df_featured = df_featured[df_featured["Time"] >= cutoff_date].copy()
+        effective_train_start = cutoff_date
+        effective_train_end = None
 
     # Split data into training and validation sets
     split_index = int(len(df_featured) * TR_SPLIT)
@@ -119,6 +129,17 @@ def train_model(
     with open(scaler_params_path, 'w') as f:
         json.dump(scaler_params, f, indent=4)
     print(f"Scaler parameters calculated on training data and saved to {scaler_params_path}")
+
+    # Persist the training window alongside the scaler so downstream
+    # consumers (backtest clamp, UI defaults) can refuse to evaluate the
+    # model on bars outside the distribution it was fit on.
+    from src.core.training_window import write_training_window
+    write_training_window(
+        symbol=symbol,
+        frequency=frequency,
+        train_start_date=effective_train_start,
+        train_end_date=effective_train_end,
+    )
 
     # Normalize both training and validation sets using the scaler fitted on training data
     df_train_normalized = apply_standard_scaler(df_train_raw, feature_cols, scaler_params)

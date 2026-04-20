@@ -907,12 +907,19 @@ def _apply_date_range(
     data: pd.DataFrame,
     start_date: str | None = None,
     end_date: str | None = None,
+    *,
+    symbol: str | None = None,
+    frequency: str | None = None,
 ) -> tuple[pd.DataFrame, str, str]:
     """Slice ``data`` to a [start_date, end_date] window based on ``Time``.
 
     Returns (sliced_data, date_from_str, date_to_str).
     If no Time column is present or no dates are provided anywhere, the
     original DataFrame and an index-based range are returned.
+
+    When ``symbol`` and ``frequency`` are provided, the requested range is
+    also clamped to the model's persisted training window so we never run a
+    backtest on bars the model never saw. Any clamping emits a warning.
     """
 
     if "Time" not in data.columns or data.empty:
@@ -924,6 +931,21 @@ def _apply_date_range(
     # Effective dates: CLI args override config defaults.
     eff_start = start_date or BACKTEST_DEFAULT_START_DATE
     eff_end = end_date or BACKTEST_DEFAULT_END_DATE
+
+    # Clamp to the training window when we know which model's data this is
+    # backing. The clamp is advisory (warning + adjustment) rather than fatal
+    # so one-off exploratory runs (e.g. evaluating a model on older data on
+    # purpose) remain possible — but the default paths stay safe.
+    if symbol is not None and frequency is not None:
+        from src.core.training_window import clamp_backtest_range
+        eff_start, eff_end, _warnings = clamp_backtest_range(
+            symbol=symbol,
+            frequency=frequency,
+            requested_start=eff_start,
+            requested_end=eff_end,
+        )
+        for w in _warnings:
+            print(f"[backtest] WARNING: {w}", flush=True)
 
     time_series = pd.to_datetime(data["Time"])
 
@@ -1116,6 +1138,8 @@ def run_backtest_for_ui(
         data_full,
         start_date=start_date,
         end_date=end_date,
+        symbol=symbol,
+        frequency=freq,
     )
 
     # If CSV mode is requested and no explicit predictions_csv is provided,
@@ -1541,6 +1565,8 @@ def main() -> None:
         data_full,
         start_date=args.start_date,
         end_date=args.end_date,
+        symbol=symbol,
+        frequency=freq,
     )
 
     n_bars = len(data)

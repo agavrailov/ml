@@ -95,7 +95,24 @@ def render_backtest_tab(
 
         with col_start:
             _qp_start = _qp.get("start", "") if _qp else ""
-            start_date = st.text_input("Start (YYYY-MM-DD)", _qp_start, key="bt_start", placeholder="Optional")
+            # Default the Start field to the model's training-window start so
+            # users don't accidentally evaluate on pre-training bars (which
+            # silently wipes equity — bar inputs are out of scaler distribution).
+            _default_start = _qp_start
+            if not _default_start:
+                try:
+                    from src.core.training_window import get_training_window
+                    _tw = get_training_window(selected_symbol, freq)
+                    _default_start = _tw.start.strftime("%Y-%m-%d")
+                except Exception:
+                    _default_start = ""
+            start_date = st.text_input(
+                "Start (YYYY-MM-DD)",
+                _default_start,
+                key="bt_start",
+                placeholder="Optional",
+                help="Defaults to the model's training-window start. Earlier dates will be clamped.",
+            )
             if hasattr(st, "query_params"):
                 if start_date:
                     st.query_params["start"] = start_date
