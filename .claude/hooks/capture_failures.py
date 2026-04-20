@@ -53,6 +53,9 @@ _PYTEST_SUMMARY_RE = re.compile(r"(\d+) failed", re.IGNORECASE)
 _RATIO_WARN_RE = re.compile(
     r"!!\s*WARNING.*?pred/Open ratio.*?(\d+\.\d+).*?outside", re.IGNORECASE
 )
+_DEDUP_WARN_RE = re.compile(
+    r"WARNING.*?(\d+)\s+duplicate.*?rows", re.IGNORECASE
+)
 _GUARDRAIL_RE = re.compile(
     r"(ValueError|RuntimeError):\s*(.+?)(?:\n|$)", re.MULTILINE
 )
@@ -93,6 +96,23 @@ def _detect_ratio_warnings(command: str, output: str, ts: str) -> list[dict]:
         "command": command[:300],
         "ratio_values": matches,
         "warning_lines": warn_lines[:5],
+        "resolved": False,
+    }]
+
+
+def _detect_dedup_warnings(command: str, output: str, ts: str) -> list[dict]:
+    """Catch duplicate-timestamp warnings from _load_predictions_csv and
+    clean_raw_minute_data — these indicate upstream data hygiene issues."""
+    matches = _DEDUP_WARN_RE.findall(output)
+    if not matches:
+        return []
+    warn_lines = [l for l in output.splitlines() if "WARNING" in l and "duplicate" in l.lower()]
+    return [{
+        "type": "duplicate_timestamp_warning",
+        "timestamp": ts,
+        "command": command[:300],
+        "dup_counts": matches,
+        "warning_lines": warn_lines[:3],
         "resolved": False,
     }]
 
@@ -139,6 +159,7 @@ def main() -> None:
     failures: list[dict] = []
     failures += _detect_pytest_failures(command, output, ts)
     failures += _detect_ratio_warnings(command, output, ts)
+    failures += _detect_dedup_warnings(command, output, ts)
     failures += _detect_guardrail_errors(command, output, ts)
 
     for f in failures:

@@ -1,3 +1,4 @@
+import io
 import os
 import sys
 
@@ -5,8 +6,9 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import pandas as pd
 import numpy as np
+import pytest
 
-from src.backtest import _align_predictions_to_data, run_backtest_on_dataframe
+from src.backtest import _align_predictions_to_data, _load_predictions_csv, run_backtest_on_dataframe
 from src.checkpoint_provenance import (
     build_meta as _build_ckpt_meta,
     read_sidecar as _read_ckpt_sidecar,
@@ -83,6 +85,65 @@ def test_backtest_csv_mode_tolerates_nan_predictions_via_close_fallback(tmp_path
     # With all NaN predictions -> close fallback -> zero signal; expect no trades.
     assert len(res.trades) == 0
     assert res.final_equity == res.equity_curve[0]
+
+
+def test_load_predictions_csv_deduplicates_on_duplicate_time(tmp_path, capsys) -> None:
+    """Deduplication guardrail: _load_predictions_csv must warn and remove
+    duplicate Time rows, keeping the first occurrence.
+
+    The NVDA production CSV had 380 duplicate timestamps (two prediction runs
+    appended to the same file). Without dedup the Time-based merge in
+    _make_model_prediction_provider produces extra rows and can misalign the
+    equity curve.  This test pins that the dedup fires and produces a clean
+    one-row-per-timestamp frame.
+    """
+    t0 = pd.Timestamp("2025-01-01T09:00:00")
+    times = [t0 + pd.Timedelta(hours=i) for i in range(5)]
+
+    # Row 2 is duplicated with a DIFFERENT predicted_price.  The first
+    # occurrence (120.0) must win; the later one (999.0) must be dropped.
+    rows = [
+        {"Time": times[0], "predicted_price": 110.0},
+        {"Time": times[1], "predicted_price": 111.0},
+        {"Time": times[2], "predicted_price": 120.0},  # first occurrence
+        {"Time": times[2], "predicted_price": 999.0},  # duplicate — must be dropped
+        {"Time": times[3], "predicted_price": 113.0},
+        {"Time": times[4], "predicted_price": 114.0},
+    ]
+    p = tmp_path / "preds.csv"
+    pd.DataFrame(rows).to_csv(p, index=False)
+
+    result = _load_predictions_csv(str(p))
+
+    # Must warn to stdout.
+    captured = capsys.readouterr()
+    assert "WARNING" in captured.out, "Expected WARNING for duplicate timestamps"
+    assert "duplicate" in captured.out.lower()
+
+    # One row per timestamp.
+    assert len(result) == 5
+
+    # First occurrence wins for the duplicated timestamp.
+    dup_row = result[result["Time"] == times[2]]
+    assert len(dup_row) == 1
+    assert float(dup_row["predicted_price"].iloc[0]) == 120.0, (
+        "Expected first occurrence (120.0) kept, not the duplicate (999.0)"
+    )
+
+
+def test_load_predictions_csv_no_warning_on_clean_input(tmp_path, capsys) -> None:
+    """No WARNING should be emitted when the predictions CSV is already clean."""
+    t0 = pd.Timestamp("2025-06-01T09:00:00")
+    rows = [{"Time": t0 + pd.Timedelta(hours=i), "predicted_price": 100.0 + i} for i in range(6)]
+    p = tmp_path / "clean_preds.csv"
+    pd.DataFrame(rows).to_csv(p, index=False)
+
+    _load_predictions_csv(str(p))
+
+    captured = capsys.readouterr()
+    assert "WARNING" not in captured.out, (
+        "No duplicate-time WARNING should be emitted for clean input"
+    )
 
 
 def test_checkpoint_interior_time_alignment_detects_off_by_n_drift(tmp_path) -> None:

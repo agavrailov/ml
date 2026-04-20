@@ -73,7 +73,7 @@ anything from it, or reproduce directly on real data.
 
 ---
 
-## The four corruption patterns
+## The six corruption patterns
 
 Every guardrail we add is triggered by at least one of these.
 
@@ -107,6 +107,37 @@ Tests:
 - `tests/test_scaler.py::test_apply_scaler_rejects_nan_input`
 - `tests/test_bias_correction.py::test_rolling_correction_tolerates_sparse_nan`.
 
+### Pattern 5 — Daily OHLC bars broadcast into a minute feed
+
+An upstream concatenation merged a daily-interval feed (e.g. a Yahoo `1d`
+download) into the minute CSV. The result is 1 daily OHLC row repeated across
+hundreds of minute slots of the same trading date. After resampling to 60min,
+every hour bar of the affected days carries the *full daily range* — open far
+from low, low far from high — which causes:
+
+- ATR and sigma-return estimates to inflate on contaminated days;
+- tight stops sized from "normal" intraday sigma to be instantly hit;
+- backtest equity to crash because realized losses are several× the intended
+  `risk_per_trade_pct` budget (the bar's "intraday" range is actually a full
+  day of price action).
+
+In the 2026-04 NVDA regression this wiped ~$10k → $0 inside the first ~50 bars
+of 2023, producing the equity-curve screenshot that started the investigation.
+
+**Signature in raw data:** the same `(Open, High, Low, Close)` 4-tuple
+(with `High > Low`) appears in ≥60 minute rows of the same calendar date.
+Real illiquid minutes freeze at `O == H == L == C` (zero range), so the
+`High > Low` clause is the discriminator between "daily broadcast" and
+"legitimate one-minute freeze."
+
+Fix: `src.data_processing.identify_daily_broadcast_rows` plus the call site
+in `clean_raw_minute_data` drop broadcast rows **before** the DateTime
+dedup (so co-located real minute rows are the ones kept by the dedup).
+
+Tests:
+- `tests/test_data_processing_daily_broadcast.py::test_identify_daily_broadcast_rows_flags_repeated_daily_ohlc_only`
+- `tests/test_data_processing_daily_broadcast.py::test_clean_raw_minute_data_drops_daily_broadcast_rows`
+
 ### Pattern 4 — Checkpoint / provenance metadata is missing
 
 Every artifact written to disk (scaler JSON, checkpoint CSV, trained model)
@@ -120,6 +151,39 @@ model_path, scaler_sha256, generated_at_utc}` next to every prediction
 checkpoint.
 
 Test: `tests/test_checkpoint_provenance.py::test_stale_checkpoint_rejected_when_data_changes`.
+
+### Pattern 6 — Duplicate timestamps survive into the resampled feed
+
+**What it looks like:** `_load_predictions_csv` prints `[backtest] WARNING: 380
+duplicate Time rows in predictions; keeping first occurrence.` The checkpoint
+file has two prediction runs concatenated — the second run appended its rows
+without truncating the file first.  After silent dedup the CSV is clean, but
+the Time-based merge in `_make_model_prediction_provider` would have produced
+doubled rows without the dedup guard, causing the merge invariant
+(`len(merged) == n`) to raise.
+
+Separately, a second ingestion run can also append duplicate minute bars into
+the raw CSV (`data/raw/nvda_minute.csv`). After `convert_minute_to_timeframe`
+those doubles survive into hourly bars as doubled-weight bins, inflating ATR
+and skewing any rolling statistic that expects one observation per bar.
+
+**Signatures to recognise:**
+- `WARNING: N duplicate Time rows` in backtest or prediction output.
+- Two hourly bars sharing the same timestamp after resampling.
+- ATR / sigma estimates suddenly 2× larger than neighbouring periods.
+
+**Fix (predictions CSV):** `_load_predictions_csv` warns and deduplicates,
+keeping the first occurrence.  Always truncate or overwrite (never append) when
+re-generating a predictions checkpoint.
+
+**Fix (raw minute data):** `clean_raw_minute_data` calls `drop_duplicates(subset=['DateTime'])`
+after removing daily-broadcast rows.  Run the cleaner after every ingestion
+batch.
+
+Tests:
+- `tests/test_contracts_and_alignment.py::test_load_predictions_csv_deduplicates_on_duplicate_time`
+- `tests/test_contracts_and_alignment.py::test_load_predictions_csv_no_warning_on_clean_input`
+- `tests/test_data_processing_daily_broadcast.py::test_clean_raw_minute_data_removes_true_duplicate_timestamps`
 
 ---
 

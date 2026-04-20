@@ -469,9 +469,10 @@ def render_backtest_tab(
         if _bt_disabled_reason:
             st.warning(f"⚠️ {_bt_disabled_reason}")
 
-        # Detect usable prediction range from the CSV so the backtest isn't run
-        # on years of OHLC data where predictions are all NaN.
+        # Detect usable prediction range from the CSV, clamped to the model's
+        # training window so we never auto-start on pre-training bars.
         _pred_start_auto = None
+        _train_start_label = None
         if _pred_exists:
             try:
                 _pdf = pd.read_csv(_pred_csv_path)
@@ -482,10 +483,29 @@ def render_backtest_tab(
                         _pred_start_auto = _valid_preds["Time"].iloc[0].strftime("%Y-%m-%d")
             except Exception:
                 pass
+
+            # Clamp _pred_start_auto to the training window start so we never
+            # auto-scope a backtest to pre-training data.
+            try:
+                from src.core.training_window import get_training_window
+                _tw = get_training_window(selected_symbol, freq)
+                _train_start_label = _tw.start.strftime("%Y-%m-%d")
+                if _pred_start_auto is not None:
+                    _pred_start_ts = pd.to_datetime(_pred_start_auto)
+                    if _pred_start_ts < _tw.start:
+                        _pred_start_auto = _train_start_label
+            except Exception:
+                pass
+
             if _pred_start_auto and not start_date:
+                _scope_reason = (
+                    f"model training starts **{_train_start_label}**"
+                    if _train_start_label and _pred_start_auto == _train_start_label
+                    else f"first valid prediction is **{_pred_start_auto}**"
+                )
                 st.info(
-                    f"Predictions CSV covers from **{_pred_start_auto}**. "
-                    f"Backtest will be scoped to that date (set Start above to override)."
+                    f"Backtest will be scoped to **{_pred_start_auto}** ({_scope_reason}). "
+                    f"Set Start above to override."
                 )
 
         _effective_start = start_date or _pred_start_auto

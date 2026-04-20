@@ -221,6 +221,52 @@ def prepare_keras_input_data(
     return df_filtered, final_features
 
 
+DAILY_BROADCAST_MIN_REPEAT = 60
+
+
+def identify_daily_broadcast_rows(
+    df: pd.DataFrame,
+    min_repeat: int = DAILY_BROADCAST_MIN_REPEAT,
+) -> pd.Series:
+    """Flag minute rows that look like a daily OHLC bar broadcast across many
+    minute-bar slots of the same calendar date.
+
+    A ``daily-broadcast`` row has an ``(Open, High, Low, Close)`` 4-tuple that
+    is shared by at least ``min_repeat`` other minute rows within the same
+    calendar date, AND the tuple has a non-zero intraday range
+    (``High > Low``). A one-minute print with zero range is OHLC-equal
+    (``O == H == L == C``) and is *not* flagged here — that pattern is
+    legitimate during genuine one-minute freezes on illiquid ticks.
+
+    This is the signature of the 2026-04 NVDA 2023 corruption: upstream
+    concatenation merged a Yahoo **daily**-interval feed into the minute
+    CSV, so 1 daily OHLC row ends up repeated across hundreds of minute
+    rows of a single date. Resampling that to 60min inflates every hour
+    bar to the daily range and blows up backtests.
+
+    Returns a boolean Series indexed like ``df``.
+    """
+    required = ("DateTime", "Open", "High", "Low", "Close")
+    if df.empty or not all(c in df.columns for c in required):
+        return pd.Series(False, index=df.index)
+
+    dates = pd.to_datetime(df["DateTime"], utc=True, errors="coerce").dt.date
+    keys = list(
+        zip(
+            dates.tolist(),
+            df["Open"].tolist(),
+            df["High"].tolist(),
+            df["Low"].tolist(),
+            df["Close"].tolist(),
+        )
+    )
+    counts = pd.Series(keys).value_counts()
+    frequent = set(counts.index[counts >= min_repeat])
+    has_range = df["High"] > df["Low"]
+    is_broadcast = pd.Series([k in frequent for k in keys], index=df.index) & has_range
+    return is_broadcast
+
+
 def clean_raw_minute_data(input_csv_path):
     """
     Loads raw minute data, ensures a ``DateTime`` column, sorts it, removes duplicates,
@@ -249,13 +295,33 @@ def clean_raw_minute_data(input_csv_path):
 
     # Sort by DateTime
     df.sort_values('DateTime', inplace=True)
-    
+
+    # Drop daily-broadcast rows (daily OHLC bars leaked into the minute feed)
+    # BEFORE the DateTime dedup — otherwise the broadcast row, which typically
+    # appears first in concatenated CSVs, would be the one kept.
+    broadcast_mask = identify_daily_broadcast_rows(df)
+    n_broadcast = int(broadcast_mask.sum())
+    if n_broadcast:
+        bad_dates = sorted(
+            set(
+                pd.to_datetime(df.loc[broadcast_mask, 'DateTime'], utc=True, errors='coerce')
+                .dt.date
+            )
+        )
+        preview = ", ".join(str(d) for d in bad_dates[:5])
+        suffix = "" if len(bad_dates) <= 5 else f", ... (+{len(bad_dates) - 5} more)"
+        print(
+            f"Dropped {n_broadcast} daily-broadcast rows spanning {len(bad_dates)} "
+            f"date(s): {preview}{suffix}"
+        )
+        df = df.loc[~broadcast_mask].reset_index(drop=True)
+
     # Drop duplicates based on DateTime
     initial_rows = len(df)
     df.drop_duplicates(subset=['DateTime'], inplace=True)
     if len(df) < initial_rows:
         print(f"Removed {initial_rows - len(df)} duplicate rows.")
-    
+
     # Save cleaned data back
     df.to_csv(input_csv_path, index=False)
     print(f"Raw minute data cleaned and saved to {input_csv_path}")

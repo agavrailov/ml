@@ -11,3 +11,5 @@ altair
 pytest
 ib_insync
 pandas_market_calendars
+polygon-api-client
+boto3

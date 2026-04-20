@@ -83,24 +83,38 @@ def run_gap_analysis(raw_csv_path: str) -> list[dict]:
 
 
 async def ingest_new_data(symbol: str) -> None:
-    """Fetch new minute data from IB for *symbol* and append to its raw CSV.
+    """Fetch new minute data for *symbol* and append to its raw CSV.
 
-    The underlying fetch_historical_data function will only pull data beyond the
-    last timestamp present in the raw CSV when strict_range=False.
-    It already uses the configured TWS_MAX_CONCURRENT_REQUESTS semaphore to push
-    IB concurrency to your configured limit safely.
+    Bootstrap strategy:
+      - Raw CSV absent → one-time Alpaca historical dump (2022-01-01 → now).
+        Requires ALPACA_API_KEY and ALPACA_SECRET_KEY env vars.
+      - Raw CSV present → IBKR incremental update (appends bars beyond last row).
+
+    The IBKR path requires TWS/Gateway to be running.
     """
     if symbol not in CONTRACT_REGISTRY:
         raise ValueError(f"Symbol '{symbol}' not found in CONTRACT_REGISTRY. Add it to src/config.py.")
 
     raw_csv = get_raw_data_csv_path(symbol)
     end_date = datetime.now()
-    default_start_date = datetime(2024, 1, 1)
+
+    if not os.path.exists(raw_csv):
+        print(
+            f"[agent] No raw CSV for {symbol}; running one-time Alpaca historical dump."
+        )
+        from src.ingestion.polygon_historical import download_minute_history
+        from datetime import date as _date
+        download_minute_history(
+            symbol,
+            start=_date(2022, 1, 1),
+            end=None,  # today
+        )
+        return
 
     print(
-        f"[agent] Starting ingestion for {symbol} from {default_start_date} to {end_date} "
-        f"into {raw_csv}"
+        f"[agent] Raw CSV found for {symbol}; running IBKR incremental update → {raw_csv}"
     )
+    default_start_date = datetime(2024, 1, 1)
     await fetch_historical_data(
         contract_details=CONTRACT_REGISTRY[symbol],
         end_date=end_date,
