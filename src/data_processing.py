@@ -71,7 +71,7 @@ def convert_minute_to_timeframe(
     if dropped_empty_bins > 0:
         msg = (
             f"convert_minute_to_timeframe: dropped {dropped_empty_bins} empty "
-            f"resampled bin(s) ({pre_dropna_len} → {len(df_resampled)} rows)."
+            f"resampled bin(s) ({pre_dropna_len} -> {len(df_resampled)} rows)."
         )
         logger.info(msg)
         print(msg)
@@ -175,7 +175,7 @@ def add_features(df: pd.DataFrame, features_to_generate: list[str]) -> pd.DataFr
     df.attrs["feature_warmup_rows"] = int(warmup_dropped)
     if warmup_dropped > 0:
         logger.debug(
-            "add_features: dropped %d warmup rows (input=%d → output=%d)",
+            "add_features: dropped %d warmup rows (input=%d -> output=%d)",
             warmup_dropped,
             input_len,
             len(df),
@@ -362,7 +362,7 @@ def fill_gaps(df, identified_gaps, max_fill_hours: int = 48):
             continue
 
         if duration > pd.Timedelta(hours=max_fill_hours):
-            print(f"Skipping gap from {start} to {end} (duration {duration}) – exceeds max_fill_hours={max_fill_hours}.")
+            print(f"Skipping gap from {start} to {end} (duration {duration}) - exceeds max_fill_hours={max_fill_hours}.")
             continue
 
         print(f"Filling gap from {start} to {end} (duration {duration}) via 1-minute forward fill.")

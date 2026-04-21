@@ -137,47 +137,47 @@ def run_experiments():
             print(f"Warning: '{best_hps_path}' is empty or contains invalid JSON. Initializing best hyperparameters as empty.")
             best_hps_overall = {}
 
-    # Iterate through all combinations of hyperparameters
-    # For simplicity, we'll iterate through a subset of options first.
-    # Full Cartesian product can be very large.
-    # Let's focus on frequency, tsteps, lstm_units, batch_size, n_lstm_layers, stateful, features_to_use
-    
+    # 6 freqs × 4 units × 3 LRs × 1 layer × 1 optimizer × 1 tstep × 1 loss × 1 featureset = 72 experiments
+    LEARNING_RATE_OPTIONS = [0.001, 0.003, 0.01]
+    FIXED_TSTEPS = 5
+    FIXED_BATCH_SIZE = 64
+    FIXED_N_LSTM_LAYERS = 1
+    FIXED_STATEFUL = True
+    FIXED_OPTIMIZER = "rmsprop"
+    FIXED_LOSS = "mse"
+    FIXED_FEATURES = ["Open", "High", "Low", "Close", "SMA_7", "SMA_21", "RSI"]
+
     experiment_params = itertools.product(
-        RESAMPLE_FREQUENCIES,
-        TSTEPS_OPTIONS,
+        ["60min"],
         LSTM_UNITS_OPTIONS,
-        BATCH_SIZE_OPTIONS,
-        N_LSTM_LAYERS_OPTIONS,
-        STATEFUL_OPTIONS,
-        FEATURES_TO_USE_OPTIONS,
-        OPTIMIZER_OPTIONS,
-        LOSS_FUNCTION_OPTIONS
+        LEARNING_RATE_OPTIONS,
     )
 
-    for (frequency, tsteps, lstm_units, batch_size, n_lstm_layers, stateful,
-         features_to_use, optimizer_name, loss_function) in experiment_params:
-        
-        experiment_id = datetime.now().strftime("%Y%m%d-%H%M%S-%f") # Unique ID for each experiment
-        
+    for (frequency, lstm_units, learning_rate) in experiment_params:
+        tsteps = FIXED_TSTEPS
+        batch_size = FIXED_BATCH_SIZE
+        n_lstm_layers = FIXED_N_LSTM_LAYERS
+        stateful = FIXED_STATEFUL
+        optimizer_name = FIXED_OPTIMIZER
+        loss_function = FIXED_LOSS
+        features_to_use = FIXED_FEATURES
+
+        experiment_id = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+
         print(f"\n--- Running Experiment ID: {experiment_id} ---")
         print(f"Frequency: {frequency}, TSTEPS: {tsteps}, LSTM Units: {lstm_units}, "
-              f"Batch Size: {batch_size}, N_LSTM_Layers: {n_lstm_layers}, Stateful: {stateful}, "
-              f"Features: {features_to_use}, Optimizer: {optimizer_name}, Loss: {loss_function}")
+              f"LR: {learning_rate}, Batch: {batch_size}, Layers: {n_lstm_layers}, "
+              f"Stateful: {stateful}, Optimizer: {optimizer_name}, Loss: {loss_function}")
 
         try:
-            # Convert minute data to current frequency
             convert_minute_to_timeframe(RAW_DATA_CSV, frequency)
-            
-            # Prepare Keras input data (features will be selected in train/eval)
-            n_features = len(features_to_use)
 
-        # --- Train Model ---
             train_result = train_model(
                 frequency=frequency,
                 tsteps=tsteps,
                 lstm_units=lstm_units,
-                learning_rate=0.01,  # Fixed for now
-                epochs=20,  # Fixed for now
+                learning_rate=learning_rate,
+                epochs=20,
                 current_batch_size=batch_size,
                 n_lstm_layers=n_lstm_layers,
                 stateful=stateful,
@@ -212,6 +212,7 @@ def run_experiments():
                     'n_lstm_layers': n_lstm_layers,
                     'stateful': stateful,
                     'features_to_use': features_to_use,
+                    'learning_rate': learning_rate,
                     'optimizer_name': optimizer_name,
                     'loss_function': loss_function,
                     'validation_loss': final_val_loss,
@@ -241,8 +242,8 @@ def run_experiments():
                         'validation_loss': final_val_loss,
                         'model_filename': os.path.basename(model_path),
                         'lstm_units': lstm_units,
-                        'learning_rate': 0.01, # Fixed for now
-                        'epochs': 20, # Fixed for now
+                        'learning_rate': learning_rate,
+                        'epochs': 20,
                         'batch_size': batch_size,
                         'n_lstm_layers': n_lstm_layers,
                         'stateful': stateful,

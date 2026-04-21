@@ -170,13 +170,14 @@ def train_model(
 
     # --- Log-return targets (gains) ---
     # For each window ending at time index ``t`` with horizon ``ROWS_AHEAD``, we
-    # define the target as the forward log return on raw Open prices::
+    # define the target as the forward log return on raw Close prices::
     #
-    #     r_t = log(Open_{t+ROWS_AHEAD}) - log(Open_t)
+    #     r_t = log(Close_{t+ROWS_AHEAD}) - log(Close_t)
     #
-    # We then align one target per input window.
+    # Anchor is Close so that the strategy's signal = pred/Close - 1 is unbiased
+    # (see docs/debugging-heuristics.md Pattern 8 — anchor mismatch).
     def _make_log_return_targets(df_raw: pd.DataFrame, num_sequences: int) -> np.ndarray:
-        prices = df_raw["Open"].to_numpy(dtype=float)
+        prices = df_raw["Close"].to_numpy(dtype=float)
         log_returns = compute_log_return_labels(prices, rows_ahead=ROWS_AHEAD)
 
         n = len(log_returns)

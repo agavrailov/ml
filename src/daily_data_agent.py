@@ -86,8 +86,8 @@ async def ingest_new_data(symbol: str) -> None:
     """Fetch new minute data for *symbol* and append to its raw CSV.
 
     Bootstrap strategy:
-      - Raw CSV absent → one-time Alpaca historical dump (2022-01-01 → now).
-        Requires ALPACA_API_KEY and ALPACA_SECRET_KEY env vars.
+      - Raw CSV absent → raises FileNotFoundError with instructions to run
+        ``scripts/ibkr_bootstrap_history.py`` first.
       - Raw CSV present → IBKR incremental update (appends bars beyond last row).
 
     The IBKR path requires TWS/Gateway to be running.
@@ -99,17 +99,12 @@ async def ingest_new_data(symbol: str) -> None:
     end_date = datetime.now()
 
     if not os.path.exists(raw_csv):
-        print(
-            f"[agent] No raw CSV for {symbol}; running one-time Alpaca historical dump."
+        raise FileNotFoundError(
+            f"[agent] No raw CSV found for {symbol} at {raw_csv}.\n"
+            "Run the one-time IBKR bootstrap first:\n"
+            "  python scripts/ibkr_bootstrap_history.py --start 2022-01-01\n"
+            "TWS or IB Gateway must be running and accepting connections."
         )
-        from src.ingestion.polygon_historical import download_minute_history
-        from datetime import date as _date
-        download_minute_history(
-            symbol,
-            start=_date(2022, 1, 1),
-            end=None,  # today
-        )
-        return
 
     print(
         f"[agent] Raw CSV found for {symbol}; running IBKR incremental update → {raw_csv}"
@@ -312,11 +307,19 @@ def run_daily_pipeline(
 
     # 4) Create curated-minute snapshot for each symbol
     for sym in symbols:
+        raw_csv = get_raw_data_csv_path(sym)
+        if not os.path.exists(raw_csv):
+            print(f"[agent] Raw CSV not found at {raw_csv}; skipping curated-minute snapshot for {sym}.")
+            continue
         print(f"[agent] Processing curated-minute snapshot for {sym}...")
         run_transform_minute_bars(sym)
 
     # 5) Resample to hourly and engineer features
     for sym in symbols:
+        curated_path = os.path.join(PROCESSED_DATA_DIR, f"{sym.lower()}_minute_curated.csv")
+        if not os.path.exists(curated_path):
+            print(f"[agent] Curated-minute CSV not found for {sym}; skipping resampling.")
+            continue
         resample_and_add_features(sym)
 
     print("[agent] --- Daily Data Pipeline Agent completed ---")
@@ -332,9 +335,10 @@ if __name__ == "__main__":
         help="Skip IB/TWS data ingestion (dry run).",
     )
     parser.add_argument(
-        "--symbol",
-        default="NVDA",
-        help="Ticker symbol to process (default: NVDA).",
+        "--symbols",
+        nargs="+",
+        default=None,
+        help="Tickers to process. Defaults to all symbols in configs/portfolio.json.",
     )
     args = parser.parse_args()
-    run_daily_pipeline(skip_ingestion=args.skip_ingestion, symbols=[args.symbol])
+    run_daily_pipeline(skip_ingestion=args.skip_ingestion, symbols=args.symbols)

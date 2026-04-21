@@ -2,7 +2,7 @@
 
 This module provides small, explicit checks over the raw minute-level CSV
 used by the rest of the pipeline, plus helpers to compute a simple
-0–100 quality KPI and format a human-readable report.
+0-100 quality KPI and format a human-readable report.
 
 All checks are *read-only* and have no side effects.
 """
@@ -19,6 +19,10 @@ import pandas as pd
 
 from src.config import RAW_DATA_CSV
 from src.data_processing import GAP_ANALYSIS_OUTPUT_JSON
+
+# Approximate US equity trading hours in UTC (covers both EDT and EST).
+_MARKET_OPEN_HOUR_UTC = 13
+_MARKET_CLOSE_HOUR_UTC = 21
 
 
 CheckResult = Dict[str, object]
@@ -215,21 +219,35 @@ def analyze_raw_minute_data(csv_path: str = RAW_DATA_CSV) -> List[CheckResult]:
         }
     )
 
-    # Intra-day gaps > 1 minute.
+    # Intra-day gaps > 1 minute *during trading hours only*.
+    # Gaps that start after market close and end before market open (e.g. 03:00 to
+    # 12:30 UTC same calendar day) are normal overnight closures, not real data gaps.
     df["delta"] = df["DateTime"].diff()
     same_day = df["DateTime"].dt.date == df["DateTime"].shift(1).dt.date
-    intraday_gaps = df.loc[same_day & (df["delta"] > pd.Timedelta(minutes=1)), "delta"]
+    end_in_trading_hours = (
+        (df["DateTime"].dt.hour >= _MARKET_OPEN_HOUR_UTC)
+        & (df["DateTime"].dt.hour < _MARKET_CLOSE_HOUR_UTC)
+    )
+    intraday_gaps = df.loc[
+        same_day & (df["delta"] > pd.Timedelta(minutes=1)) & end_in_trading_hours,
+        "delta",
+    ]
     n_gaps = int(intraday_gaps.shape[0])
     max_gap = intraday_gaps.max() if n_gaps else pd.Timedelta(0)
-    results.append(
-        {
-            "id": "intraday_gaps",
-            "category": "Continuity",
-            "description": "Intra-day gaps greater than 1 minute",
-            "status": _status_from_bool(n_gaps == 0, warn=True),
-            "details": f"{n_gaps} intra-day gaps; max gap {max_gap}.",
-        }
-    )
+    gap_weight = max(0.5, 1.0 - n_gaps * 0.01) if n_gaps > 0 else 1.0
+    gap_result: dict = {
+        "id": "intraday_gaps",
+        "category": "Continuity",
+        "description": (
+            f"Intra-day gaps > 1 min during trading hours "
+            f"({_MARKET_OPEN_HOUR_UTC}:00-{_MARKET_CLOSE_HOUR_UTC}:00 UTC)"
+        ),
+        "status": _status_from_bool(n_gaps == 0, warn=True),
+        "details": f"{n_gaps} intra-day trading-hours gaps; max gap {max_gap}.",
+    }
+    if n_gaps > 0:
+        gap_result["weight_override"] = gap_weight
+    results.append(gap_result)
 
     # ----------------------------------------------------------------------------------
     # Missing values & basic validity
@@ -305,27 +323,63 @@ def analyze_raw_minute_data(csv_path: str = RAW_DATA_CSV) -> List[CheckResult]:
             with open(GAP_ANALYSIS_OUTPUT_JSON, "r", encoding="utf-8") as f:
                 data = json.load(f)
             if isinstance(data, list):
-                n_gaps_json = len(data)
-                durations = [g.get("duration") for g in data if isinstance(g, dict) and "duration" in g]
+                n_total_json = len(data)
+                # Count only gaps that overlap trading hours (field added in updated
+                # analyze_gaps.py). Fall back to counting all gaps for old JSON format
+                # that lacks the field (conservative: assume all are real).
+                has_overlap_field = any(
+                    "overlaps_trading_hours" in g for g in data if isinstance(g, dict)
+                )
+                if has_overlap_field:
+                    real_gaps = [
+                        g for g in data
+                        if isinstance(g, dict) and g.get("overlaps_trading_hours", False)
+                    ]
+                else:
+                    real_gaps = [g for g in data if isinstance(g, dict)]
+                n_real = len(real_gaps)
+                durations = [g.get("duration") for g in real_gaps if "duration" in g]
                 max_dur = max(durations) if durations else None
-                details = f"{n_gaps_json} gaps from analyze_gaps.py; max duration {max_dur}."
+                details = (
+                    f"{n_real} trading-hours gaps (of {n_total_json} total); "
+                    f"max duration {max_dur}."
+                )
+                if n_real == 0:
+                    gap_json_status = "pass"
+                    gap_json_entry: dict = {
+                        "id": "gap_analysis_json",
+                        "category": "Continuity",
+                        "description": "Gap-analysis summary: trading-hours gaps (from analyze_gaps.py)",
+                        "status": gap_json_status,
+                        "details": details,
+                    }
+                else:
+                    # Lose 2% per real gap, floor at 0.5 so extreme cases still warn.
+                    weight = max(0.5, 1.0 - n_real * 0.02)
+                    gap_json_entry = {
+                        "id": "gap_analysis_json",
+                        "category": "Continuity",
+                        "description": "Gap-analysis summary: trading-hours gaps (from analyze_gaps.py)",
+                        "status": "warn",
+                        "details": details,
+                        "weight_override": weight,
+                    }
             else:
                 details = "Gap analysis JSON is not a list; structure unknown."
-            results.append(
-                {
+                gap_json_entry = {
                     "id": "gap_analysis_json",
                     "category": "Continuity",
-                    "description": "Existing gap-analysis summary (from analyze_gaps.py)",
-                    "status": "pass",
+                    "description": "Gap-analysis summary: trading-hours gaps (from analyze_gaps.py)",
+                    "status": "warn",
                     "details": details,
                 }
-            )
+            results.append(gap_json_entry)
         except Exception as exc:  # pragma: no cover - best-effort summary
             results.append(
                 {
                     "id": "gap_analysis_json",
                     "category": "Continuity",
-                    "description": "Existing gap-analysis summary (from analyze_gaps.py)",
+                    "description": "Gap-analysis summary: trading-hours gaps (from analyze_gaps.py)",
                     "status": "warn",
                     "details": f"Could not read {GAP_ANALYSIS_OUTPUT_JSON}: {exc}",
                 }
@@ -503,8 +557,11 @@ def compute_quality_kpi(checks: List[CheckResult]) -> Dict[str, object]:
     if n_total == 0:
         score = 0.0
     else:
-        weights = {"pass": 1.0, "warn": 0.6, "fail": 0.0}
-        total_weight = sum(weights.get(str(c.get("status")), 0.0) for c in checks)
+        base_weights = {"pass": 1.0, "warn": 0.6, "fail": 0.0}
+        total_weight = sum(
+            c.get("weight_override", base_weights.get(str(c.get("status")), 0.0))
+            for c in checks
+        )
         score = 100.0 * total_weight / float(n_total)
 
     return {

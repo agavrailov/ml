@@ -185,6 +185,51 @@ Tests:
 - `tests/test_contracts_and_alignment.py::test_load_predictions_csv_no_warning_on_clean_input`
 - `tests/test_data_processing_daily_broadcast.py::test_clean_raw_minute_data_removes_true_duplicate_timestamps`
 
+### Pattern 7 — Bootstrap cursor stride skips half the history
+
+**What it looks like:** The backtest equity curve crashes in the most recent
+period even though NVDA itself has recovered.  The raw minute CSV appears to
+end at today's date and span the full ``--start`` → today range, but
+per-month row counts alternate between ~20k (full month) and ~100–2k
+(boundary overlap only).
+
+The culprit is `scripts/ibkr_bootstrap_history.py` walking backward through
+time.  Each request fetches ``durationStr="1 M"`` (≈30 days of bars), so the
+cursor must step back by **less than 30 days** between requests.  The pre-fix
+logic was:
+
+```python
+cursor -= timedelta(days=32)
+cursor = cursor.replace(day=1)
+```
+
+Starting from a mid-month ``end`` date, ``cursor`` immediately snaps to the
+first of the *previous* month, and every subsequent step lands on the first
+of the month **two** months earlier.  Concretely for ``end=2026-04-20``:
+``2026-04-20 → 2026-03-01 → 2026-01-01 → 2025-11-01 → …``.  Every odd
+calendar month is never requested.  The freshly-bootstrapped dataset has
+~50% coverage, but the artefact looks healthy because each individual fetched
+month is dense.
+
+**Signatures to recognise:**
+- `raw.groupby(DateTime.dt.to_period("M")).size()` shows alternating
+  full/empty months.
+- `analyze_gaps.py` reports many multi-week gaps whose end-times cluster on
+  day 1–3 of a month at the market-open hour.
+- Equity curve shows a sharp drawdown coincident with the most recent odd
+  month (first iteration of the bootstrap, starting mid-month).
+- Stateful LSTM predictions near odd-month boundaries look like outliers
+  because SMA/RSI/ATR rolling windows straddle a 30-day jump.
+
+**Fix:** Step the cursor back by a fixed ``timedelta(days=28)`` (a few days
+of intentional overlap, deduped downstream by ``drop_duplicates``).  Do not
+snap to month boundaries — the stride must be driven by the chunk duration,
+not the calendar.
+
+Tests:
+- `tests/test_ibkr_bootstrap_stride.py` — enumerates chunk end-datetimes and
+  asserts every day in ``[start, end]`` is covered by at least one chunk.
+
 ---
 
 ## The backtest ratio gate

@@ -1,8 +1,7 @@
-"""Generate per-bar LSTM predictions for NVDA data.
+"""Generate per-bar LSTM predictions for one or all symbols.
 
-This script loads `data/processed/nvda_<frequency>.csv`, runs the existing
-LSTM prediction pipeline in a sliding-window fashion, and writes a
-predictions CSV.
+This script loads `data/processed/<symbol>_<frequency>.csv`, runs the existing
+LSTM prediction pipeline in a sliding-window fashion, and writes predictions CSVs.
 
 Important performance note
 - We reuse the model prediction checkpoint written by
@@ -17,8 +16,12 @@ The output CSV contains columns:
 
 Usage (from repo root):
 
-    python -m scripts.generate_predictions_csv --frequency 60min \
+    # Single symbol
+    python -m scripts.generate_predictions_csv --frequency 60min --symbol NVDA \
         --output backtests/nvda_60min_predictions.csv
+
+    # All available symbols (auto-discovers from data/processed/)
+    python -m scripts.generate_predictions_csv --frequency 60min
 
 This CSV can then be consumed by `src.backtest.py` with
 `--prediction-mode=csv --predictions-csv <path>`.
@@ -130,13 +133,30 @@ def generate_predictions_for_csv(
     print(f"Wrote predictions for {len(out_df)} bars to {output_path}")
 
 
+def get_available_symbols(frequency: str) -> list[str]:
+    """Discover all available symbols by scanning data/processed/ for {symbol}_{frequency}.csv files."""
+    processed_dir = config_mod.PathsConfig().processed_data_dir
+    symbols = []
+
+    if not os.path.exists(processed_dir):
+        return symbols
+
+    for filename in os.listdir(processed_dir):
+        if filename.endswith(f"_{frequency}.csv"):
+            # Extract symbol from filename like "nvda_60min.csv" -> "NVDA"
+            symbol = filename.replace(f"_{frequency}.csv", "").upper()
+            symbols.append(symbol)
+
+    return sorted(symbols)
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate per-bar predictions CSV for a symbol.")
+    parser = argparse.ArgumentParser(description="Generate per-bar predictions CSV for one or all symbols.")
     parser.add_argument(
         "--symbol",
         type=str,
-        default="NVDA",
-        help="Symbol to generate predictions for (e.g. NVDA, JPM, GS).",
+        default=None,
+        help="Symbol to generate predictions for (e.g. NVDA, JPM, GS). If omitted, generates for all available symbols.",
     )
     parser.add_argument(
         "--frequency",
@@ -147,8 +167,8 @@ def main() -> None:
     parser.add_argument(
         "--output",
         type=str,
-        required=True,
-        help="Path to the output predictions CSV.",
+        default=None,
+        help="Path to the output predictions CSV. If omitted with no --symbol, generates backtests/{symbol}_{frequency}_predictions.csv for each symbol.",
     )
     parser.add_argument(
         "--max-rows",
@@ -158,12 +178,41 @@ def main() -> None:
     )
 
     args = parser.parse_args()
-    generate_predictions_for_csv(
-        frequency=args.frequency,
-        output_path=args.output,
-        symbol=args.symbol,
-        max_rows=args.max_rows,
-    )
+
+    # Determine which symbols to process
+    if args.symbol:
+        symbols = [args.symbol]
+        if not args.output:
+            raise ValueError("--output is required when --symbol is specified")
+    else:
+        symbols = get_available_symbols(args.frequency)
+        if not symbols:
+            raise ValueError(f"No data files found for frequency '{args.frequency}' in data/processed/")
+        print(f"Auto-discovered symbols: {', '.join(symbols)}")
+
+    # Process each symbol
+    for symbol in symbols:
+        if args.symbol:
+            # Single symbol mode: use provided output path
+            output_path = args.output
+        else:
+            # Multi-symbol mode: generate output path
+            output_path = f"backtests/{symbol.lower()}_{args.frequency}_predictions.csv"
+
+        try:
+            generate_predictions_for_csv(
+                frequency=args.frequency,
+                output_path=output_path,
+                symbol=symbol,
+                max_rows=args.max_rows,
+            )
+        except Exception as e:
+            print(f"Error processing {symbol}: {e}")
+            if args.symbol:
+                # If single symbol was explicitly requested, re-raise
+                raise
+            # If multi-symbol, continue to next symbol
+            continue
 
 
 if __name__ == "__main__":  # pragma: no cover
