@@ -230,23 +230,119 @@ Tests:
 - `tests/test_ibkr_bootstrap_stride.py` — enumerates chunk end-datetimes and
   asserts every day in ``[start, end]`` is covered by at least one chunk.
 
+### Pattern 8 — Anchor mismatch between label, denorm, and signal consumer
+
+**What it looks like:** The backtest equity curve flat-lines or drifts
+downward despite the pred/Open ratio being healthy (``p50 ≈ 1.0003``,
+``std ≈ 0.0017``).  Hyperparameter sweeps return no profitable configurations.
+Directional accuracy, when measured against Open, looks roughly coin-flip
+(~45%), but when measured against Close (what the strategy actually uses) it
+drops to ~21% — markedly worse than random.
+
+**Root cause:** three distinct anchors must all agree, and in the 2026-04
+regression they did not:
+
+1. **Label anchor** (what the model is trained to predict).  Training built
+   targets as ``log(Open[t+k]) - log(Open[t])``.
+2. **Denorm anchor** (the base price the inference pipeline multiplies by
+   ``exp(r_hat)``).  Inference sites did ``predicted_price = Open[t] * exp(r_hat)``.
+3. **Strategy divisor** (the reference price the signal is computed against).
+   [src/strategy.py](../src/strategy.py) computes
+   ``signal = predicted_price / Close[t] - 1``.
+
+When anchors (1)+(2) are Open but (3) is Close, the signal the strategy sees
+is ``Open[t]/Close[t] * exp(r_hat) - 1 ≈ (Open[t]/Close[t] - 1) + r_hat``.
+The bar shape ``Open/Close - 1`` has a standard deviation (~0.008 on NVDA
+60min) larger than ``r_hat`` itself (~0.003), so the strategy signal is
+dominated by intra-bar noise — and worse, it's *anti-correlated* with the
+true next-bar direction because within a bar Close tends to revert Open
+slightly.  Empirical fingerprint on NVDA 60min (17,040 bars):
+
+```
+std(r_hat)                                0.0031
+std(Open/Close - 1)                       0.0079
+corr(strategy_signal, bar_shape)         +0.921
+corr(strategy_signal, model_signal)      -0.123
+directional accuracy pred/Open (native)  45.3%
+directional accuracy pred/Close (used)   21.1%
+```
+
+The existing ``_log_pred_ratio_summary`` guardrail reported
+``pred/Open p50=1.0003`` and passed — *because it measured the wrong ratio*.
+The anchor mismatch is invisible at that layer and only surfaces as an
+inverted equity curve.
+
+**Signatures to recognise:**
+- ``pred/Open`` ratio in band but ``pred/Close`` ratio shifted by the typical
+  bar-shape magnitude (e.g. ``p50 ≈ 1.008``).
+- ``|corr(pred/Close - 1, Open/Close - 1)| > 0.3`` — the definitive
+  discriminator.  On a correctly anchored model this correlation is near zero.
+- Directional accuracy against the strategy's divisor (``Close``) is far
+  below directional accuracy against the label anchor (``Open``).
+- Hyperparameter sweeps cannot find a profitable configuration: no amount of
+  threshold tuning rescues an anti-correlated signal.
+
+**Fix:** anchor the entire chain on the same price column.  Because the
+strategy consumes ``pred / Close - 1`` and Close is the last observable price
+at bar-close decision time, Close is the natural anchor:
+
+- [src/train.py](../src/train.py) — targets from ``Close`` not ``Open``.
+- [src/backtest.py](../src/backtest.py) — denorm ``Close * exp(r_hat)``;
+  bias-correction actuals ``Close.shift(-ROWS_AHEAD)``.
+- [src/predict.py](../src/predict.py),
+  [src/live_predictor.py](../src/live_predictor.py) — denorm on last Close.
+
+Additionally, ``apply_rolling_bias_and_amplitude_correction`` accepts a
+``lookahead_lag`` keyword so the rolling window only uses residuals whose
+actuals were already observable at the current bar — matching the
+``shift_sigma_to_observable`` treatment already applied to the sigma series.
+
+**Saved ``mean_residual`` now applied in backtest inference.**
+``PredictionContext.bias_correction_mean_residual`` was loaded but previously
+only used in live trading, causing backtest/live drift.  The backtest model
+provider now adds it to ``preds_log_full`` before denorm (skipping if zero).
+
+**Guardrail.**  ``_log_pred_ratio_summary`` now reports ``pred/Close`` (the
+ratio the strategy consumes), keeps ``pred/Open`` as a diagnostic line, and
+computes ``corr(pred/Close - 1, Open/Close - 1)`` — warning loudly when
+``|corr| >= 0.3``.  This catches anchor mismatches even when the percentiles
+happen to look clean.
+
+Tests:
+- `tests/test_anchor_alignment.py::test_denorm_anchor_is_close_in_live_predictor`
+- `tests/test_anchor_alignment.py::test_denorm_anchor_is_close_known_log_return`
+- `tests/test_anchor_alignment.py::test_log_pred_ratio_summary_reports_pred_close_in_band`
+- `tests/test_anchor_alignment.py::test_log_pred_ratio_summary_warns_on_open_anchor_mismatch`
+- `tests/test_anchor_alignment.py::test_close_anchor_directional_accuracy_beats_open_anchor`
+
 ---
 
 ## The backtest ratio gate
 
-The single most valuable guardrail is the pred/Open ratio summary printed
-after every `_make_model_prediction_provider` run. Healthy output:
+The single most valuable guardrail is the pred/Close ratio summary printed
+after every `_make_model_prediction_provider` run, plus the anchor-mismatch
+correlation check.  pred/Close is the ratio the strategy consumes; pred/Open
+is still printed as a diagnostic.  Healthy output (post 2026-04-21):
 
 ```
-[NVDA 60min] pred/Open ratio: n=15156/21616 mean=1.0001 p05=0.9970 p50=1.0002 p95=1.0028 std=0.0017
+[NVDA 60min] pred/Close ratio: n=15156/21616 mean=1.0001 p05=0.9970 p50=1.0002 p95=1.0028 std=0.0017
+[NVDA 60min] pred/Open ratio (diagnostic): p50=1.0003 std=0.0080
+[NVDA 60min] corr(strategy_signal, bar_shape)=+0.012
 ```
 
-Bug output (what the 2026-04 regression produced):
+Bug outputs:
 
 ```
-[NVDA 60min] pred/Open ratio: ... p50=0.7500 ...
-  !! WARNING: median pred/Open ratio 0.7500 is outside [0.99, 1.01]. ...
+# Flat-equity regression (pipeline misalignment):
+[NVDA 60min] pred/Close ratio: ... p50=0.7500 ...
+  !! WARNING: median pred/Close ratio 0.7500 is outside [0.99, 1.01]. ...
+
+# Anchor mismatch (Pattern 8):
+[NVDA 60min] pred/Close ratio: ... p50=1.008 ...
+[NVDA 60min] corr(strategy_signal, bar_shape)=+0.921
+  !! WARNING: |corr(strategy_signal, bar_shape)|=0.921 >= 0.3.  This
+  indicates an anchor mismatch (Pattern 8)...
 ```
 
-If you see the warning line, **stop** and investigate the pipeline —
-don't try to tune strategy thresholds until the ratio is back in band.
+If you see any WARNING line, **stop** and investigate the pipeline —
+don't try to tune strategy thresholds until both checks are clean.

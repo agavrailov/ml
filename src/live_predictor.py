@@ -201,11 +201,11 @@ class LivePredictor:
 
         X = df_norm[feature_cols].to_numpy(dtype=np.float32)[np.newaxis, :, :]  # (1, T, F)
 
-        # Model outputs forward log return on Open.
+        # Model outputs forward log return on Close (the training-time anchor).
         preds = self.ctx.model.predict(X, verbose=0)
         log_r = float(np.asarray(preds).reshape(-1)[0])
         log_r += float(getattr(self.ctx, "bias_correction_mean_residual", 0.0) or 0.0)
 
-        base_open = float(df_raw["Open"].iloc[-1])
-        predicted_price = base_open * float(np.exp(log_r))
+        base_close = float(df_raw["Close"].iloc[-1])
+        predicted_price = base_close * float(np.exp(log_r))
         return float(predicted_price)

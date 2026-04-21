@@ -521,9 +521,10 @@ def predict_future_prices(
     predictions_log = ctx.model.predict(input_reshaped, verbose=0)
     single_log_return = float(predictions_log[0, 0])
 
-    # Map log-return back to a price using the last raw Open price.
-    base_open = float(df_featured_input['Open'].iloc[-1])
-    predicted_price = base_open * float(np.exp(single_log_return))
+    # Map log-return back to a price using the last raw Close price — the
+    # training-time label anchor.  See docs/debugging-heuristics.md Pattern 8.
+    base_close = float(df_featured_input['Close'].iloc[-1])
+    predicted_price = base_close * float(np.exp(single_log_return))
 
     return predicted_price
 

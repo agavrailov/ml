@@ -20,6 +20,9 @@ def _build_dummy_feature_df() -> pd.DataFrame:
             "Time": times,
             "Open": np.linspace(100.0, 110.0, len(times)),
             "High": np.linspace(101.0, 111.0, len(times)),
+            # Close is required by the log-return label builder (the Close
+            # anchor introduced for Pattern 8).
+            "Close": np.linspace(100.5, 110.5, len(times)),
         }
     )
 

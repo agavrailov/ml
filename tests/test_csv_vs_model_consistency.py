@@ -63,6 +63,7 @@ def test_model_vs_csv_equity_parity(tmp_path: Path) -> None:
         window: int,
         global_mean_residual: float,
         enable_amplitude: bool = False,
+        **kwargs: Any,
     ) -> np.ndarray:  # noqa: ARG001
         return predictions
 

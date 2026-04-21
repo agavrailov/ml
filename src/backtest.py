@@ -229,30 +229,40 @@ def _log_pred_ratio_summary(
     symbol: str,
     frequency: str,
 ) -> None:
-    """Emit a one-line summary of predicted-price / actual-Open ratios.
+    """Emit a one-line summary of predicted-price / actual-Close ratios
+    (the ratio the strategy actually consumes) and the diagnostic pred/Open
+    ratio.
 
-    A healthy next-bar log-return model produces ratios clustered very
-    tightly around 1.0 (typically p05-p95 within ``[0.995, 1.005]``).  If
-    the median lands outside ``[PRED_RATIO_WARN_LOW, PRED_RATIO_WARN_HIGH]``
-    that is almost certainly a pipeline bug — we print a loud warning so
-    the regression is visible on first run instead of taking a flat
-    equity curve to surface it.
+    A healthy next-bar log-return model with a Close anchor produces
+    pred/Close ratios clustered very tightly around 1.0 (typically p05-p95
+    within ``[0.995, 1.005]``).  If the median lands outside
+    ``[PRED_RATIO_WARN_LOW, PRED_RATIO_WARN_HIGH]`` that is almost certainly
+    a pipeline bug — we print a loud warning so the regression is visible
+    on first run instead of taking a flat equity curve to surface it.
+
+    Additionally, we report the correlation between the strategy signal
+    ``pred/Close - 1`` and the bar shape ``Open/Close - 1``.  A correlation
+    above 0.3 means the predicted price is anchored on a different column
+    than the strategy divides by — the Pattern 8 anchor mismatch.  This
+    catches a class of silent bugs that pred/Close percentiles alone can
+    miss (e.g. when the mismatch happens to average out near 1.0 across a
+    long horizon).
     """
 
-    if "Open" not in data.columns:
+    if "Close" not in data.columns:
         return
-    open_arr = data["Open"].to_numpy(dtype=float)
-    if len(open_arr) != n or len(denorm_full) != n:
+    close_arr = data["Close"].to_numpy(dtype=float)
+    if len(close_arr) != n or len(denorm_full) != n:
         return
-    mask = np.isfinite(denorm_full) & np.isfinite(open_arr) & (open_arr > 0)
+    mask = np.isfinite(denorm_full) & np.isfinite(close_arr) & (close_arr > 0)
     if not mask.any():
         print(
-            f"[{symbol} {frequency}] pred/Open ratio summary: no finite pairs "
+            f"[{symbol} {frequency}] pred/Close ratio summary: no finite pairs "
             "to compare (all predictions NaN).",
             flush=True,
         )
         return
-    ratios = denorm_full[mask] / open_arr[mask]
+    ratios = denorm_full[mask] / close_arr[mask]
     p05 = float(np.quantile(ratios, 0.05))
     p50 = float(np.quantile(ratios, 0.50))
     p95 = float(np.quantile(ratios, 0.95))
@@ -260,14 +270,55 @@ def _log_pred_ratio_summary(
     std = float(ratios.std())
     n_valid = int(mask.sum())
     summary = (
-        f"[{symbol} {frequency}] pred/Open ratio: n={n_valid}/{n} "
+        f"[{symbol} {frequency}] pred/Close ratio: n={n_valid}/{n} "
         f"mean={mean:.4f} p05={p05:.4f} p50={p50:.4f} p95={p95:.4f} "
         f"std={std:.4f}"
     )
     print(summary, flush=True)
+
+    # Diagnostic: pred/Open — the old guardrail.  Useful to spot if the
+    # anchor has drifted back to Open.
+    if "Open" in data.columns:
+        open_arr = data["Open"].to_numpy(dtype=float)
+        if len(open_arr) == n:
+            open_mask = mask & np.isfinite(open_arr) & (open_arr > 0)
+            if open_mask.any():
+                open_ratios = denorm_full[open_mask] / open_arr[open_mask]
+                print(
+                    f"[{symbol} {frequency}] pred/Open ratio (diagnostic): "
+                    f"p50={float(np.quantile(open_ratios, 0.50)):.4f} "
+                    f"std={float(open_ratios.std()):.4f}",
+                    flush=True,
+                )
+
+            # Anchor-mismatch detector: correlate strategy signal with bar
+            # shape.  |corr| >= 0.3 on a healthy model is almost certainly
+            # Pattern 8 (label/denorm/signal anchored on different columns).
+            shape_mask = mask & np.isfinite(open_arr) & (open_arr > 0)
+            if shape_mask.sum() >= 32:
+                strat_signal = (denorm_full[shape_mask] / close_arr[shape_mask]) - 1.0
+                bar_shape = (open_arr[shape_mask] / close_arr[shape_mask]) - 1.0
+                if float(strat_signal.std()) > 0 and float(bar_shape.std()) > 0:
+                    corr = float(np.corrcoef(strat_signal, bar_shape)[0, 1])
+                    print(
+                        f"[{symbol} {frequency}] corr(strategy_signal, bar_shape)="
+                        f"{corr:+.3f}",
+                        flush=True,
+                    )
+                    if abs(corr) >= 0.3:
+                        print(
+                            f"  !! WARNING: |corr(strategy_signal, bar_shape)|="
+                            f"{abs(corr):.3f} >= 0.3.  This indicates an "
+                            "anchor mismatch (Pattern 8): the predicted price "
+                            "and the strategy divisor are anchored on "
+                            "different price columns.  See "
+                            "docs/debugging-heuristics.md.",
+                            flush=True,
+                        )
+
     if not (PRED_RATIO_WARN_LOW <= p50 <= PRED_RATIO_WARN_HIGH):
         warning = (
-            f"  !! WARNING: median pred/Open ratio {p50:.4f} is outside "
+            f"  !! WARNING: median pred/Close ratio {p50:.4f} is outside "
             f"[{PRED_RATIO_WARN_LOW}, {PRED_RATIO_WARN_HIGH}].  This almost "
             "always indicates a pipeline bug (alignment / scaler / "
             "denormalization).  See docs/debugging-heuristics.md."
@@ -445,12 +496,29 @@ def _make_model_prediction_provider(
     if len(preds_log) > 0:
         preds_log_full[ctx.tsteps - 1 : ctx.tsteps - 1 + len(preds_log)] = preds_log
 
-    # Map log returns back to prices using the raw Open series from the
-    # feature-engineered DataFrame.
-    base_open = df_featured["Open"].to_numpy(dtype=float)
+    # Apply the saved training-time mean residual (log-return space) if
+    # available.  live_predictor.py already does this; the backtest path used
+    # to ignore it, causing backtest/live parity drift.
+    _saved_mean_residual = float(
+        getattr(ctx, "bias_correction_mean_residual", 0.0) or 0.0
+    )
+    if _saved_mean_residual != 0.0 and np.isfinite(_saved_mean_residual):
+        preds_log_full = np.where(
+            np.isfinite(preds_log_full),
+            preds_log_full + _saved_mean_residual,
+            preds_log_full,
+        ).astype(np.float32)
+
+    # Map log returns back to prices using the raw Close series from the
+    # feature-engineered DataFrame.  Close is the anchor because (a) it is the
+    # last observable price at decision time (bar just closed) and (b) the
+    # strategy consumes signal = predicted_price / Close - 1.  Anchoring on
+    # Open here would inject (Open[t]/Close[t] - 1) bar-shape noise into the
+    # strategy signal — see docs/debugging-heuristics.md Pattern 8.
+    base_close = df_featured["Close"].to_numpy(dtype=float)
     denorm_feat = np.full_like(preds_log_full, np.nan, dtype=np.float32)
-    mask = np.isfinite(preds_log_full) & np.isfinite(base_open)
-    denorm_feat[mask] = base_open[mask] * np.exp(preds_log_full[mask])
+    mask = np.isfinite(preds_log_full) & np.isfinite(base_close)
+    denorm_feat[mask] = base_close[mask] * np.exp(preds_log_full[mask])
 
     # Now align predictions back to the ORIGINAL raw data length n by joining on
     # Time when available. This accounts for any rows dropped during feature
@@ -515,11 +583,13 @@ def _make_model_prediction_provider(
     if usable_len > 0:
         preds_trunc = denorm_full[:usable_len].astype(float)
         # Use the original ``data`` (not the feature-engineered ``df``) for
-        # actual prices so that shapes are consistent with ``n``.
-        if "Open" in data.columns:
-            acts_trunc = data["Open"].shift(-ROWS_AHEAD).to_numpy(dtype=float)[:usable_len]
-        else:
+        # actual prices so that shapes are consistent with ``n``.  Actuals must
+        # be Close to match the label and denorm anchor (Pattern 8) — otherwise
+        # the bias correction would be aiming at the wrong target.
+        if "Close" in data.columns:
             acts_trunc = data["Close"].shift(-ROWS_AHEAD).to_numpy(dtype=float)[:usable_len]
+        else:
+            acts_trunc = data["Open"].shift(-ROWS_AHEAD).to_numpy(dtype=float)[:usable_len]
 
         mask = np.isfinite(preds_trunc) & np.isfinite(acts_trunc)
         if mask.any():
@@ -532,12 +602,18 @@ def _make_model_prediction_provider(
             # natural volatility in price space, which was empirically causing
             # large deviations between checkpointed predictions and the
             # underlying price series in 2025.
+            # ``lookahead_lag=ROWS_AHEAD`` closes the look-ahead leak:
+            # ``acts_seq[j] = Close[j+ROWS_AHEAD]`` is only observable at bar
+            # ``j+ROWS_AHEAD``, so the rolling window at bar ``i`` must stop at
+            # residual index ``i - ROWS_AHEAD``.  See
+            # docs/debugging-heuristics.md Pattern 8.
             corrected_seq = apply_rolling_bias_and_amplitude_correction(
                 predictions=preds_seq,
                 actuals=acts_seq,
                 window=BIAS_CORRECTION_WINDOW,
                 global_mean_residual=mean_residual,
                 enable_amplitude=False,
+                lookahead_lag=ROWS_AHEAD,
             )
             denorm_full[first:first + len(corrected_seq)] = corrected_seq
 
@@ -784,10 +860,11 @@ def run_backtest_on_dataframe(
                 usable_len = max(0, n - ROWS_AHEAD)
                 if usable_len > 0:
                     preds_trunc = denorm_full[:usable_len].astype(float)
-                    if "Open" in data.columns:
-                        acts_trunc = data["Open"].shift(-ROWS_AHEAD).to_numpy(dtype=float)[:usable_len]
-                    else:
+                    # Anchor on Close to match label + denorm (Pattern 8).
+                    if "Close" in data.columns:
                         acts_trunc = data["Close"].shift(-ROWS_AHEAD).to_numpy(dtype=float)[:usable_len]
+                    else:
+                        acts_trunc = data["Open"].shift(-ROWS_AHEAD).to_numpy(dtype=float)[:usable_len]
 
                     mask = np.isfinite(preds_trunc) & np.isfinite(acts_trunc)
                     if mask.any():
@@ -801,6 +878,7 @@ def run_backtest_on_dataframe(
                             window=BIAS_CORRECTION_WINDOW,
                             global_mean_residual=0.0,
                             enable_amplitude=False,
+                            lookahead_lag=ROWS_AHEAD,
                         )
                         denorm_full[first:first + len(corrected_seq)] = corrected_seq
 

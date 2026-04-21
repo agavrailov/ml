@@ -47,7 +47,7 @@ def test_live_predictor_warmup_returns_close():
 def test_live_predictor_price_mapping_from_log_return():
     from src.live_predictor import LivePredictor, LivePredictorConfig
 
-    # log return=0 => predicted price equals last Open.
+    # log return=0 => predicted price equals last Close (the training anchor).
     ctx = _make_ctx(tsteps=3, features_to_use=["Open", "High", "Low", "Close"], log_return=0.0)
     pred = LivePredictor(ctx=ctx, config=LivePredictorConfig(frequency="60min", tsteps=3, warmup_extra=0))
 
@@ -55,13 +55,13 @@ def test_live_predictor_price_mapping_from_log_return():
     pred.update_and_predict({"Time": "2025-01-02", "Open": 110, "High": 110, "Low": 110, "Close": 110})
     out = pred.update_and_predict({"Time": "2025-01-03", "Open": 120, "High": 120, "Low": 120, "Close": 121})
 
-    assert out == pytest.approx(120.0)
+    assert out == pytest.approx(121.0)
 
 
 def test_live_predictor_applies_bias_correction_in_log_return_space():
     from src.live_predictor import LivePredictor, LivePredictorConfig
 
-    # model predicts 0, bias=log(2) => predicted price ~ 2 * Open.
+    # model predicts 0, bias=log(2) => predicted price ~ 2 * Close.
     bias = float(np.log(2.0))
     ctx = _make_ctx(
         tsteps=2,
@@ -118,5 +118,5 @@ def test_live_predictor_warmup_from_csv(tmp_path):
         "Close": 105.5,
     })
 
-    # Model predicts log_return=0, so predicted price should equal current Open
-    assert out == pytest.approx(105.0)
+    # Model predicts log_return=0, so predicted price should equal current Close
+    assert out == pytest.approx(105.5)

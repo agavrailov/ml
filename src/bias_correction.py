@@ -18,6 +18,7 @@ def apply_rolling_bias_and_amplitude_correction(
     enable_amplitude: bool = True,
     amp_min: float = 0.5,
     amp_max: float = 2.0,
+    lookahead_lag: int = 0,
 ) -> np.ndarray:
     """Apply rolling bias + optional amplitude correction on recent data.
 
@@ -43,6 +44,14 @@ def apply_rolling_bias_and_amplitude_correction(
         Soft bounds for the amplitude factor when ``enable_amplitude`` is
         ``True``. These prevent extreme rescaling when the windowed standard
         deviations are very different.
+    lookahead_lag:
+        When ``actuals[j]`` is built from a future price (e.g. ``Close[j + k]``
+        for a ``k``-bar-ahead model), the residual ``actuals[j] - predictions[j]``
+        is only *observable* at bar ``j + lookahead_lag``.  Setting this to a
+        positive value restricts the rolling window at position ``i`` to
+        residuals whose actuals were already realized by bar ``i`` — closing
+        the look-ahead leak described in docs/debugging-heuristics.md.
+        Default ``0`` preserves the legacy behavior.
 
     Returns
     -------
@@ -55,6 +64,8 @@ def apply_rolling_bias_and_amplitude_correction(
         raise ValueError("predictions and actuals must be 1D arrays")
     if window <= 0:
         raise ValueError("window must be a positive integer")
+    if lookahead_lag < 0:
+        raise ValueError("lookahead_lag must be non-negative")
 
     n = predictions.shape[0]
     if n == 0:
@@ -65,9 +76,16 @@ def apply_rolling_bias_and_amplitude_correction(
     corrected = np.zeros_like(preds, dtype=float)
 
     for i in range(n):
-        start = max(0, i - window + 1)
-        preds_win = preds[start : i + 1]
-        acts_win = acts[start : i + 1]
+        # Upper bound (exclusive) of observable residuals at bar ``i``.
+        end_obs = i + 1 - lookahead_lag
+        if end_obs <= 0:
+            # No observable residuals yet — fall back to the global prior and
+            # leave amplitude/centering as the identity.
+            corrected[i] = preds[i] + float(global_mean_residual)
+            continue
+        start = max(0, end_obs - window)
+        preds_win = preds[start:end_obs]
+        acts_win = acts[start:end_obs]
 
         # Rolling mean residual on the recent window. Use ``nanmean`` so that
         # sparse NaNs in the input (e.g. warmup bars where a prediction is not
@@ -77,11 +95,12 @@ def apply_rolling_bias_and_amplitude_correction(
         finite_resid = residuals_win[np.isfinite(residuals_win)]
         local_mean_resid = float(np.mean(finite_resid)) if finite_resid.size > 0 else 0.0
 
-        # During warmup (fewer than ``window`` samples), blend the global
-        # mean residual with the local estimate so that the layer is
+        # During warmup (fewer than ``window`` observable samples), blend the
+        # global mean residual with the local estimate so that the layer is
         # well-defined from the first point but still adapts to new data.
-        if i + 1 < window:
-            alpha = (i + 1) / float(window)
+        obs_count = end_obs
+        if obs_count < window:
+            alpha = obs_count / float(window)
             mean_resid = (1.0 - alpha) * float(global_mean_residual) + alpha * local_mean_resid
         else:
             mean_resid = local_mean_resid

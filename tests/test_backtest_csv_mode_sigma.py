@@ -68,13 +68,13 @@ def test_csv_mode_uses_residual_sigma_not_raw_atr(tmp_path, monkeypatch):
 def test_csv_mode_falls_back_to_atr_when_residual_sigma_zero(tmp_path, monkeypatch):
     data = _dummy_ohlc_with_time(200)
 
-    # Predictions exactly equal to the future Open (shifted by ROWS_AHEAD)
+    # Predictions exactly equal to the future Close (shifted by ROWS_AHEAD)
     # so residuals are ~0 and residual_sigma should collapse to zeros,
     # triggering ATR fallback.
-    future_open = data["Open"].shift(-ROWS_AHEAD)
+    future_close = data["Close"].shift(-ROWS_AHEAD)
     preds = pd.DataFrame({
         "Time": data["Time"],
-        "predicted_price": future_open,
+        "predicted_price": future_close,
     })
     preds_path = tmp_path / "preds_zero_resid.csv"
     preds.to_csv(preds_path, index=False)

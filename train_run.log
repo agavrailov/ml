@@ -1,0 +1,48 @@
+2026-04-21 13:58:53.503845: I tensorflow/core/util/port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+2026-04-21 13:58:58.502220: I tensorflow/core/util/port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+2026-04-21 13:59:01.287544: I tensorflow/core/platform/cpu_feature_guard.cc:210] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: SSE3 SSE4.1 SSE4.2 AVX AVX2 AVX512F FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+
+--- Training model for frequency: 60min, TSTEPS: 5, symbol: NVDA ---
+Scaler parameters calculated on training data and saved to C:\Users\Anton\SRC\my\ml_lstm\data\processed\scaler_params_nvda_60min.json
+Starting model training for 60min with TSTEPS=5...
+Epoch 1/20
+142/142 - 2s - 14ms/step - loss: 0.0132 - mae: 0.0665 - val_loss: 0.0012 - val_mae: 0.0281
+Epoch 2/20
+142/142 - 1s - 4ms/step - loss: 0.0025 - mae: 0.0276 - val_loss: 2.4059e-04 - val_mae: 0.0133
+Epoch 3/20
+142/142 - 1s - 4ms/step - loss: 5.5431e-04 - mae: 0.0145 - val_loss: 3.8284e-04 - val_mae: 0.0179
+Epoch 4/20
+142/142 - 1s - 5ms/step - loss: 1.7893e-04 - mae: 0.0085 - val_loss: 2.9589e-04 - val_mae: 0.0157
+Epoch 5/20
+142/142 - 1s - 4ms/step - loss: 9.4837e-05 - mae: 0.0064 - val_loss: 1.8232e-04 - val_mae: 0.0121
+Epoch 6/20
+142/142 - 1s - 4ms/step - loss: 7.8018e-05 - mae: 0.0057 - val_loss: 2.0860e-04 - val_mae: 0.0130
+Epoch 7/20
+142/142 - 1s - 5ms/step - loss: 7.5099e-05 - mae: 0.0056 - val_loss: 1.5299e-04 - val_mae: 0.0110
+Epoch 8/20
+142/142 - 1s - 5ms/step - loss: 7.3329e-05 - mae: 0.0054 - val_loss: 1.7034e-04 - val_mae: 0.0116
+Epoch 9/20
+142/142 - 1s - 4ms/step - loss: 7.2834e-05 - mae: 0.0054 - val_loss: 1.6580e-04 - val_mae: 0.0115
+Epoch 10/20
+142/142 - 1s - 4ms/step - loss: 7.2262e-05 - mae: 0.0054 - val_loss: 1.9093e-04 - val_mae: 0.0124
+Epoch 11/20
+142/142 - 1s - 5ms/step - loss: 7.1862e-05 - mae: 0.0053 - val_loss: 1.8595e-04 - val_mae: 0.0122
+Epoch 12/20
+142/142 - 1s - 5ms/step - loss: 7.1788e-05 - mae: 0.0053 - val_loss: 2.1023e-04 - val_mae: 0.0131
+Model training finished for 60min with TSTEPS=5.
+Calculating bias correction from validation set...
+
+[1m 1/61[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m9s[0m 165ms/step
+[1m23/61[0m [32m━━━━━━━[0m[37m━━━━━━━━━━━━━[0m [1m0s[0m 2ms/step  
+[1m54/61[0m [32m━━━━━━━━━━━━━━━━━[0m[37m━━━[0m [1m0s[0m 2ms/step
+[1m61/61[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step
+Mean residual on validation set (log returns): 0.009183
+Bias correction (mean residual) saved to C:\Users\Anton\SRC\my\ml_lstm\models\registry\bias_correction_60min_tsteps5_20260421_135910.json
+Updated best hyperparameters for Frequency: 60min, TSTEPS: 5 with validation loss 0.0002
+
+Updated best hyperparameters saved to C:\Users\Anton\SRC\my\ml_lstm\models\best_hyperparameters.json
+Registered NVDA 60min tsteps=5 in symbol_registry.json
+
+--- Training Summary ---
+Frequency: 60min, TSTEPS: 5, Validation Loss: 0.0002, Model: my_lstm_model_60min_tsteps5_20260421_135910.keras, Bias Correction: bias_correction_60min_tsteps5_20260421_135910.json

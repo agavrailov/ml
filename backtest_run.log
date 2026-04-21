@@ -1,0 +1,11 @@
+Running backtest on 13092 bars at 60min...
+Building prediction context and running batched model predictions...
+[NVDA 60min] pred/Close ratio: n=13024/13092 mean=1.0082 p05=0.9978 p50=1.0074 p95=1.0182 std=0.0069
+[NVDA 60min] pred/Open ratio (diagnostic): p50=1.0080 std=0.0103
+[NVDA 60min] corr(strategy_signal, bar_shape)=-0.028
+Wrote model prediction checkpoint (13092 rows) to backtests\nvda_60min_model_predictions_checkpoint.csv
+Wrote checkpoint sidecar meta to backtests\nvda_60min_model_predictions_checkpoint.meta.json
+Backtest complete. Computing metrics...
+Backtest summary | freq=60min | bars=13092 | period=2023-01-03 -> 2026-04-21 | equity: 10000.00 -> 9961.59 | trades=29
+Metrics | total_ret=-0.38% | CAGR=-0.12% | max_dd=-7.44% | Sharpe=-0.01 | win_rate=44.83% | PF= 0.98 | corr= 0.06
+Saved backtest plot to backtests\NVDA-60min-0.10-0.10-0.0100-2.50-20230103-20260421.png
