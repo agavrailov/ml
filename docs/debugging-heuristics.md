@@ -317,6 +317,40 @@ Tests:
 
 ---
 
+### Pattern 9 — Double bias correction (static + rolling stacked)
+
+**Signature:** a retrained model shows healthy pred/Close ratios and
+`corr(strategy_signal, bar_shape)` near zero — yet the backtest fires 3
+losing trades in the opening bars and then goes silent for the rest of the
+dataset with strict k_atr thresholds.
+
+**What's happening:** training writes a global
+`bias_correction_mean_residual` into the prediction context (log-return
+space).  Live prediction applies it because it has no rolling correction.
+If the backtest model-mode path *also* applies it, the preds entering
+`apply_rolling_bias_and_amplitude_correction` carry an extra
+`+mean_residual` offset.  The rolling stage needs roughly `window` bars to
+warm up — during that warmup the offset isn't removed, and the strategy
+reads it as a fake uptrend, firing spurious long entries.  Once the rolling
+estimate converges, signals snap back to ~0 and (with `k_atr_long >> 1.5 ×
+signal_std`) never exceed the entry threshold again.
+
+**Discriminator:** swap `ctx.bias_correction_mean_residual = 0.0` before
+running the backtest.  If the opening losing cluster disappears *and* the
+median pred/Close slides from `1 + mean_residual` back to `~1.000`, you've
+reproduced the double-correction.
+
+**Fix:** only apply the static residual on paths without rolling
+correction.  In practice: `live_predictor.py` keeps it,
+`src/backtest.py::_make_model_prediction_provider` must not.
+
+Tests:
+- `tests/test_no_double_bias_correction.py::test_backtest_model_mode_does_not_add_saved_mean_residual`
+- `tests/test_no_double_bias_correction.py::test_live_predictor_still_applies_static_mean_residual`
+- `tests/test_no_double_bias_correction.py::test_rolling_bias_correction_converges_to_zero_on_unbiased_preds`
+
+---
+
 ## The backtest ratio gate
 
 The single most valuable guardrail is the pred/Close ratio summary printed
@@ -346,3 +380,37 @@ Bug outputs:
 
 If you see any WARNING line, **stop** and investigate the pipeline —
 don't try to tune strategy thresholds until both checks are clean.
+
+---
+
+## Pattern 10: stale test patches after function refactor
+
+**Trigger:** `run_experiments()` was refactored from a full grid search over
+all module-level option constants to a narrower hardcoded search
+(`["60min"] × LSTM_UNITS_OPTIONS × LEARNING_RATE_OPTIONS`).  Tests were not
+updated, so they patched constants the function no longer reads.
+
+**Symptoms:**
+
+```
+AssertionError: Expected 'convert_minute_to_timeframe' to be called once.
+Called 3 times.
+Calls: [call(..., '60min'), call(..., '60min'), call(..., '60min')]
+```
+
+The test patched `RESAMPLE_FREQUENCIES=['15min']` but the function had
+`["60min"]` hardcoded.  Similarly, `OPTIMIZER_OPTIONS`, `LOSS_FUNCTION_OPTIONS`,
+`TSTEPS_OPTIONS` etc. were no longer iterated; a local `LEARNING_RATE_OPTIONS`
+(3 values) drove the loop instead — unpatchable from the test.
+
+**Fix:**
+
+1. Promote `LEARNING_RATE_OPTIONS` to module level in `src/experiment_runner.py`
+   so it can be patched.
+2. Update tests to patch only the constants actually used by the current
+   implementation (`LSTM_UNITS_OPTIONS` and `LEARNING_RATE_OPTIONS`), and
+   update frequency/tsteps assertions to match the hardcoded values (`60min`, `5`).
+
+**Rule:** whenever `run_experiments()` changes which option lists it iterates,
+update the corresponding test patches to match.  A test that patches a
+constant not referenced in the function body provides zero coverage.

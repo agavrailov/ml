@@ -496,18 +496,16 @@ def _make_model_prediction_provider(
     if len(preds_log) > 0:
         preds_log_full[ctx.tsteps - 1 : ctx.tsteps - 1 + len(preds_log)] = preds_log
 
-    # Apply the saved training-time mean residual (log-return space) if
-    # available.  live_predictor.py already does this; the backtest path used
-    # to ignore it, causing backtest/live parity drift.
-    _saved_mean_residual = float(
-        getattr(ctx, "bias_correction_mean_residual", 0.0) or 0.0
-    )
-    if _saved_mean_residual != 0.0 and np.isfinite(_saved_mean_residual):
-        preds_log_full = np.where(
-            np.isfinite(preds_log_full),
-            preds_log_full + _saved_mean_residual,
-            preds_log_full,
-        ).astype(np.float32)
+    # NOTE: we intentionally DO NOT apply the training-time
+    # ``ctx.bias_correction_mean_residual`` here.  The backtest path runs a
+    # rolling price-space bias correction later (see
+    # ``apply_rolling_bias_and_amplitude_correction`` call below) that
+    # subsumes the static residual.  Applying both would double-correct the
+    # model bias, and — because the rolling correction takes ~``window`` bars
+    # to warm up — it produces a systematic +mean_residual offset on the
+    # first bars that the strategy can read as a fake uptrend signal.
+    # live_predictor.py keeps the static residual because it has no
+    # rolling-correction stage.  See docs/debugging-heuristics.md Pattern 9.
 
     # Map log returns back to prices using the raw Close series from the
     # feature-engineered DataFrame.  Close is the anchor because (a) it is the
